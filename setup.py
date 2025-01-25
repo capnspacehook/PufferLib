@@ -282,7 +282,7 @@ extensions = [Extension(
     path.replace('/', '.'),
     [path + '.pyx'],
     include_dirs=[numpy.get_include(), RAYLIB_INCLUDE],
-    extra_compile_args=['-DNPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION', '-DPLATFORM_DESKTOP', '-O2', '-Wno-alloc-size-larger-than', '-fwrapv'],#, '-g'],
+    extra_compile_args=['-DNPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION', '-DPLATFORM_DESKTOP', '-O2', '-flto', '-Wno-alloc-size-larger-than', '-fwrapv'],#, '-g'],
     extra_link_args=['-Bsymbolic-functions', '-O2', '-fwrapv'],
     extra_objects=[f'{RAYLIB_LIB}/libraylib.a']
 ) for path in extension_paths]

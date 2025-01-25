@@ -17,7 +17,7 @@ cdef extern from "pong.h":
 
     ctypedef struct Pong:
         float* observations
-        int* actions
+        float* actions
         float* rewards
         unsigned char* terminals
         LogBuffer* log_buffer;
@@ -73,7 +73,7 @@ cdef class CyPong:
         float ball_width
         float ball_height
 
-    def __init__(self, float[:, :] observations, int[:] actions,
+    def __init__(self, float[:, :] observations, float[:] actions,
             float[:] rewards, unsigned char[:] terminals, int num_envs,
             float width, float height, float paddle_width, float paddle_height,
             float ball_width, float ball_height, float paddle_speed,

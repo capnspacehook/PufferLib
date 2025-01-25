@@ -61,7 +61,7 @@ Log aggregate_and_clear(LogBuffer* logs) {
 typedef struct Pong Pong;
 struct Pong {
     float* observations;
-    int* actions;
+    float* actions;
     float* rewards;
     unsigned char* terminals;
     LogBuffer* log_buffer;
@@ -111,7 +111,7 @@ void init(Pong* env) {
 void allocate(Pong* env) {
     init(env);
     env->observations = (float*)calloc(8, sizeof(float));
-    env->actions = (int*)calloc(2, sizeof(int));
+    env->actions = (float*)calloc(2, sizeof(float));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (unsigned char*)calloc(1, sizeof(unsigned char));
     env->log_buffer = allocate_logbuffer(LOG_BUFFER_SIZE);
@@ -162,13 +162,13 @@ void c_step(Pong* env) {
     env->terminals[0] = 0;
 
     // move ego paddle
-    unsigned int act = env->actions[0];
+    float act = tanhf(env->actions[0]);
     env->paddle_dir = 0;
-    if (act == 0) { // still
+    if (act < -0.666667f  ) { // still
         env->paddle_dir = 0;
-    } else if (act == 1) { // up
+    } else if (act > -0.666667f && act < 0.666667f) { // up
         env->paddle_dir = 1;
-    } else if (act == 2) { // down
+    } else if (act > 0.666667f) { // down
         env->paddle_dir = -1;
     }
 
