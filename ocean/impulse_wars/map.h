@@ -450,8 +450,8 @@ void setupMap(iwEnv *e, const uint8_t mapIdx) {
     e->mapIdx = mapIdx;
     e->map = maps[mapIdx];
     e->defaultWeapon = weaponInfos[maps[mapIdx]->defaultWeapon];
-    if (e->isTraining && randFloat(&e->randState, 0.0f, 1.0f) < 0.25f) {
-        e->defaultWeapon = weaponInfos[randInt(&e->randState, 0, NUM_WEAPONS - 1)];
+    if (e->isTraining && randFloat(&e->rng, 0.0f, 1.0f) < 0.25f) {
+        e->defaultWeapon = weaponInfos[randInt(&e->rng, 0, NUM_WEAPONS - 1)];
     }
 
     uint16_t cellIdx = 0;
@@ -576,7 +576,13 @@ bool posValidDroneSpawnPoint(const iwEnv *e, const b2Vec2 pos) {
     return true;
 }
 
+bool MAPS_INITIALIZED = false;
+
 void initMaps(iwEnv *e) {
+    if (MAPS_INITIALIZED) {
+        return;
+    }
+
     for (uint8_t i = 0; i < NUM_MAPS; i++) {
         setupMap(e, i);
         mapEntry *map = maps[i];
@@ -584,7 +590,7 @@ void initMaps(iwEnv *e) {
         computeMapBoundsAndQuadrants(e, map);
 
         bool *droneSpawns = fastCalloc(map->columns * map->rows, sizeof(bool));
-        uint8_t *packedLayout = fastCalloc(map->columns * map->rows, sizeof(uint8_t));
+        float *packedLayout = fastCalloc(map->columns * map->rows, sizeof(float));
         nearEntity *nearestWalls = fastCalloc(MAX_NEAREST_WALLS * map->columns * map->rows, sizeof(nearEntity));
 
         for (uint16_t i = 0; i < cc_array_size(e->cells); i++) {
@@ -592,7 +598,7 @@ void initMaps(iwEnv *e) {
 
             // precompute packed map layout
             if (cell->ent != NULL) {
-                packedLayout[i] = ((cell->ent->type + 1) & TWO_BIT_MASK) << 5;
+                packedLayout[i] = (float)(cell->ent->type + 1) / 3.0f;
                 continue;
             } else {
                 // precompute valid cells for drones to spawn
@@ -631,6 +637,8 @@ void initMaps(iwEnv *e) {
     }
 
     e->mapIdx = -1;
+
+    MAPS_INITIALIZED = true;
 }
 
 void destroyMaps() {
