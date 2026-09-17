@@ -2,17 +2,15 @@
 
 void randActions(iwEnv *e) {
     // e->lastRandState = e->rng;
-    uint8_t actionOffset = 0;
     for (uint8_t i = 0; i < e->numDrones; i++) {
-        e->actions[actionOffset + 0] = randFloat(&e->rng, -1.0f, 1.0f);
-        e->actions[actionOffset + 1] = randFloat(&e->rng, -1.0f, 1.0f);
-        e->actions[actionOffset + 2] = randFloat(&e->rng, -1.0f, 1.0f);
-        e->actions[actionOffset + 3] = randFloat(&e->rng, -1.0f, 1.0f);
-        e->actions[actionOffset + 4] = randFloat(&e->rng, -1.0f, 1.0f);
-        e->actions[actionOffset + 5] = randFloat(&e->rng, -1.0f, 1.0f);
-        e->actions[actionOffset + 6] = randFloat(&e->rng, -1.0f, 1.0f);
-
-        actionOffset += CONTINUOUS_ACTION_SIZE;
+        float* actions = agentActions(e, i);
+        actions[0] = randFloat(&e->rng, -1.0f, 1.0f);
+        actions[1] = randFloat(&e->rng, -1.0f, 1.0f);
+        actions[2] = randFloat(&e->rng, -1.0f, 1.0f);
+        actions[3] = randFloat(&e->rng, -1.0f, 1.0f);
+        actions[4] = randFloat(&e->rng, -1.0f, 1.0f);
+        actions[5] = randFloat(&e->rng, -1.0f, 1.0f);
+        actions[6] = randFloat(&e->rng, -1.0f, 1.0f);
     }
 }
 
@@ -21,19 +19,19 @@ void perfTest(const uint32_t numSteps) {
 
     iwEnv *e = fastCalloc(1, sizeof(iwEnv));
 
-    posix_memalign((void **)&e->observations, sizeof(void *), alignedSize(NUM_DRONES * obsSize(NUM_DRONES), sizeof(float)));
-    e->rewards = fastCalloc(NUM_DRONES, sizeof(float));
-    e->actions = fastCalloc(NUM_DRONES * CONTINUOUS_ACTION_SIZE, sizeof(float));
-    e->masks = fastCalloc(NUM_DRONES, sizeof(uint8_t));
-    e->terminals = fastCalloc(NUM_DRONES, sizeof(uint8_t));
-    e->truncations = fastCalloc(NUM_DRONES, sizeof(uint8_t));
-
     // rayClient *client = createRayClient();
     // e->client = client;
 
     uint64_t seed = time(NULL);
     printf("seed: %lu\n", seed);
-    initEnv(e, NUM_DRONES, 0, -1, seed, false, false, true, false);
+    initEnv(e, NUM_DRONES, NUM_DRONES, -1, seed, false, false, true, false);
+    for (uint8_t i = 0; i < e->numAgents; i++) {
+        posix_memalign((void **)&agentObs(e, i), sizeof(void *),
+            alignedSize(e->obsSize, sizeof(float)));
+        agentActions(e, i) = fastCalloc(CONTINUOUS_ACTION_SIZE, sizeof(float));
+        agentRewards(e, i) = fastCalloc(1, sizeof(float));
+        agentTerminals(e, i) = fastCalloc(1, sizeof(uint8_t));
+    }
     initMaps(e);
 
     // randActions(e);
@@ -49,12 +47,12 @@ void perfTest(const uint32_t numSteps) {
 
     puf_close(e);
     destroyMaps();
-    free(e->observations);
-    fastFree(e->actions);
-    fastFree(e->rewards);
-    fastFree(e->masks);
-    fastFree(e->terminals);
-    fastFree(e->truncations);
+    for (uint8_t i = 0; i < e->numAgents; i++) {
+        free(agentObs(e, i));
+        fastFree(agentActions(e, i));
+        fastFree(agentRewards(e, i));
+        fastFree(agentTerminals(e, i));
+    }
     fastFree(e);
 }
 
