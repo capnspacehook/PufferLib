@@ -101,7 +101,7 @@ typedef struct mapEntry {
     mapBounds bounds;
     mapBounds spawnQuads[4];
     bool *droneSpawns;
-    uint8_t *packedLayout;
+    float *packedLayout;
     nearEntity *nearestWalls;
 } mapEntry;
 
@@ -441,22 +441,14 @@ struct Env {
     float shotHitRewardCoef;
     float explosionHitRewardCoef;
 
-    uint16_t obsBytes;
-    uint16_t discreteObsBytes;
+    uint16_t obsSize;
+    uint16_t discreteObsSize;
     bool continuousActions;
-
-    uint8_t *observations;
-    float *rewards;
-    float *actions;
-    uint8_t *masks;
-    uint8_t *terminals;
-    uint8_t *truncations;
 
     uint8_t frameRate;
     float deltaTime;
     uint8_t frameSkip;
     uint8_t box2dSubSteps;
-    uint64_t randState;
     bool needsReset;
 
     uint16_t episodeLength;

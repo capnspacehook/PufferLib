@@ -116,26 +116,12 @@
         ASSERTF(fabs(vec.y - norm.y) < 0.000001f, "vec: %f, %f norm: %f, %f", vec.x, vec.y, norm.x, norm.y); \
     } while (0)
 
-// use malloc when debugging so the address sanitizer can find issues with
-// heap memory, use dlmalloc in release mode for performance; emscripten
-// uses dlmalloc by default so no need to change anything here; dlmalloc
-// sometimes won't compile on macOS so just use malloc and friends
-#if !defined(IW_USE_DLMALLOC) || defined(__EMSCRIPTEN__) || defined(__APPLE__)
 #define fastMalloc(size) malloc(size)
 #define fastMallocFn malloc
 #define fastCalloc(nmemb, size) calloc(nmemb, size)
 #define fastCallocFn calloc
 #define fastFree(ptr) free(ptr)
 #define fastFreeFn free
-#else
-#include "include/dlmalloc.h"
-#define fastMalloc(size) dlmalloc(size)
-#define fastMallocFn dlmalloc
-#define fastCalloc(nmemb, size) dlcalloc(nmemb, size)
-#define fastCallocFn dlcalloc
-#define fastFree(ptr) dlfree(ptr)
-#define fastFreeFn dlfree
-#endif
 
 static inline void create_array(CC_Array **array, size_t initialCap) {
     CC_ArrayConf conf;
@@ -162,25 +148,13 @@ static inline bool b2VecEqual(const b2Vec2 v1, const b2Vec2 v2) {
     return v1.x == v2.x && v1.y == v2.y;
 }
 
-// from https://lemire.me/blog/2019/03/19/the-fastest-conventional-random-number-generator-that-can-pass-big-crush/
-// see also https://github.com/lemire/testingRNG
-static uint64_t wyhash64(uint64_t *state) {
-    *state += 0x60bee2bee120fc15;
-    __uint128_t tmp;
-    tmp = (__uint128_t)(*state) * 0xa3b195354a39b70d;
-    uint64_t m1 = (tmp >> 64) ^ tmp;
-    tmp = (__uint128_t)m1 * 0x1b03738712fad5c9;
-    uint64_t m2 = (tmp >> 64) ^ tmp;
-    return m2;
-}
-
-static inline float randFloat(uint64_t *state, const float min, const float max) {
-    float n = wyhash64(state) / (float)UINT64_MAX;
+static inline float randFloat(unsigned int *state, const float min, const float max) {
+    float n = rand_r(state) / (float)UINT64_MAX;
     return min + n * (max - min);
 }
 
-static inline int randInt(uint64_t *state, const int min, const int max) {
-    return min + wyhash64(state) % (max - min + 1);
+static inline int randInt(unsigned int *state, const int min, const int max) {
+    return min + rand_r(state) % (max - min + 1);
 }
 
 static inline float logBasef(const float v, const float b) {
@@ -206,26 +180,23 @@ static inline float clamp(float f) {
     return min(max(f, 0.0f), 1.0f);
 }
 
-// normalize value to be between 0 and max, or -max and max;
-// minIsZero determines if the min value is 0 or -max
-static inline float scaleValue(const float v, const float max, const bool minIsZero) {
-    ASSERTF(v <= max, "v: %f, max: %f", v, max);
+// normalize value to be between 0 and 1, or -1 and 1;
+// minIsZero determines if the min value is 0 or -1
+static inline float scaleValue(const float v, const float maxVal, const bool minIsZero) {
+    ASSERTF(v <= maxVal, "v: %f, max: %f", v, maxVal);
     ASSERTF(!minIsZero || v >= 0, "v: %f", v);
-    ASSERTF(minIsZero || v >= -max, "v: %f, -max: %f", v, -max);
+    ASSERTF(minIsZero || v >= -maxVal, "v: %f, -max: %f", v, -maxVal);
 
-    float scaled = v / max;
-    if (minIsZero) {
-        return max(min(scaled, max), 0.0f);
-    } else {
-        return max(min(scaled, max), -1.0f);
+    if (maxVal == 0.0f) {
+        return 0.0f;
     }
-}
 
-static inline uint8_t oneHotEncode(float *obs, const uint16_t offset, const uint8_t val, const uint8_t max) {
-    ASSERTF(val < max, "val: %d, max: %d", val, max);
-    memset(obs + offset, 0x0, max * sizeof(float));
-    obs[offset + val] = 1;
-    return max;
+    float scaled = v / maxVal;
+    if (minIsZero) {
+        return max(min(scaled, 1.0f), 0.0f);
+    } else {
+        return max(min(scaled, 1.0f), -1.0f);
+    }
 }
 
 static inline uint16_t alignedSize(const uint16_t size, const uint8_t align) {

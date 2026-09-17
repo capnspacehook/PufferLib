@@ -16,26 +16,10 @@ static double accumulator = 0.0;
 static const uint8_t THREE_BIT_MASK = 0x7;
 static const uint8_t FOUR_BIT_MASK = 0xf;
 
-static inline uint8_t* iw_obs(iwEnv* e, uint8_t i) {
-    if (e->agents[i].observations) {
-        return e->agents[i].observations;
-    }
-    return e->observations + (size_t)i * e->obsBytes;
-}
-
-static inline float* iw_act(iwEnv* e, uint8_t i) {
-    if (e->agents[i].actions) {
-        return e->agents[i].actions;
-    }
-    return e->actions + (size_t)i * CONTINUOUS_ACTION_SIZE;
-}
-
-static inline float* iw_rew(iwEnv* e, uint8_t i) {
-    if (e->agents[i].rewards) {
-        return e->agents[i].rewards;
-    }
-    return &e->rewards[i];
-}
+#define agentObs(e, i) (e->agents[i].observations)
+#define agentActions(e, i) (e->agents[i].actions)
+#define agentRewards(e, i) (e->agents[i].rewards)
+#define agentTerminals(e, i) (e->agents[i].terminals)
 
 // returns a cell index that is closest to pos that isn't cellIdx
 uint16_t findNearestCell(const iwEnv *e, const b2Vec2 pos, const uint16_t cellIdx) {
@@ -106,26 +90,26 @@ void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffs
         const int8_t numCols = endCol - startCol + 1;
         for (int8_t row = startRow; row <= endRow; row++) {
             const int16_t cellIdx = cellIndex(e, startCol, row);
-            memcpy(e->observations + offset, e->map->packedLayout + cellIdx, numCols * sizeof(uint8_t));
+            memcpy(e->observations + offset, e->map->packedLayout + cellIdx, numCols * sizeof(float));
             offset += MAP_OBS_COLUMNS;
         }
 
-        // compute discretized location of weapon pickups on grid
-        for (size_t i = 0; i < cc_array_size(e->pickups); i++) {
-            const weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
-            const uint8_t cellCol = pickup->mapCellIdx % e->map->columns;
-            if (cellCol < startCol || cellCol > endCol) {
-                continue;
-            }
-            const uint8_t cellRow = pickup->mapCellIdx / e->map->columns;
-            if (cellRow < startRow || cellRow > endRow) {
-                continue;
-            }
+        // // compute discretized location of weapon pickups on grid
+        // for (size_t i = 0; i < cc_array_size(e->pickups); i++) {
+        //     const weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
+        //     const uint8_t cellCol = pickup->mapCellIdx % e->map->columns;
+        //     if (cellCol < startCol || cellCol > endCol) {
+        //         continue;
+        //     }
+        //     const uint8_t cellRow = pickup->mapCellIdx / e->map->columns;
+        //     if (cellRow < startRow || cellRow > endRow) {
+        //         continue;
+        //     }
 
-            offset = startOffset + ((cellCol - startCol) + ((cellRow - startRow) * MAP_OBS_COLUMNS));
-            ASSERTF(offset <= startOffset + MAP_OBS_SIZE, "offset: %d", offset);
-            e->observations[offset] |= 1 << 3;
-        }
+        //     offset = startOffset + ((cellCol - startCol) + ((cellRow - startRow) * MAP_OBS_COLUMNS));
+        //     ASSERTF(offset <= startOffset + MAP_OBS_SIZE, "offset: %d", offset);
+        //     e->observations[offset] |= 1 << 3;
+        // }
     } else {
         // sudden death walls have been placed so compute may layout manually
         const int8_t colPadding = obsColOffset + (obsEndCol - endCol);
@@ -139,10 +123,11 @@ void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffs
                 }
 
                 if (entityTypeIsWall(cell->ent->type)) {
-                    e->observations[offset] = ((cell->ent->type + 1) & TWO_BIT_MASK) << 5;
-                } else if (cell->ent->type == WEAPON_PICKUP_ENTITY) {
-                    e->observations[offset] |= 1 << 3;
-                }
+                    e->observations[offset] = (float)(cell->ent->type + 1) / 3.0f;
+                } 
+                // else if (cell->ent->type == WEAPON_PICKUP_ENTITY) {
+                //     e->observations[offset] |= 1 << 3;
+                // }
 
                 offset++;
             }
@@ -151,57 +136,57 @@ void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffs
         ASSERTF(offset <= startOffset + MAP_OBS_SIZE, "offset %u startOffset %u", offset, startOffset);
     }
 
-    // compute discretized locations of floating walls on grid
-    for (size_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
-        const wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
-        const uint8_t cellCol = wall->mapCellIdx % e->map->columns;
-        if (cellCol < startCol || cellCol > endCol) {
-            continue;
-        }
-        const uint8_t cellRow = wall->mapCellIdx / e->map->columns;
-        if (cellRow < startRow || cellRow > endRow) {
-            continue;
-        }
+    // // compute discretized locations of floating walls on grid
+    // for (size_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
+    //     const wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
+    //     const uint8_t cellCol = wall->mapCellIdx % e->map->columns;
+    //     if (cellCol < startCol || cellCol > endCol) {
+    //         continue;
+    //     }
+    //     const uint8_t cellRow = wall->mapCellIdx / e->map->columns;
+    //     if (cellRow < startRow || cellRow > endRow) {
+    //         continue;
+    //     }
 
-        offset = startOffset + ((cellCol - startCol) + ((cellRow - startRow) * MAP_OBS_COLUMNS));
-        ASSERTF(offset <= startOffset + MAP_OBS_SIZE, "offset: %d", offset);
-        e->observations[offset] = ((wall->type + 1) & TWO_BIT_MASK) << 5;
-        e->observations[offset] |= 1 << 4;
-    }
+    //     offset = startOffset + ((cellCol - startCol) + ((cellRow - startRow) * MAP_OBS_COLUMNS));
+    //     ASSERTF(offset <= startOffset + MAP_OBS_SIZE, "offset: %d", offset);
+    //     e->observations[offset] = ((wall->type + 1) & TWO_BIT_MASK) << 5;
+    //     e->observations[offset] |= 1 << 4;
+    // }
 
-    // compute discretized location and index of drones on grid
-    uint8_t newDroneIdx = 1;
-    uint16_t droneCells[e->numDrones];
-    memset(droneCells, 0x0, sizeof(droneCells));
-    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
-        if (i == agentIdx) {
-            continue;
-        }
+    // // compute discretized location and index of drones on grid
+    // uint8_t newDroneIdx = 1;
+    // uint16_t droneCells[e->numDrones];
+    // memset(droneCells, 0x0, sizeof(droneCells));
+    // for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+    //     if (i == agentIdx) {
+    //         continue;
+    //     }
 
-        // ensure drones do not share cells in the observation
-        droneEntity *otherDrone = safe_array_get_at(e->drones, i);
-        if (i != 0) {
-            for (uint8_t j = 0; j < i; j++) {
-                if (droneCells[j] == otherDrone->mapCellIdx) {
-                    otherDrone->mapCellIdx = findNearestCell(e, otherDrone->pos, otherDrone->mapCellIdx);
-                    break;
-                }
-            }
-        }
-        const uint8_t cellCol = otherDrone->mapCellIdx % e->map->columns;
-        if (cellCol < startCol || cellCol > endCol) {
-            continue;
-        }
-        const uint8_t cellRow = otherDrone->mapCellIdx / e->map->columns;
-        if (cellRow < startRow || cellRow > endRow) {
-            continue;
-        }
-        droneCells[i] = otherDrone->mapCellIdx;
+    //     // ensure drones do not share cells in the observation
+    //     droneEntity *otherDrone = safe_array_get_at(e->drones, i);
+    //     if (i != 0) {
+    //         for (uint8_t j = 0; j < i; j++) {
+    //             if (droneCells[j] == otherDrone->mapCellIdx) {
+    //                 otherDrone->mapCellIdx = findNearestCell(e, otherDrone->pos, otherDrone->mapCellIdx);
+    //                 break;
+    //             }
+    //         }
+    //     }
+    //     const uint8_t cellCol = otherDrone->mapCellIdx % e->map->columns;
+    //     if (cellCol < startCol || cellCol > endCol) {
+    //         continue;
+    //     }
+    //     const uint8_t cellRow = otherDrone->mapCellIdx / e->map->columns;
+    //     if (cellRow < startRow || cellRow > endRow) {
+    //         continue;
+    //     }
+    //     droneCells[i] = otherDrone->mapCellIdx;
 
-        offset = startOffset + ((cellCol - startCol) + ((cellRow - startRow) * MAP_OBS_COLUMNS));
-        ASSERTF(offset <= startOffset + MAP_OBS_SIZE, "offset: %d", offset);
-        e->observations[offset] |= (newDroneIdx++ & THREE_BIT_MASK);
-    }
+    //     offset = startOffset + ((cellCol - startCol) + ((cellRow - startRow) * MAP_OBS_COLUMNS));
+    //     ASSERTF(offset <= startOffset + MAP_OBS_SIZE, "offset: %d", offset);
+    //     e->observations[offset] |= (newDroneIdx++ & THREE_BIT_MASK);
+    // }
 }
 
 // computes observations for N nearest walls, floating walls, and weapon pickups
@@ -217,7 +202,7 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, const uint16_t discreteO
 
         offset = discreteObsStart + NEAR_WALL_TYPES_OBS_OFFSET + i;
         ASSERTF(offset <= discreteObsStart + FLOATING_WALL_TYPES_OBS_OFFSET, "offset: %d", offset);
-        e->observations[offset] = wall->type;
+        e->observations[offset] = (float)wall->type / 2.0f;
 
         // DEBUG_LOGF("wall %d cell %d", i, wall->mapCellIdx);
 
@@ -255,7 +240,7 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, const uint16_t discreteO
 
             offset = discreteObsStart + FLOATING_WALL_TYPES_OBS_OFFSET + i;
             ASSERTF(offset <= discreteObsStart + PROJECTILE_DRONE_OBS_OFFSET, "offset: %d", offset);
-            e->observations[offset] = wall->type + 1;
+            e->observations[offset] = (float)(wall->type + 1) / 3.0f;
 
             // DEBUG_LOGF("floating wall %d cell %d", i, wall->mapCellIdx);
 
@@ -291,7 +276,7 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, const uint16_t discreteO
 
             offset = discreteObsStart + WEAPON_PICKUP_WEAPONS_OBS_OFFSET + i;
             ASSERTF(offset <= discreteObsStart + ENEMY_DRONE_WEAPONS_OBS_OFFSET, "offset: %d", offset);
-            e->observations[offset] = pickup->weapon + 1;
+            e->observations[offset] = (float)(pickup->weapon + 1) / NUM_WEAPONS;
 
             // DEBUG_LOGF("pickup %d cell %d", i, pickup->mapCellIdx);
 
@@ -315,16 +300,16 @@ void computeObs(iwEnv *e) {
 
         // compute discrete map observations
         uint8_t* packed = e->observations;
-        uint8_t* agentObs = iw_obs(e, agentIdx);
+        uint8_t* agentObs = getObs(e, agentIdx);
         e->observations = agentObs;
         const uint16_t discreteObsStart = 0;
-        memset(e->observations, 0x0, e->obsBytes);
+        memset(e->observations, 0x0, e->obsSize * sizeof(float));
         computeMapObs(e, agentIdx, discreteObsStart);
 
         // compute continuous observations
         uint16_t discreteObsOffset;
         uint16_t continuousObsOffset;
-        const uint16_t continuousObsStart = discreteObsStart + e->discreteObsBytes;
+        const uint16_t continuousObsStart = discreteObsStart + e->discreteObsSize;
         float *continuousObs = (float *)(e->observations + continuousObsStart);
 
         computeNearObs(e, agentDrone, discreteObsStart, continuousObs);
@@ -358,11 +343,11 @@ void computeObs(iwEnv *e) {
 
                 discreteObsOffset = discreteObsStart + PROJECTILE_DRONE_OBS_OFFSET + i;
                 ASSERTF(discreteObsOffset <= discreteObsStart + PROJECTILE_WEAPONS_OBS_OFFSET, "offset: %d", discreteObsOffset);
-                e->observations[discreteObsOffset] = projectile->droneIdx + 1;
+                e->observations[discreteObsOffset] = (float)(projectile->droneIdx + 1) / e->numDrones;
 
                 discreteObsOffset = discreteObsStart + PROJECTILE_WEAPONS_OBS_OFFSET + i;
                 ASSERTF(discreteObsOffset <= discreteObsStart + WEAPON_PICKUP_WEAPONS_OBS_OFFSET, "offset: %d", discreteObsOffset);
-                e->observations[discreteObsOffset] = projectile->weaponInfo->type + 1;
+                e->observations[discreteObsOffset] = (float)(projectile->weaponInfo->type + 1) / NUM_WEAPONS;
 
                 continuousObsOffset = PROJECTILE_INFO_OBS_OFFSET + (i * PROJECTILE_INFO_OBS_SIZE);
                 ASSERTF(continuousObsOffset <= ENEMY_DRONE_OBS_OFFSET, "offset: %d", continuousObsOffset);
@@ -407,9 +392,9 @@ void computeObs(iwEnv *e) {
             }
 
             discreteObsOffset = discreteObsStart + ENEMY_DRONE_WEAPONS_OBS_OFFSET + processedDrones;
-            e->observations[discreteObsOffset] = enemyDrone->weaponInfo->type + 1;
+            e->observations[discreteObsOffset] = (float)(enemyDrone->weaponInfo->type + 1) / NUM_WEAPONS;
 
-            continuousObsOffset = ENEMY_DRONE_OBS_OFFSET + (e->numDrones - 1) + (processedDrones * ENEMY_DRONE_OBS_SIZE);
+            continuousObsOffset = ENEMY_DRONE_OBS_OFFSET + (processedDrones * ENEMY_DRONE_OBS_SIZE);
             continuousObs[continuousObsOffset++] = enemyDrone->team == agentDrone->team;
             continuousObs[continuousObsOffset++] = scaleValue(enemyDroneRelPos.x, MAX_X_POS, false);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDroneRelPos.y, MAX_Y_POS, false);
@@ -436,7 +421,7 @@ void computeObs(iwEnv *e) {
             continuousObs[continuousObsOffset++] = !enemyDrone->dead;
 
             processedDrones++;
-            ASSERTF(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + (e->numDrones - 1) + (processedDrones * ENEMY_DRONE_OBS_SIZE), "offset: %d", continuousObsOffset);
+            ASSERTF(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + (processedDrones * ENEMY_DRONE_OBS_SIZE), "offset: %d", continuousObsOffset);
         }
 
         // compute active drone observations
@@ -448,7 +433,7 @@ void computeObs(iwEnv *e) {
         }
 
         discreteObsOffset = discreteObsStart + ENEMY_DRONE_WEAPONS_OBS_OFFSET + e->numDrones - 1;
-        e->observations[discreteObsOffset] = agentDrone->weaponInfo->type + 1;
+        e->observations[discreteObsOffset] = (float)(agentDrone->weaponInfo->type + 1) / NUM_WEAPONS;
 
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->pos.x, MAX_X_POS, false);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->pos.y, MAX_Y_POS, false);
@@ -495,7 +480,7 @@ void setupEnv(iwEnv *e) {
         if (!e->isTraining) {
             firstMap = 1;
         }
-        mapIdx = randInt(&e->randState, firstMap, NUM_MAPS - 1);
+        mapIdx = randInt(&e->rng, firstMap, NUM_MAPS - 1);
     }
     DEBUG_LOGF("setting up map %d", mapIdx);
     setupMap(e, mapIdx);
@@ -510,7 +495,7 @@ void setupEnv(iwEnv *e) {
 
     DEBUG_LOG("creating weapon pickups");
     // start spawning pickups in a random quadrant
-    e->lastSpawnQuad = randInt(&e->randState, 0, 3);
+    e->lastSpawnQuad = randInt(&e->rng, 0, 3);
     for (uint8_t i = 0; i < maps[mapIdx]->weaponPickups; i++) {
         createWeaponPickup(e);
     }
@@ -570,16 +555,13 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     e->shotHitRewardCoef = SHOT_HIT_REWARD_COEF;
     e->explosionHitRewardCoef = EXPLOSION_HIT_REWARD_COEF;
 
-    e->obsBytes = obsBytes(e->numDrones);
-    e->discreteObsBytes = alignedSize(discreteObsSize(e->numDrones) * sizeof(uint8_t), sizeof(float));
+    e->obsSize = obsSize(e->numDrones);
+    e->discreteObsSize = alignedSize(discreteObsSize(e->numDrones) * sizeof(uint8_t), sizeof(float));
 
     e->continuousActions = continuousActions;
 
-    // TODO: remove when puffer bindings add truncations
-    e->truncations = fastCalloc(numDrones, sizeof(uint8_t));
-
     setEnvFrameRate(e);
-    e->randState = seed;
+    e->rng = seed;
     e->needsReset = false;
 
     b2WorldDef worldDef = b2DefaultWorldDef();
@@ -815,15 +797,11 @@ float computeReward(iwEnv *e, droneEntity *drone) {
 static const float REWARD_EPS = 1.0e-6f;
 
 void computeRewards(iwEnv *e, const bool roundOver, const int8_t winner, const int8_t winningTeam) {
-    if (roundOver && winner != -1 && winner < e->numAgents) {
-        iw_rew(e, winner)[0] += e->winReward;
-    }
-
     for (uint8_t i = 0; i < e->numDrones; i++) {
         float reward = 0.0f;
         droneEntity *drone = safe_array_get_at(e->drones, i);
         reward = computeReward(e, drone);
-        if (!drone->dead && roundOver && winningTeam == drone->team) {
+        if (!drone->dead && roundOver && (winner == i || winningTeam == drone->team)) {
             reward += e->winReward;
         } else if (drone->diedThisStep) {
             reward = e->deathPunishment;
@@ -832,7 +810,7 @@ void computeRewards(iwEnv *e, const bool roundOver, const int8_t winner, const i
             }
         }
         if (i < e->numAgents) {
-            iw_rew(e, i)[0] += reward;
+            getReward(e, i)[0] += reward;
         }
         e->stats[i].returns += reward;
     }
@@ -842,26 +820,46 @@ static inline bool isActionNoop(const b2Vec2 action) {
     return b2Length(action) < ACTION_NOOP_MAGNITUDE;
 }
 
+// if manualActions is NULL the actions are drawn from the environment
 agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *manualActions) {
     agentActions actions = {0};
 
-    const float* act = iw_act(e, drone->idx);
+    const float* act = getActions(e, drone->idx);
     if (manualActions == NULL) {
-        actions.move = (b2Vec2){.x = act[0], .y = act[1]};
-        actions.aim = (b2Vec2){.x = act[2], .y = act[3]};
         if (e->continuousActions) {
-            actions.move.x = tanhf(actions.move.x);
-            actions.move.y = tanhf(actions.move.y);
-            actions.aim.x = tanhf(actions.aim.x);
-            actions.aim.y = tanhf(actions.aim.y);
+            actions.move = (b2Vec2){.x = tanhf(act[0]), .y = tanf(act[1])};
+            actions.aim = (b2Vec2){.x = tanf(act[2]), .y = tanf(act[3])};
+            actions.chargingWeapon = act[4] > 0.0f;
+            actions.brake = act[5] > 0.0f;
+            actions.chargingBurst = act[6] > 0.0f;
+        } else {
+            float (*envActions)[5] = (float (*)[5])act;
+
+            uint8_t move = envActions[drone->idx][0];
+            // 0 is no-op for both move and aim
+            ASSERT(move <= 8);
+            if (move != 0) {
+                move--;
+                actions.move.x = discMoveToContMoveMap[0][move];
+                actions.move.y = discMoveToContMoveMap[1][move];
+            }
+            uint8_t aim = envActions[drone->idx][1];
+            ASSERT(aim <= 16);
+            if (aim != 0) {
+                aim--;
+                actions.aim.x = discAimToContAimMap[0][aim];
+                actions.aim.y = discAimToContAimMap[1][aim];
+            }
+
+            actions.chargingWeapon = envActions[drone->idx][2] > 0.0f;
+            actions.brake = envActions[drone->idx][3] > 0.0f;
+            actions.chargingBurst = envActions[drone->idx][4] > 0.0f;   
         }
-        actions.chargingWeapon = act[4] > 0.0f;
+
         actions.shoot = actions.chargingWeapon;
         if (!actions.chargingWeapon && drone->chargingWeapon) {
             actions.shoot = true;
         }
-        actions.brake = act[5] > 0.0f;
-        actions.chargingBurst = act[6] > 0.0f;
     } else {
         actions.move = manualActions->move;
         actions.aim = manualActions->aim;
@@ -1099,7 +1097,7 @@ void puf_step(iwEnv *e) {
 
     // reset reward buffer
     for (uint8_t i = 0; i < e->numAgents; i++) {
-        iw_rew(e, i)[0] = 0;
+        getReward(e, i)[0] = 0;
     }
 
     for (int i = 0; i < e->frameSkip; i++) {
@@ -1306,7 +1304,7 @@ void puf_step(iwEnv *e) {
 #ifndef NDEBUG
     bool gotReward = false;
     for (uint8_t i = 0; i < e->numDrones; i++) {
-        if (iw_rew(e, i)[0] > REWARD_EPS || iw_rew(e, i)[0] < -REWARD_EPS) {
+        if (getReward(e, i)[0] > REWARD_EPS || getReward(e, i)[0] < -REWARD_EPS) {
             gotReward = true;
             break;
         }
@@ -1314,7 +1312,7 @@ void puf_step(iwEnv *e) {
     if (gotReward) {
         DEBUG_RAW_LOG("!!! rewards: [");
         for (uint8_t i = 0; i < e->numDrones; i++) {
-            const float reward = iw_rew(e, i)[0];
+            const float reward = getReward(e, i)[0];
             DEBUG_RAW_LOGF("%f", reward);
             if (i < e->numDrones - 1) {
                 DEBUG_RAW_LOG(", ");

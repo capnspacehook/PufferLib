@@ -112,8 +112,8 @@ static uint16_t continuousObsSize(uint8_t numDrones) {
     return _CONTINUOUS_OBS_SIZE + ((numDrones - 1) * ENEMY_DRONE_OBS_SIZE);
 }
 
-static uint16_t obsBytes(uint8_t numDrones) {
-    return alignedSize((discreteObsSize(numDrones) * sizeof(uint8_t)) + (continuousObsSize(numDrones) * sizeof(float)), sizeof(float));
+static uint16_t obsSize(uint8_t numDrones) {
+    return discreteObsSize(numDrones) + continuousObsSize(numDrones);
 }
 
 static const float MAX_X_POS = 150.0f;
