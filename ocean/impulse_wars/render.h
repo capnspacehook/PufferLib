@@ -749,9 +749,9 @@ void renderTimer(const iwEnv *e, const char *timerStr, const Color color) {
 
 void renderUI(const iwEnv *e, const bool starting) {
     // render drone info
-    const uint8_t fontSize = 2 * e->client->scale;
-    const uint8_t xMargin = 5 * e->client->scale;
-    const uint8_t yMargin = 12 * e->client->scale;
+    const uint16_t fontSize = 2 * e->client->scale;
+    const uint16_t xMargin = 5 * e->client->scale;
+    const uint16_t yMargin = 12 * e->client->scale;
 
     for (int i = 0; i < e->numDrones; i++) {
         const droneEntity *drone = safe_array_get_at(e->drones, i);

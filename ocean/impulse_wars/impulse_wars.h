@@ -4,9 +4,9 @@ typedef float obs_t;
 #endif
 
 // uncomment to use continuous actions
-// #define NUM_ATNS 7
-// #define ACT_SIZES {1, 1, 1, 1, 1, 1, 1}
-// #define CONTINUOUS_ACTIONS 1
+#define NUM_ATNS 7
+#define ACT_SIZES {1, 1, 1, 1, 1, 1, 1}
+#define CONTINUOUS_ACTIONS 1
 
 // actions:
 // 9: move, noop + 8 directions
@@ -14,9 +14,9 @@ typedef float obs_t;
 // 2: shoot or not
 // 2: brake or not
 // 2: burst or not
-#define NUM_ATNS 5
-#define ACT_SIZES {9, 17, 2, 2, 2}
-#define CONTINUOUS_ACTIONS 0
+// #define NUM_ATNS 5
+// #define ACT_SIZES {9, 17, 2, 2, 2}
+// #define CONTINUOUS_ACTIONS 0
 
 #define OBS_SIZE 395 // for 2 drones (players)
 
@@ -38,12 +38,12 @@ typedef float obs_t;
 #undef puf_log
 
 extern "C" {
-void puf_init(Env* env, Dict* kwargs);
-void puf_reset(Env* env);
-void puf_step(Env* env);
-void puf_render(Env* env);
-void puf_close(Env* env);
-void puf_log(Log* log, Dict* out);
+void puf_init(Env *env, Dict *kwargs);
+void puf_reset(Env *env);
+void puf_step(Env *env);
+void puf_render(Env *env);
+void puf_close(Env *env);
+void puf_log(Log *log, Dict *out);
 }
 
 #else
@@ -55,20 +55,19 @@ void puf_log(Log* log, Dict* out);
 #include "env.h"
 #include <pthread.h>
 
-int b2InternalAssertFcn(const char* condition, const char* fileName, int lineNumber) {
+int b2InternalAssertFcn(const char *condition, const char *fileName, int lineNumber) {
     fprintf(stderr, "box2d assert %s at %s:%d\n", condition, fileName, lineNumber);
     return 1;
 }
 
-void puf_init(Env* env, Dict* kwargs) {
+void puf_init(Env *env, Dict *kwargs) {
     uint8_t num_drones = dict_get(kwargs, "num_drones");
     uint8_t num_agents = dict_get(kwargs, "num_agents");
     int8_t map_idx = dict_get(kwargs, "map_idx");
     bool enable_teams = dict_get(kwargs, "enable_teams");
     bool sitting_duck = dict_get(kwargs, "sitting_duck");
     bool is_training = dict_get(kwargs, "is_training");
-    initEnv(env, num_drones, num_agents, map_idx, env->rng, enable_teams,
-        sitting_duck, is_training, (bool)CONTINUOUS_ACTIONS);
+    initEnv(env, num_drones, num_agents, map_idx, env->rng, enable_teams, sitting_duck, is_training, (bool)CONTINUOUS_ACTIONS);
 
     static pthread_mutex_t maps_mu = PTHREAD_MUTEX_INITIALIZER;
     static bool maps_ready = false;
@@ -85,14 +84,15 @@ void puf_init(Env* env, Dict* kwargs) {
         dict_get(kwargs, "reward_self_kill"),
         dict_get(kwargs, "reward_enemy_death"),
         dict_get(kwargs, "reward_enemy_kill"),
-        0.0f,// teammate death punishment
-        0.0f,// teammate kill punishment
+        0.0f, // teammate death punishment
+        0.0f, // teammate kill punishment
         dict_get(kwargs, "reward_death"),
         dict_get(kwargs, "reward_energy_emptied"),
         dict_get(kwargs, "reward_weapon_pickup"),
         dict_get(kwargs, "reward_shield_break"),
         dict_get(kwargs, "reward_shot_hit_coef"),
-        dict_get(kwargs, "reward_explosion_hit_coef"));
+        dict_get(kwargs, "reward_explosion_hit_coef")
+    );
 
     for (int i = 0; i < env->num_agents; i++) {
         env->agents[i].policy = 0;
@@ -121,7 +121,7 @@ void puf_init(Env* env, Dict* kwargs) {
     dict_set(out, "drone_" idxStr "_total_picked_up", log->stats[idx].totalWeaponsPickedUp);      \
     dict_set(out, "drone_" idxStr "_total_shot_distances", log->stats[idx].totalShotDistances)
 
-void puf_log(Log* log, Dict* out) {
+void puf_log(Log *log, Dict *out) {
     dict_set(out, "episode_length", log->length);
     dict_set(out, "ties", log->ties);
     dict_set(out, "perf", log->stats[0].wins);

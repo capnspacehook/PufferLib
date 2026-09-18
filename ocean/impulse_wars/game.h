@@ -65,14 +65,19 @@ static inline int16_t cellIndex(const iwEnv *e, const int8_t col, const int8_t r
 static inline int16_t entityPosToCellIdx(const iwEnv *e, const b2Vec2 pos) {
     const float cellX = pos.x + (((float)e->map->columns * WALL_THICKNESS) / 2.0f);
     const float cellY = pos.y + (((float)e->map->rows * WALL_THICKNESS) / 2.0f);
-    const int8_t cellCol = cellX / WALL_THICKNESS;
-    const int8_t cellRow = cellY / WALL_THICKNESS;
-    const int16_t cellIdx = cellIndex(e, cellCol, cellRow);
+    const float cellCol = floorf(cellX / WALL_THICKNESS);
+    const float cellRow = floorf(cellY / WALL_THICKNESS);
+
     // set the cell to -1 if it's out of bounds
+    if (cellCol < 0.0f || cellCol >= e->map->columns || cellRow < 0.0f || cellRow >= e->map->rows) {
+        return -1;
+    }
+    const int16_t cellIdx = cellIndex(e, (int8_t)cellCol, (int8_t)cellRow);
     if (cellIdx < 0 || (uint16_t)cellIdx >= cc_array_size(e->cells)) {
         DEBUG_LOGF("invalid cell index: %d from position: (%f, %f)", cellIdx, pos.x, pos.y);
         return -1;
     }
+
     return cellIdx;
 }
 
@@ -852,9 +857,9 @@ void destroyDroneShield(iwEnv *e, shieldEntity *shield, const bool createPieces)
     const float health = shield->health;
     if (health <= 0.0f) {
         droneAddEnergy(drone, DRONE_SHIELD_BREAK_ENERGY_COST);
+        e->stats[drone->idx].ownShieldBroken++;
     }
     drone->shield = NULL;
-    e->stats[drone->idx].ownShieldBroken++;
 
     b2DestroyBody(shield->bodyID);
     b2DestroyShape(shield->bufferShapeID, false);
@@ -935,7 +940,15 @@ void droneChangeWeapon(const iwEnv *e, droneEntity *drone, const enum weaponType
     drone->ammo = weaponAmmo(e->defaultWeapon->type, drone->weaponInfo->type);
 }
 
-int8_t findBiggestContributor(iwEnv *e, const enum entityType type, const CC_Array *physicsTracking, const b2Vec2 lastVelocity, float *maxMoveContrib) {
+void applyContribDamping(const iwEnv *e, const uint16_t stepDiff, const float damping, b2Vec2 *contrib) {
+    const float perStepDamping = 1.0f / (1.0f + damping * e->deltaTime);
+    const float damp = powf(perStepDamping, stepDiff);
+    for (uint8_t k = 0; k < e->numDrones; k++) {
+        contrib[k] = b2MulSV(damp, contrib[k]);
+    }
+}
+
+int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const CC_Array *physicsTracking, const b2Vec2 lastVelocity, float *maxMoveContrib) {
     b2Vec2 contrib[e->numDrones];
     memset(contrib, 0x0, e->numDrones * sizeof(b2Vec2));
     uint16_t step = 0;
@@ -944,28 +957,23 @@ int8_t findBiggestContributor(iwEnv *e, const enum entityType type, const CC_Arr
     if (type != DRONE_ENTITY) {
         defaultDamping = FLOATING_WALL_DAMPING;
     }
-    float droneDamping = DRONE_LINEAR_DAMPING;
+    float damping = defaultDamping;
 
     // calculate the contribution of forces and impulses of each drone
     for (size_t i = 0; i < cc_array_size(physicsTracking); i++) {
         physicsStepInfo *physicsStep = safe_array_get_at(physicsTracking, i);
         // if the step has changed, apply damping to contributions
         if (physicsStep->step != step) {
-            const uint16_t stepDiff = physicsStep->step - step;
-            const float damp = 1.0f / (1.0f + (droneDamping * (e->deltaTime * stepDiff)));
-            for (uint8_t k = 0; k < e->numDrones; k++) {
-                contrib[k] = b2MulSV(damp, contrib[k]);
-            }
-
+            applyContribDamping(e, physicsStep->step - step, damping, contrib);
             step = physicsStep->step;
         }
 
         if (physicsStep->brakeToggled) {
             braking = !braking;
             if (braking) {
-                droneDamping = DRONE_BRAKE_DAMPING_COEF;
+                damping = DRONE_BRAKE_DAMPING_COEF;
             } else {
-                droneDamping = defaultDamping;
+                damping = defaultDamping;
             }
         }
 
@@ -975,12 +983,13 @@ int8_t findBiggestContributor(iwEnv *e, const enum entityType type, const CC_Arr
 
         // DEBUG_LOGF("# step %d drone %d contrib %f (%f, %f)", physicsStep->step, physicsStep->srcIdx, b2Length(contrib[physicsStep->srcIdx]), contrib[physicsStep->srcIdx].x, contrib[physicsStep->srcIdx].y);
     }
+    applyContribDamping(e, e->episodeLength - step, damping, contrib);
 
     // determine the killer by finding the drone that pushed the dead
     // drone towards the wall that killed it the most
     const b2Vec2 deathNormal = b2Normalize(lastVelocity);
     DEBUG_LOGF("> death normal (%f, %f) velocity (%f, %f)", deathNormal.x, deathNormal.y, lastVelocity.x, lastVelocity.y);
-    float maxContrib = -FLT_MAX;
+    float maxContrib = 1e-6f;
     int8_t killer = -1;
     for (uint8_t i = 0; i < e->numDrones; i++) {
         DEBUG_LOGF("---\n> src drone contrib %d %f (%f, %f)", i, b2Length(contrib[i]), contrib[i].x, contrib[i].y);
@@ -1045,6 +1054,12 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
 
     findDroneKiller(e, drone, killWall);
 
+    for (size_t i = 0; i < cc_array_size(drone->physicsTracking); i++) {
+        physicsStepInfo *physicsStep = safe_array_get_at(drone->physicsTracking, i);
+        fastFree(physicsStep);
+    }
+    cc_array_remove_all(drone->physicsTracking);
+
     drone->livesLeft--;
     drone->dead = true;
     drone->diedThisStep = true;
@@ -1052,6 +1067,11 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
 
     for (uint8_t i = 0; i < DRONE_PIECE_COUNT; i++) {
         createDronePiece(e, drone, false);
+    }
+
+    shieldEntity *shield = drone->shield;
+    if (shield != NULL) {
+        destroyDroneShield(e, shield, false);
     }
 
     b2Body_Disable(drone->bodyID);
@@ -1075,6 +1095,7 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
 
     drone->dead = false;
     drone->pos = pos;
+    drone->mapCellIdx = entityPosToCellIdx(e, drone->pos);
     drone->respawnGuideLifetime = UINT16_MAX;
     drone->killedBy = -1;
 
@@ -1308,25 +1329,8 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     case DRONE_ENTITY:
         drone = entity->entity;
         // the explosion shouldn't affect the parent drone if this is a burst
-        if (drone->idx == ctx->parentDrone->idx) {
-            if (ctx->isBurst) {
-                return true;
-            }
-
-            drone->stepInfo.ownShotTaken = true;
-            ctx->e->stats[drone->idx].ownShotsTaken[ctx->projectile->weaponInfo->type]++;
-            ctx->e->stats[drone->idx].totalOwnShotsTaken++;
-            DEBUG_LOGF("drone %d hit itself with explosion from weapon %d", drone->idx, ctx->projectile->weaponInfo->type);
-        }
-        if (ctx->isBurst) {
-            DEBUG_LOGF("drone %d hit drone %d with burst", ctx->parentDrone->idx, drone->idx);
-            ctx->e->stats[ctx->parentDrone->idx].burstsHit++;
-            DEBUG_LOGF("drone %d hit by burst from drone %d", drone->idx, ctx->parentDrone->idx);
-        } else {
-            DEBUG_LOGF("drone %d hit drone %d with explosion from weapon %d", ctx->parentDrone->idx, drone->idx, ctx->projectile->weaponInfo->type);
-            ctx->e->stats[ctx->parentDrone->idx].shotsHit[ctx->projectile->weaponInfo->type]++;
-            ctx->e->stats[ctx->parentDrone->idx].totalShotsHit++;
-            DEBUG_LOGF("drone %d hit by explosion from weapon %d from drone %d", drone->idx, ctx->projectile->weaponInfo->type, ctx->parentDrone->idx);
+        if (drone->idx == ctx->parentDrone->idx && ctx->isBurst) {
+            return true;
         }
         transform.p = drone->pos;
         transform.q = b2Rot_identity;
@@ -1503,6 +1507,22 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
 
         break;
     case DRONE_ENTITY:
+        if (drone->idx == ctx->parentDrone->idx && !ctx->isBurst) {
+            drone->stepInfo.ownShotTaken = true;
+            ctx->e->stats[drone->idx].ownShotsTaken[ctx->projectile->weaponInfo->type]++;
+            ctx->e->stats[drone->idx].totalOwnShotsTaken++;
+            DEBUG_LOGF("drone %d hit itself with explosion from weapon %d", drone->idx, ctx->projectile->weaponInfo->type);
+        } else if (ctx->isBurst) {
+            DEBUG_LOGF("drone %d hit drone %d with burst", ctx->parentDrone->idx, drone->idx);
+            ctx->e->stats[ctx->parentDrone->idx].burstsHit++;
+            DEBUG_LOGF("drone %d hit by burst from drone %d", drone->idx, ctx->parentDrone->idx);
+        } else {
+            DEBUG_LOGF("drone %d hit drone %d with explosion from weapon %d", ctx->parentDrone->idx, drone->idx, ctx->projectile->weaponInfo->type);
+            ctx->e->stats[ctx->parentDrone->idx].shotsHit[ctx->projectile->weaponInfo->type]++;
+            ctx->e->stats[ctx->parentDrone->idx].totalShotsHit++;
+            DEBUG_LOGF("drone %d hit by explosion from weapon %d from drone %d", drone->idx, ctx->projectile->weaponInfo->type, ctx->parentDrone->idx);
+        }
+
         applyTrackedImpulse(ctx->e, drone->bodyID, drone->physicsTracking, impulse, ctx->parentDrone->idx);
         drone->lastVelocity = drone->velocity;
         drone->velocity = b2Body_GetLinearVelocity(drone->bodyID);

@@ -3,7 +3,7 @@
 void randActions(iwEnv *e) {
     // e->lastRandState = e->rng;
     for (uint8_t i = 0; i < e->numDrones; i++) {
-        float* actions = agentActions(e, i);
+        float *actions = agentActions(e, i);
         actions[0] = randFloat(&e->rng, -1.0f, 1.0f);
         actions[1] = randFloat(&e->rng, -1.0f, 1.0f);
         actions[2] = randFloat(&e->rng, -1.0f, 1.0f);
@@ -26,8 +26,7 @@ void perfTest(const uint32_t numSteps) {
     printf("seed: %lu\n", seed);
     initEnv(e, NUM_DRONES, NUM_DRONES, -1, seed, false, false, true, false);
     for (uint8_t i = 0; i < e->numAgents; i++) {
-        posix_memalign((void **)&agentObs(e, i), sizeof(void *),
-            alignedSize(e->obsSize, sizeof(float)));
+        posix_memalign((void **)&agentObs(e, i), sizeof(void *), alignedSize(e->obsSize, sizeof(float)));
         agentActions(e, i) = fastCalloc(CONTINUOUS_ACTION_SIZE, sizeof(float));
         agentRewards(e, i) = fastCalloc(1, sizeof(float));
         agentTerminals(e, i) = fastCalloc(1, sizeof(uint8_t));

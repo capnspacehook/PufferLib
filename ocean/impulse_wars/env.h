@@ -124,7 +124,7 @@ void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffs
 
                 if (entityTypeIsWall(cell->ent->type)) {
                     agentObs(e, agentIdx)[offset] = (float)(cell->ent->type + 1) / 3.0f;
-                } 
+                }
                 // else if (cell->ent->type == WEAPON_PICKUP_ENTITY) {
                 //     e->observations[offset] |= 1 << 3;
                 // }
@@ -299,7 +299,7 @@ void computeObs(iwEnv *e) {
         }
 
         // compute discrete map observations
-        float* obs = agentObs(e, agentIdx);
+        float *obs = agentObs(e, agentIdx);
         const uint16_t discreteObsStart = 0;
         memset(obs, 0x0, e->obsSize * sizeof(float));
         computeMapObs(e, agentIdx, discreteObsStart);
@@ -816,7 +816,7 @@ static inline bool isActionNoop(const b2Vec2 action) {
 agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *manualActions) {
     agentActions actions = {0};
 
-    const float* envActions = agentActions(e, drone->idx);
+    const float *envActions = agentActions(e, drone->idx);
     if (manualActions == NULL) {
         if (e->continuousActions) {
             actions.move = (b2Vec2){.x = tanhf(envActions[0]), .y = tanhf(envActions[1])};
@@ -843,7 +843,7 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
 
             actions.chargingWeapon = envActions[2] > 0.0f;
             actions.brake = envActions[3] > 0.0f;
-            actions.chargingBurst = envActions[4] > 0.0f;   
+            actions.chargingBurst = envActions[4] > 0.0f;
         }
 
         actions.shoot = actions.chargingWeapon;
