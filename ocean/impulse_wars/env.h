@@ -497,9 +497,13 @@ void setupEnv(iwEnv *e) {
         createWeaponPickup(e);
     }
 
+    e->roundState = ROUND_STATE_PLAYING;
+    e->tick_frames_left = 0;
     if (e->client != NULL) {
+        e->roundState = ROUND_STATE_STARTING;
+        e->tick_frames_left = START_READY_TIME * e->frameRate;
+
         setupEnvCamera(e);
-        renderEnv(e, true, false, -1, -1);
     }
 
     computeObs(e);
@@ -510,16 +514,17 @@ void setupEnv(iwEnv *e) {
 void setEnvFrameRate(iwEnv *e) {
     float frameRate = TRAINING_FRAME_RATE;
     e->box2dSubSteps = TRAINING_BOX2D_SUBSTEPS;
+    e->frameSkip = frameRate / TRAINING_ACTIONS_PER_SECOND;
     // set a higher frame rate and physics substeps when evaluating
     // to make it more enjoyable to play
     if (!e->isTraining) {
         frameRate = EVAL_FRAME_RATE;
         e->box2dSubSteps = EVAL_BOX2D_SUBSTEPS;
+        e->frameSkip = 1;
     }
 
     e->frameRate = frameRate;
     e->deltaTime = 1.0f / (float)frameRate;
-    e->frameSkip = frameRate / TRAINING_ACTIONS_PER_SECOND;
 
     e->totalSteps = ROUND_STEPS * frameRate;
     e->totalSuddenDeathSteps = SUDDEN_DEATH_STEPS * frameRate;
@@ -593,6 +598,8 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     e->humanDroneInput = 0;
     e->connectedControllers = 0;
 
+    e->cachedActions = fastCalloc(e->numDrones, sizeof(agentActions));
+
 #ifndef NDEBUG
     create_array(&e->debugPoints, 4);
 #endif
@@ -618,9 +625,6 @@ void setRewards(iwEnv *e, float winReward, float selfKillPunishment, float enemy
 void clearEnv(iwEnv *e) {
     // rewards get cleared in stepEnv every step
     // memset(e->masks, 1, e->numAgents * sizeof(uint8_t));
-    for (uint8_t i = 0; i < e->numAgents; i++) {
-        agentTerminals(e, i)[0] = 0.0f;
-    }
 
     e->episodeLength = 0;
     memset(e->stats, 0x0, sizeof(e->stats));
@@ -666,6 +670,8 @@ void clearEnv(iwEnv *e) {
 
 void puf_close(iwEnv *e) {
     clearEnv(e);
+
+    fastFree(e->cachedActions);
 
     for (uint8_t i = 0; i < NUM_MAPS; i++) {
         pathingInfo *info = &e->mapPathing[i];
@@ -885,121 +891,6 @@ agentActions computeActions(iwEnv *e, droneEntity *drone, const agentActions *ma
     return actions;
 }
 
-void updateConnectedControllers(iwEnv *e) {
-    for (uint8_t i = 0; i < e->numDrones; i++) {
-        if (IsGamepadAvailable(i)) {
-            e->connectedControllers++;
-        }
-    }
-}
-
-void updateHumanInputToggle(iwEnv *e) {
-    if (IsKeyPressed(KEY_LEFT_CONTROL)) {
-        e->humanInput = !e->humanInput;
-        if (!e->humanInput) {
-            e->connectedControllers = 0;
-        }
-    }
-    if (e->humanInput && e->connectedControllers == 0) {
-        updateConnectedControllers(e);
-    }
-    if (e->connectedControllers > 1) {
-        e->humanDroneInput = e->numDrones - e->connectedControllers;
-        return;
-    }
-
-    if (IsKeyPressed(KEY_ONE) || IsKeyPressed(KEY_KP_1)) {
-        e->humanDroneInput = 0;
-    }
-    if (IsKeyPressed(KEY_TWO) || IsKeyPressed(KEY_KP_2)) {
-        e->humanDroneInput = 1;
-    }
-    if (e->numDrones >= 3 && (IsKeyPressed(KEY_THREE) || IsKeyPressed(KEY_KP_3))) {
-        e->humanDroneInput = 2;
-    }
-    if (e->numDrones >= 4 && (IsKeyPressed(KEY_FOUR) || IsKeyPressed(KEY_KP_4))) {
-        e->humanDroneInput = 3;
-    }
-}
-
-agentActions getPlayerInputs(iwEnv *e, droneEntity *drone, uint8_t gamepadIdx) {
-    if (IsKeyPressed(KEY_R)) {
-        e->needsReset = true;
-    }
-
-    agentActions actions = {0};
-
-    bool controllerConnected = false;
-    if (IsGamepadAvailable(gamepadIdx)) {
-        controllerConnected = true;
-    }
-    if (controllerConnected) {
-        float lStickX = GetGamepadAxisMovement(gamepadIdx, GAMEPAD_AXIS_LEFT_X);
-        float lStickY = GetGamepadAxisMovement(gamepadIdx, GAMEPAD_AXIS_LEFT_Y);
-        float rStickX = GetGamepadAxisMovement(gamepadIdx, GAMEPAD_AXIS_RIGHT_X);
-        float rStickY = GetGamepadAxisMovement(gamepadIdx, GAMEPAD_AXIS_RIGHT_Y);
-
-        if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_RIGHT_TRIGGER_2)) {
-            actions.chargingWeapon = true;
-            actions.shoot = true;
-        } else if (drone->chargingWeapon && IsGamepadButtonUp(gamepadIdx, GAMEPAD_BUTTON_RIGHT_TRIGGER_2)) {
-            actions.shoot = true;
-        }
-
-        if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_LEFT_TRIGGER_2)) {
-            actions.brake = true;
-        }
-
-        if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) || IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) {
-            actions.chargingBurst = true;
-        }
-
-        if (IsGamepadButtonPressed(gamepadIdx, GAMEPAD_BUTTON_RIGHT_FACE_LEFT)) {
-            actions.discardWeapon = true;
-        }
-
-        actions.move = (b2Vec2){.x = lStickX, .y = lStickY};
-        actions.aim = (b2Vec2){.x = rStickX, .y = rStickY};
-        return computeActions(e, drone, &actions);
-    }
-    if (!controllerConnected && drone->idx != e->humanDroneInput) {
-        return actions;
-    }
-
-    b2Vec2 move = b2Vec2_zero;
-    if (IsKeyDown(KEY_W)) {
-        move.y += -1.0f;
-    }
-    if (IsKeyDown(KEY_S)) {
-        move.y += 1.0f;
-    }
-    if (IsKeyDown(KEY_A)) {
-        move.x += -1.0f;
-    }
-    if (IsKeyDown(KEY_D)) {
-        move.x += 1.0f;
-    }
-    actions.move = b2Normalize(move);
-
-    Vector2 mousePos = (Vector2){.x = (float)GetMouseX(), .y = (float)GetMouseY()};
-    actions.aim = b2Normalize(b2Sub(rayVecToB2Vec(e, mousePos), drone->pos));
-
-    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-        actions.chargingWeapon = true;
-        actions.shoot = true;
-    } else if (drone->chargingWeapon && IsMouseButtonUp(MOUSE_BUTTON_LEFT)) {
-        actions.shoot = true;
-    }
-    if (IsKeyDown(KEY_SPACE)) {
-        actions.brake = true;
-    }
-    if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-        actions.chargingBurst = true;
-    }
-
-    return computeActions(e, drone, &actions);
-}
-
 bool droneControlledByHuman(const iwEnv *e, uint8_t i) {
     if (!e->humanInput) {
         return false;
@@ -1047,240 +938,254 @@ void addLog(iwEnv *e, Log *log) {
     e->log.n += 1.0f;
 }
 
+void updateTrailPoints(trailPoints *tp, const uint8_t maxLen, const b2Vec2 pos) {
+    const Vector2 v = (Vector2){.x = pos.x, .y = pos.y};
+    if (tp->length < maxLen) {
+        tp->points[tp->length++] = v;
+        return;
+    }
+
+    for (uint8_t i = 0; i < maxLen - 1; i++) {
+        tp->points[i] = tp->points[i + 1];
+    }
+    tp->points[maxLen - 1] = v;
+}
+
+void updateExplosions(iwEnv *e) {
+    CC_ArrayIter iter;
+    cc_array_iter_init(&iter, e->explosions);
+    explosionInfo *explosion;
+
+    while (cc_array_iter_next(&iter, (void **)&explosion) != CC_ITER_END) {
+        if (explosion->renderSteps == UINT16_MAX) {
+            explosion->renderSteps = e->client->maxExplosionLifetime;
+        } else if (explosion->renderSteps == 0) {
+            fastFree(explosion);
+            cc_array_iter_remove(&iter, NULL);
+        } else {
+            explosion->renderSteps = max(explosion->renderSteps - 1, 0);
+        }
+    }
+}
+
+void updateDronePieces(iwEnv *e) {
+    CC_ArrayIter iter;
+    cc_array_iter_init(&iter, e->dronePieces);
+    dronePieceEntity *piece;
+
+    while (cc_array_iter_next(&iter, (void **)&piece) != CC_ITER_END) {
+        if (piece->lifetime == UINT16_MAX) {
+            piece->lifetime = e->client->maxDronePieceLifetime;
+        } else if (piece->lifetime == 0) {
+            destroyDronePiece(e, piece);
+            cc_array_iter_remove_fast(&iter, NULL);
+        } else {
+            piece->lifetime--;
+        }
+    }
+}
+
+void updateDroneBrakeTrail(const iwEnv *e, droneEntity *drone) {
+    // update lifetimes and prune expired points
+    CC_ArrayIter iter;
+    cc_array_iter_init(&iter, drone->brakeTrailPoints);
+    brakeTrailPoint *pt;
+    while (cc_array_iter_next(&iter, (void **)&pt) != CC_ITER_END) {
+        if (pt->lifetime == UINT16_MAX) {
+            pt->lifetime = e->client->maxBrakeTrailLifetime;
+        } else if (pt->lifetime == 0) {
+            fastFree(pt);
+            cc_array_iter_remove(&iter, NULL);
+            continue;
+        } else {
+            pt->lifetime--;
+        }
+    }
+}
+
+void updateDroneRespawnGuide(iwEnv *e, droneEntity *drone) {
+    if (drone->respawnGuideLifetime == 0) {
+        return;
+    } else if (drone->respawnGuideLifetime == UINT16_MAX) {
+        drone->respawnGuideLifetime = e->client->maxDroneRespawnGuideLifetime;
+    } else {
+        drone->respawnGuideLifetime -= 1;
+    }
+}
+
+void updateVisuals(iwEnv *e) {
+    updateExplosions(e);
+    updateDronePieces(e);
+
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        updateDroneBrakeTrail(e, drone);
+        updateDroneRespawnGuide(e, drone);
+    }
+}
+
 // TODO: 2nd agent doesn't seem to work right
-void puf_step(iwEnv *e) {
-    if (e->needsReset) {
-        DEBUG_LOG("Resetting environment");
-        puf_reset(e);
-
-#ifdef __EMSCRIPTEN__
-        lastFrameTime = emscripten_get_now();
-        accumulator = 0.0;
-#endif
-    }
-
-#ifndef NDEBUG
-    for (uint8_t i = 0; i < cc_array_size(e->debugPoints); i++) {
-        debugPoint *point = safe_array_get_at(e->debugPoints, i);
-        fastFree(point);
-    }
-    cc_array_remove_all(e->debugPoints);
-#endif
-
-    agentActions stepActions[e->numDrones];
-    memset(stepActions, 0x0, e->numDrones * sizeof(agentActions));
-
-    // preprocess agent actions for the next frameSkip steps
+void stepPhysicsFrame(iwEnv *e, const agentActions stepActions[]) {
     for (uint8_t i = 0; i < e->numDrones; i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
-        if (drone->dead || droneControlledByHuman(e, i)) {
+        memset(&drone->stepInfo, 0x0, sizeof(droneStepInfo));
+        if (drone->dead) {
+            drone->diedThisStep = false;
+        }
+        memset(&drone->killed, 0x0, sizeof(drone->killed));
+    }
+
+    for (uint8_t i = 0; i < e->numDrones; i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (drone->dead) {
             continue;
         }
+        agentActions actions = stepActions[i];
 
-        if (i < e->numAgents) {
-            stepActions[i] = computeActions(e, drone, NULL);
+        if (actions.discardWeapon) {
+            droneDiscardWeapon(e, drone);
+        }
+        if (actions.shoot) {
+            droneShoot(e, drone, actions.aim, actions.chargingWeapon);
+        }
+        if (actions.chargingBurst) {
+            droneChargeBurst(e, drone);
+        } else if (drone->chargingBurst) {
+            droneBurst(e, drone);
+        }
+        if (!b2VecEqual(actions.move, b2Vec2_zero)) {
+            droneMove(e, drone, actions.move);
+        }
+        droneBrake(e, drone, actions.brake);
+
+        // update shield velocity if its active
+        if (drone->shield != NULL) {
+            b2Body_SetLinearVelocity(drone->shield->bodyID, b2Body_GetLinearVelocity(drone->bodyID));
+        }
+    }
+
+    b2World_Step(e->worldID, e->deltaTime, e->box2dSubSteps);
+
+    // update dynamic body positions and velocities
+    handleBodyMoveEvents(e);
+
+    // handle collisions
+    handleContactEvents(e);
+    handleSensorEvents(e);
+
+    // handle sudden death
+    e->stepsLeft = max(e->stepsLeft - 1, 0);
+    if ((!e->isTraining || e->numDrones == e->numAgents) && e->stepsLeft == 0) {
+        e->suddenDeathSteps = max(e->suddenDeathSteps - 1, 0);
+        if (e->suddenDeathSteps == 0) {
+            DEBUG_LOG("placing sudden death walls");
+            handleSuddenDeath(e);
+            e->suddenDeathSteps = e->totalSuddenDeathSteps;
+        }
+    }
+
+    projectilesStep(e);
+
+    int8_t lastAlive = -1;
+    int8_t lastAliveTeam = -1;
+    bool allAliveOnSameTeam = false;
+    bool roundOver = false;
+    uint8_t deadDrones = 0;
+    for (uint8_t i = 0; i < e->numDrones; i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (drone->livesLeft != 0) {
+            if (!droneStep(e, drone)) {
+                // couldn't find a respawn position, end the round
+                deadDrones++;
+                roundOver = true;
+            }
+            lastAlive = i;
+
+            if (e->teamsEnabled) {
+                if (lastAliveTeam == -1) {
+                    lastAliveTeam = drone->team;
+                    allAliveOnSameTeam = true;
+                } else if (drone->team != lastAliveTeam) {
+                    allAliveOnSameTeam = false;
+                }
+            }
         } else {
-            const agentActions scriptedActions = scriptedAgentActions(e, drone);
-            stepActions[i] = computeActions(e, drone, &scriptedActions);
+            deadDrones++;
+            if (i < e->numAgents) {
+                if (drone->diedThisStep) {
+                    agentTerminals(e, i)[0] = 1.0f;
+                }
+                // else {
+                //     e->masks[i] = 0;
+                // }
+            }
         }
     }
 
-    // reset reward buffer
-    for (uint8_t i = 0; i < e->numAgents; i++) {
-        agentRewards(e, i)[0] = 0;
+    weaponPickupsStep(e);
+
+    if (!roundOver) {
+        roundOver = deadDrones >= e->numDrones - 1;
+    }
+    if (e->teamsEnabled && allAliveOnSameTeam) {
+        roundOver = true;
+        lastAlive = -1;
+    }
+    // if the enemy drone(s) are scripted don't enable sudden death
+    // so that the agent has to work for victories
+    if (e->isTraining && e->numDrones != e->numAgents && e->stepsLeft == 0) {
+        roundOver = true;
+        lastAliveTeam = -1;
+    }
+    if (roundOver && deadDrones < e->numDrones - 1) {
+        lastAlive = -1;
+    }
+    computeRewards(e, roundOver, lastAlive, lastAliveTeam);
+
+    if (roundOver) {
+        if (e->numDrones != e->numAgents && e->stepsLeft == 0) {
+            DEBUG_LOG("truncating episode");
+        } else {
+            DEBUG_LOG("terminating episode");
+        }
+
+        for (uint8_t t = 0; t < e->numAgents; t++) {
+            agentTerminals(e, t)[0] = 1.0f;
+        }
+
+        Log log = {0};
+        log.length = e->episodeLength;
+        if (lastAlive != -1) {
+            e->stats[lastAlive].wins = 1.0f;
+        } else if (!e->teamsEnabled || (e->teamsEnabled && lastAliveTeam == -1)) {
+            log.ties = 1.0f;
+        }
+
+        for (uint8_t i = 0; i < e->numDrones; i++) {
+            const droneEntity *drone = safe_array_get_at(e->drones, i);
+            if (!drone->dead && e->teamsEnabled && drone->team == lastAliveTeam) {
+                e->stats[i].wins = 1.0f;
+            }
+            // set absolute distance traveled of agent drones
+            e->stats[i].absDistanceTraveled = b2Distance(drone->initalPos, drone->pos);
+        }
+
+        memcpy(log.stats, e->stats, sizeof(e->stats));
+        addLog(e, &log);
+
+        if (e->client != NULL) {
+            e->roundState = ROUND_STATE_ENDING;
+            e->tick_frames_left = END_WAIT_TIME * e->frameRate;
+
+            e->winner = lastAlive;
+            e->winningTeam = lastAliveTeam;
+        }
+
+        e->needsReset = true;
     }
 
-    for (int i = 0; i < e->frameSkip; i++) {
-#ifdef __EMSCRIPTEN__
-        // running at a fixed frame rate doesn't seem to work well in
-        // the browser, so we need to adjust to handle a variable frame
-        // rate; see https://www.gafferongames.com/post/fix_your_timestep/
-        const double curTime = emscripten_get_now();
-        const double deltaTime = (curTime - lastFrameTime) / 1000.0;
-        lastFrameTime = curTime;
-
-        accumulator += deltaTime;
-        while (accumulator >= e->deltaTime) {
-            if (e->needsReset) {
-                break;
-            }
-#endif
-            e->episodeLength++;
-
-            // handle actions
-            if (e->client != NULL) {
-                updateHumanInputToggle(e);
-            }
-
-            for (uint8_t i = 0; i < e->numDrones; i++) {
-                droneEntity *drone = safe_array_get_at(e->drones, i);
-                memset(&drone->stepInfo, 0x0, sizeof(droneStepInfo));
-                if (drone->dead) {
-                    drone->diedThisStep = false;
-                }
-                memset(&drone->killed, 0x0, sizeof(drone->killed));
-            }
-
-            for (uint8_t i = 0; i < e->numDrones; i++) {
-                droneEntity *drone = safe_array_get_at(e->drones, i);
-                if (drone->dead) {
-                    continue;
-                }
-
-                agentActions actions;
-                // take inputs from humans every frame
-                if (droneControlledByHuman(e, i)) {
-                    actions = getPlayerInputs(e, drone, i - e->humanDroneInput);
-                } else {
-                    actions = stepActions[i];
-                }
-
-                if (actions.discardWeapon) {
-                    droneDiscardWeapon(e, drone);
-                }
-                if (actions.shoot) {
-                    droneShoot(e, drone, actions.aim, actions.chargingWeapon);
-                }
-                if (actions.chargingBurst) {
-                    droneChargeBurst(e, drone);
-                } else if (drone->chargingBurst) {
-                    droneBurst(e, drone);
-                }
-                if (!b2VecEqual(actions.move, b2Vec2_zero)) {
-                    droneMove(e, drone, actions.move);
-                }
-                droneBrake(e, drone, actions.brake);
-
-                // update shield velocity if its active
-                if (drone->shield != NULL) {
-                    b2Body_SetLinearVelocity(drone->shield->bodyID, b2Body_GetLinearVelocity(drone->bodyID));
-                }
-            }
-
-            b2World_Step(e->worldID, e->deltaTime, e->box2dSubSteps);
-
-            // update dynamic body positions and velocities
-            handleBodyMoveEvents(e);
-
-            // handle collisions
-            handleContactEvents(e);
-            handleSensorEvents(e);
-
-            // handle sudden death
-            e->stepsLeft = max(e->stepsLeft - 1, 0);
-            if ((!e->isTraining || e->numDrones == e->numAgents) && e->stepsLeft == 0) {
-                e->suddenDeathSteps = max(e->suddenDeathSteps - 1, 0);
-                if (e->suddenDeathSteps == 0) {
-                    DEBUG_LOG("placing sudden death walls");
-                    handleSuddenDeath(e);
-                    e->suddenDeathSteps = e->totalSuddenDeathSteps;
-                }
-            }
-
-            projectilesStep(e);
-
-            int8_t lastAlive = -1;
-            int8_t lastAliveTeam = -1;
-            bool allAliveOnSameTeam = false;
-            bool roundOver = false;
-            uint8_t deadDrones = 0;
-            for (uint8_t i = 0; i < e->numDrones; i++) {
-                droneEntity *drone = safe_array_get_at(e->drones, i);
-                if (drone->livesLeft != 0) {
-                    if (!droneStep(e, drone)) {
-                        // couldn't find a respawn position, end the round
-                        deadDrones++;
-                        roundOver = true;
-                    }
-                    lastAlive = i;
-
-                    if (e->teamsEnabled) {
-                        if (lastAliveTeam == -1) {
-                            lastAliveTeam = drone->team;
-                            allAliveOnSameTeam = true;
-                        } else if (drone->team != lastAliveTeam) {
-                            allAliveOnSameTeam = false;
-                        }
-                    }
-                } else {
-                    deadDrones++;
-                    if (i < e->numAgents) {
-                        if (drone->diedThisStep) {
-                            agentTerminals(e, i)[0] = 1.0f;
-                        }
-                        // else {
-                        //     e->masks[i] = 0;
-                        // }
-                    }
-                }
-            }
-
-            weaponPickupsStep(e);
-
-            if (!roundOver) {
-                roundOver = deadDrones >= e->numDrones - 1;
-            }
-            if (e->teamsEnabled && allAliveOnSameTeam) {
-                roundOver = true;
-                lastAlive = -1;
-            }
-            // if the enemy drone(s) are scripted don't enable sudden death
-            // so that the agent has to work for victories
-            if (e->isTraining && e->numDrones != e->numAgents && e->stepsLeft == 0) {
-                roundOver = true;
-                lastAliveTeam = -1;
-            }
-            if (roundOver && deadDrones < e->numDrones - 1) {
-                lastAlive = -1;
-            }
-            computeRewards(e, roundOver, lastAlive, lastAliveTeam);
-
-            if (e->client != NULL) {
-                renderEnv(e, false, roundOver, lastAlive, lastAliveTeam);
-            }
-
-            if (roundOver) {
-                if (e->numDrones != e->numAgents && e->stepsLeft == 0) {
-                    DEBUG_LOG("truncating episode");
-                } else {
-                    DEBUG_LOG("terminating episode");
-                }
-
-                for (uint8_t t = 0; t < e->numAgents; t++) {
-                    agentTerminals(e, t)[0] = 1.0f;
-                }
-
-                Log log = {0};
-                log.length = e->episodeLength;
-                if (lastAlive != -1) {
-                    e->stats[lastAlive].wins = 1.0f;
-                } else if (!e->teamsEnabled || (e->teamsEnabled && lastAliveTeam == -1)) {
-                    log.ties = 1.0f;
-                }
-
-                for (uint8_t i = 0; i < e->numDrones; i++) {
-                    const droneEntity *drone = safe_array_get_at(e->drones, i);
-                    if (!drone->dead && e->teamsEnabled && drone->team == lastAliveTeam) {
-                        e->stats[i].wins = 1.0f;
-                    }
-                    // set absolute distance traveled of agent drones
-                    e->stats[i].absDistanceTraveled = b2Distance(drone->initalPos, drone->pos);
-                }
-
-                memcpy(log.stats, e->stats, sizeof(e->stats));
-                addLog(e, &log);
-
-                e->needsReset = true;
-                break;
-            }
-#ifdef __EMSCRIPTEN__
-            accumulator -= e->deltaTime;
-        }
-
-        if (e->needsReset) {
-            break;
-        }
-#endif
+    if (e->client != NULL) {
+        updateVisuals(e);
     }
 
 #ifndef NDEBUG
@@ -1303,8 +1208,120 @@ void puf_step(iwEnv *e) {
         DEBUG_RAW_LOGF("] step %d\n", e->totalSteps - e->stepsLeft);
     }
 #endif
+}
 
-    computeObs(e);
+void stepPhysicsFrameMinimal(iwEnv *e) {
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (drone->dead || drone->shield == NULL) {
+            continue;
+        }
+
+        // update shield velocity if its active
+        b2Body_SetLinearVelocity(drone->shield->bodyID, b2Body_GetLinearVelocity(drone->bodyID));
+    };
+
+    b2World_Step(e->worldID, e->deltaTime, e->box2dSubSteps);
+
+    handleBodyMoveEvents(e);
+    handleContactEvents(e);
+    handleSensorEvents(e);
+
+    projectilesStep(e);
+
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (drone->dead) {
+            continue;
+        }
+        droneStep(e, drone);
+    }
+
+    updateVisuals(e);
+}
+
+void puf_step(iwEnv *e) {
+    if (e->client != NULL) {
+        if (e->roundState == ROUND_STATE_ENDING) {
+            if (e->tick_frames_left > 0) {
+                stepPhysicsFrameMinimal(e);
+                e->tick_frames_left--;
+            }
+
+            if (e->tick_frames_left == 0) {
+                DEBUG_LOG("Resetting environment");
+                puf_reset(e);
+            }
+            return;
+        }
+
+        if (e->needsReset) {
+            DEBUG_LOG("Resetting environment");
+            puf_reset(e);
+            return;
+        }
+
+        if (e->roundState == ROUND_STATE_STARTING) {
+            if (e->tick_frames_left > 0) {
+                e->tick_frames_left--;
+                return;
+            }
+
+            e->roundState = ROUND_STATE_PLAYING;
+        }
+    }
+
+    for (uint8_t i = 0; i < e->numAgents; i++) {
+        agentTerminals(e, i)[0] = 0.0f;
+    }
+
+    if (e->client == NULL || e->tick_frames_left <= 0) {
+        e->tick_frames_left = e->frameRate / TRAINING_ACTIONS_PER_SECOND;
+
+#ifndef NDEBUG
+        for (uint8_t i = 0; i < cc_array_size(e->debugPoints); i++) {
+            debugPoint *point = safe_array_get_at(e->debugPoints, i);
+            fastFree(point);
+        }
+        cc_array_remove_all(e->debugPoints);
+#endif
+
+        // preprocess agent actions for the next frameSkip steps
+        for (uint8_t i = 0; i < e->numDrones; i++) {
+            droneEntity *drone = safe_array_get_at(e->drones, i);
+            if (drone->dead || droneControlledByHuman(e, i)) {
+                continue;
+            }
+
+            if (i < e->numAgents) {
+                e->cachedActions[i] = computeActions(e, drone, NULL);
+            } else {
+                const agentActions scriptedActions = scriptedAgentActions(e, drone);
+                e->cachedActions[i] = computeActions(e, drone, &scriptedActions);
+            }
+        }
+
+        // reset reward buffer
+        for (uint8_t i = 0; i < e->numAgents; i++) {
+            agentRewards(e, i)[0] = 0.0f;
+        }
+    }
+
+    for (int i = 0; i < e->frameSkip; i++) {
+        e->episodeLength++;
+        stepPhysicsFrame(e, e->cachedActions);
+        e->tick_frames_left--;
+
+        if (e->needsReset) {
+            break;
+        }
+    }
+
+    if (e->client == NULL && e->needsReset) {
+        puf_reset(e);
+    } else if (e->client == NULL || e->tick_frames_left == 0) {
+        computeObs(e);
+    }
 }
 
 #endif

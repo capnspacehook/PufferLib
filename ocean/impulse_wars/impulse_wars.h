@@ -55,6 +55,11 @@ void puf_log(Log *log, Dict *out);
 #include "env.h"
 #include <pthread.h>
 
+#define PUF_STEPS_PER_SEC _EVAL_FRAME_RATE
+#ifdef PUFFERCPU_EVAL_MAIN
+#define PUF_EVAL_SHOULD_FORWARD
+#endif
+
 int b2InternalAssertFcn(const char *condition, const char *fileName, int lineNumber) {
     fprintf(stderr, "box2d assert %s at %s:%d\n", condition, fileName, lineNumber);
     return 1;

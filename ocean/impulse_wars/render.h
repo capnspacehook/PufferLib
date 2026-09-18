@@ -9,6 +9,10 @@
 
 #include "helpers.h"
 
+void setEnvFrameRate(iwEnv *e);
+bool droneControlledByHuman(const iwEnv *e, uint8_t i);
+agentActions computeActions(iwEnv *e, droneEntity *drone, const agentActions *manualActions);
+
 #if defined(PLATFORM_DESKTOP)
 #define GLSL_VERSION 330
 #else // PLATFORM_ANDROID, PLATFORM_WEB
@@ -29,9 +33,6 @@ static const Color PUFF_CYAN = BLUE;
 static const Color PUFF_WHITE = RAYWHITE;
 static const Color PUFF_BACKGROUND = BLACK;
 static const Color PUFF_BACKGROUND2 = BLACK;
-
-void setEnvFrameRate(iwEnv *e);
-bool droneControlledByHuman(const iwEnv *e, uint8_t i);
 
 static const float DEFAULT_SCALE = 11.0f;
 static const uint16_t DEFAULT_WIDTH = 1280;
@@ -61,19 +62,6 @@ static const float chargedAimGuideLength = DRONE_RADIUS;
 
 static inline b2Vec2 rayVecToB2Vec(const iwEnv *e, const Vector2 v) {
     return (b2Vec2){.x = (v.x - e->client->halfWidth) / e->renderScale, .y = ((v.y - e->client->halfHeight - (2 * e->renderScale)) / e->renderScale)};
-}
-
-void updateTrailPoints(trailPoints *tp, const uint8_t maxLen, const b2Vec2 pos) {
-    const Vector2 v = (Vector2){.x = pos.x, .y = pos.y};
-    if (tp->length < maxLen) {
-        tp->points[tp->length++] = v;
-        return;
-    }
-
-    for (uint8_t i = 0; i < maxLen - 1; i++) {
-        tp->points[i] = tp->points[i + 1];
-    }
-    tp->points[maxLen - 1] = v;
 }
 
 rayClient *createRayClient() {
@@ -149,19 +137,12 @@ rayClient *createRayClient() {
     client->bloomTexColorLoc = GetShaderLocation(client->bloomShader, "uTexColor");
     client->bloomTexBloomBlurLoc = GetShaderLocation(client->bloomShader, "uTexBloomBlur");
 
-    return client;
-}
+    client->maxExplosionLifetime = EXPLOSION_TIME * EVAL_FRAME_RATE;
+    client->maxDronePieceLifetime = DRONE_PIECE_LIFETIME * EVAL_FRAME_RATE;
+    client->maxBrakeTrailLifetime = 3.0f * EVAL_FRAME_RATE;
+    client->maxDroneRespawnGuideLifetime = (DRONE_RESPAWN_GUIDE_SHRINK_TIME + DRONE_RESPAWN_GUIDE_HOLD_TIME) * EVAL_FRAME_RATE;
 
-void puf_render(iwEnv *e) {
-    if (e->client != NULL) {
-        return;
-    }
-    // create a rendering client, change the env to eval mode and ensure
-    // it's reset so training only maps and behaviors aren't evaluated
-    e->client = createRayClient();
-    e->isTraining = false;
-    setEnvFrameRate(e);
-    e->needsReset = true;
+    return client;
 }
 
 void destroyRayClient(rayClient *client) {
@@ -180,6 +161,121 @@ void destroyRayClient(rayClient *client) {
     CloseWindow();
     fastFree(client->camera);
     fastFree(client);
+}
+
+void updateConnectedControllers(iwEnv *e) {
+    for (uint8_t i = 0; i < e->numDrones; i++) {
+        if (IsGamepadAvailable(i)) {
+            e->connectedControllers++;
+        }
+    }
+}
+
+void updateHumanInputToggle(iwEnv *e) {
+    if (IsKeyPressed(KEY_LEFT_CONTROL)) {
+        e->humanInput = !e->humanInput;
+        if (!e->humanInput) {
+            e->connectedControllers = 0;
+        }
+    }
+    if (e->humanInput && e->connectedControllers == 0) {
+        updateConnectedControllers(e);
+    }
+    if (e->connectedControllers > 1) {
+        e->humanDroneInput = e->numDrones - e->connectedControllers;
+        return;
+    }
+
+    if (IsKeyPressed(KEY_ONE) || IsKeyPressed(KEY_KP_1)) {
+        e->humanDroneInput = 0;
+    }
+    if (IsKeyPressed(KEY_TWO) || IsKeyPressed(KEY_KP_2)) {
+        e->humanDroneInput = 1;
+    }
+    if (e->numDrones >= 3 && (IsKeyPressed(KEY_THREE) || IsKeyPressed(KEY_KP_3))) {
+        e->humanDroneInput = 2;
+    }
+    if (e->numDrones >= 4 && (IsKeyPressed(KEY_FOUR) || IsKeyPressed(KEY_KP_4))) {
+        e->humanDroneInput = 3;
+    }
+}
+
+agentActions getPlayerInputs(iwEnv *e, droneEntity *drone, uint8_t gamepadIdx) {
+    if (IsKeyPressed(KEY_R)) {
+        e->needsReset = true;
+    }
+
+    agentActions actions = {0};
+
+    bool controllerConnected = false;
+    if (IsGamepadAvailable(gamepadIdx)) {
+        controllerConnected = true;
+    }
+    if (controllerConnected) {
+        float lStickX = GetGamepadAxisMovement(gamepadIdx, GAMEPAD_AXIS_LEFT_X);
+        float lStickY = GetGamepadAxisMovement(gamepadIdx, GAMEPAD_AXIS_LEFT_Y);
+        float rStickX = GetGamepadAxisMovement(gamepadIdx, GAMEPAD_AXIS_RIGHT_X);
+        float rStickY = GetGamepadAxisMovement(gamepadIdx, GAMEPAD_AXIS_RIGHT_Y);
+
+        if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_RIGHT_TRIGGER_2)) {
+            actions.chargingWeapon = true;
+            actions.shoot = true;
+        } else if (drone->chargingWeapon && IsGamepadButtonUp(gamepadIdx, GAMEPAD_BUTTON_RIGHT_TRIGGER_2)) {
+            actions.shoot = true;
+        }
+
+        if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_LEFT_TRIGGER_2)) {
+            actions.brake = true;
+        }
+
+        if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) || IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) {
+            actions.chargingBurst = true;
+        }
+
+        if (IsGamepadButtonPressed(gamepadIdx, GAMEPAD_BUTTON_RIGHT_FACE_LEFT)) {
+            actions.discardWeapon = true;
+        }
+
+        actions.move = (b2Vec2){.x = lStickX, .y = lStickY};
+        actions.aim = (b2Vec2){.x = rStickX, .y = rStickY};
+        return computeActions(e, drone, &actions);
+    }
+    if (!controllerConnected && drone->idx != e->humanDroneInput) {
+        return actions;
+    }
+
+    b2Vec2 move = b2Vec2_zero;
+    if (IsKeyDown(KEY_W)) {
+        move.y += -1.0f;
+    }
+    if (IsKeyDown(KEY_S)) {
+        move.y += 1.0f;
+    }
+    if (IsKeyDown(KEY_A)) {
+        move.x += -1.0f;
+    }
+    if (IsKeyDown(KEY_D)) {
+        move.x += 1.0f;
+    }
+    actions.move = b2Normalize(move);
+
+    Vector2 mousePos = (Vector2){.x = (float)GetMouseX(), .y = (float)GetMouseY()};
+    actions.aim = b2Normalize(b2Sub(rayVecToB2Vec(e, mousePos), drone->pos));
+
+    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        actions.chargingWeapon = true;
+        actions.shoot = true;
+    } else if (drone->chargingWeapon && IsMouseButtonUp(MOUSE_BUTTON_LEFT)) {
+        actions.shoot = true;
+    }
+    if (IsKeyDown(KEY_SPACE)) {
+        actions.brake = true;
+    }
+    if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+        actions.chargingBurst = true;
+    }
+
+    return computeActions(e, drone, &actions);
 }
 
 static const float ZOOM_SPEED = 0.04f;
@@ -856,27 +952,10 @@ void renderUI(const iwEnv *e, const bool starting) {
     renderTimer(e, timerStr, PUFF_WHITE);
 }
 
-// TODO: track when trails begine and end (ie when respawning)
+// TODO: track when trails begin and end (ie when respawning)
 void renderBrakeTrails(iwEnv *e, const droneEntity *drone) {
-    const float maxLifetime = 3.0f * e->frameRate;
     const float maxAlpha = 0.33f;
     const float trailWidth = 0.33f;
-
-    // update lifetimes and prune expired points
-    CC_ArrayIter iter;
-    cc_array_iter_init(&iter, drone->brakeTrailPoints);
-    brakeTrailPoint *pt;
-    while (cc_array_iter_next(&iter, (void **)&pt) != CC_ITER_END) {
-        if (pt->lifetime == UINT16_MAX) {
-            pt->lifetime = maxLifetime;
-        } else if (pt->lifetime == 0) {
-            fastFree(pt);
-            cc_array_iter_remove(&iter, NULL);
-            continue;
-        } else {
-            pt->lifetime--;
-        }
-    }
 
     size_t count = cc_array_size(drone->brakeTrailPoints);
     if (count < 2) {
@@ -907,8 +986,8 @@ void renderBrakeTrails(iwEnv *e, const droneEntity *drone) {
         const Vector2 v3 = Vector2Subtract(p1, Vector2Scale(perp, trailWidth));
 
         // draw the quad as two triangles
-        const float alpha0 = maxAlpha * (trailPoint0->lifetime / maxLifetime);
-        const float alpha1 = maxAlpha * (trailPoint1->lifetime / maxLifetime);
+        const float alpha0 = maxAlpha * (trailPoint0->lifetime / e->client->maxBrakeTrailLifetime);
+        const float alpha1 = maxAlpha * (trailPoint1->lifetime / e->client->maxBrakeTrailLifetime);
         DrawTriangle3D(
             (Vector3){.x = v0.x, .y = 0.0f, .z = v0.y},
             (Vector3){.x = v2.x, .y = 0.0f, .z = v2.y},
@@ -926,23 +1005,13 @@ void renderBrakeTrails(iwEnv *e, const droneEntity *drone) {
 
 // TODO: make 2D circles
 void renderExplosions(const iwEnv *e) {
-    const uint16_t maxRenderSteps = EXPLOSION_TIME * e->frameRate;
-
     CC_ArrayIter iter;
     cc_array_iter_init(&iter, e->explosions);
     explosionInfo *explosion;
 
     while (cc_array_iter_next(&iter, (void **)&explosion) != CC_ITER_END) {
-        if (explosion->renderSteps == UINT16_MAX) {
-            explosion->renderSteps = maxRenderSteps;
-        } else if (explosion->renderSteps == 0) {
-            fastFree(explosion);
-            cc_array_iter_remove(&iter, NULL);
-            continue;
-        }
-
         // color bursts with a bit of the parent drone's color
-        const float alpha = (float)explosion->renderSteps / maxRenderSteps;
+        const float alpha = (float)explosion->renderSteps / e->client->maxExplosionLifetime;
         BeginBlendMode(BLEND_ALPHA);
         if (false && explosion->isBurst) {
             const Color droneColor = Fade(getDroneColor(explosion->droneIdx), alpha);
@@ -980,8 +1049,6 @@ void renderExplosions(const iwEnv *e) {
             );
         }
         EndBlendMode();
-
-        explosion->renderSteps = max(explosion->renderSteps - 1, 0);
     }
 }
 
@@ -1104,22 +1171,16 @@ void renderWeaponPickup(const iwEnv *e, const weaponPickupEntity *pickup) {
 }
 
 void renderDronePieces(iwEnv *e) {
-    const float maxLifetime = e->frameRate * DRONE_PIECE_LIFETIME;
-
     CC_ArrayIter iter;
     cc_array_iter_init(&iter, e->dronePieces);
     dronePieceEntity *piece;
 
     while (cc_array_iter_next(&iter, (void **)&piece) != CC_ITER_END) {
-        if (piece->lifetime == UINT16_MAX) {
-            piece->lifetime = maxLifetime;
-        }
-
         float baseAlpha = 1.0f;
         if (piece->isShieldPiece) {
             baseAlpha = 0.5f;
         }
-        const float alpha = 1.0f - (baseAlpha * ((float)piece->lifetime / maxLifetime));
+        const float alpha = 1.0f - (baseAlpha * ((float)piece->lifetime / e->client->maxDronePieceLifetime));
         const float finalAlpha = 1.0f - (SQUARED(alpha) * alpha);
         const Color color = Fade(getDroneColor(piece->droneIdx), finalAlpha);
         const float angle = RAD2DEG * b2Rot_GetAngle(piece->rot);
@@ -1144,12 +1205,6 @@ void renderDronePieces(iwEnv *e) {
         rlEnd();
 
         rlPopMatrix();
-
-        piece->lifetime--;
-        if (piece->lifetime == 0) {
-            destroyDronePiece(e, piece);
-            cc_array_iter_remove_fast(&iter, NULL);
-        }
     }
 }
 
@@ -1158,14 +1213,9 @@ void renderDroneRespawnGuides(const iwEnv *e, droneEntity *drone) {
         return;
     }
 
-    const float maxLifetime = e->frameRate * (DRONE_RESPAWN_GUIDE_SHRINK_TIME + DRONE_RESPAWN_GUIDE_HOLD_TIME);
     const uint16_t shrinkTime = e->frameRate * DRONE_RESPAWN_GUIDE_SHRINK_TIME;
-    if (drone->respawnGuideLifetime == UINT16_MAX) {
-        drone->respawnGuideLifetime = maxLifetime;
-    }
-
     float radius = DRONE_RESPAWN_GUIDE_MIN_RADIUS;
-    if (drone->respawnGuideLifetime >= maxLifetime - shrinkTime) {
+    if (drone->respawnGuideLifetime >= e->client->maxDroneRespawnGuideLifetime - shrinkTime) {
         radius += DRONE_RESPAWN_GUIDE_MAX_RADIUS * ((drone->respawnGuideLifetime - (e->frameRate * DRONE_RESPAWN_GUIDE_HOLD_TIME)) / shrinkTime);
     }
 
@@ -1488,39 +1538,7 @@ void applyBloom(const iwEnv *e, RenderTexture2D srcTex, RenderTexture2D dstTex, 
     EndTextureMode();
 }
 
-void minimalStepEnv(iwEnv *e) {
-    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
-        droneEntity *drone = safe_array_get_at(e->drones, i);
-        if (drone->dead || drone->shield == NULL) {
-            continue;
-        }
-
-        // update shield velocity if its active
-        b2Body_SetLinearVelocity(drone->shield->bodyID, b2Body_GetLinearVelocity(drone->bodyID));
-    };
-
-    b2World_Step(e->worldID, e->deltaTime, e->box2dSubSteps);
-
-    handleBodyMoveEvents(e);
-    handleContactEvents(e);
-    handleSensorEvents(e);
-
-    projectilesStep(e);
-
-    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
-        droneEntity *drone = safe_array_get_at(e->drones, i);
-        if (drone->dead) {
-            continue;
-        }
-        droneStep(e, drone);
-    }
-}
-
-void _renderEnv(iwEnv *e, const bool starting, const bool ending, const int8_t winner, const int8_t winningTeam) {
-    if (ending) {
-        minimalStepEnv(e);
-    }
-
+void renderEnv(iwEnv *e) {
     // UpdateCamera(&e->client->camera3D, CAMERA_ORBITAL);
 
     updateCamera(e);
@@ -1685,7 +1703,7 @@ void _renderEnv(iwEnv *e, const bool starting, const bool ending, const int8_t w
         if (drone->dead) {
             continue;
         }
-        renderDroneGuides(e, drone, ending);
+        renderDroneGuides(e, drone, e->roundState == ROUND_STATE_ENDING);
     }
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
         const droneEntity *drone = safe_array_get_at(e->drones, i);
@@ -1742,38 +1760,44 @@ void _renderEnv(iwEnv *e, const bool starting, const bool ending, const int8_t w
         renderDroneAmmo(e, drone);
     }
 
+    const bool starting = e->roundState == ROUND_STATE_STARTING;
     renderUI(e, starting);
 
-    if (starting || ending) {
-        renderBannerText(e, starting, winner, winningTeam);
+    if (starting || e->roundState == ROUND_STATE_ENDING) {
+        renderBannerText(e, starting, e->winner, e->winningTeam);
     }
 
     EndDrawing();
+
     puf_web_vsync();
 }
 
-void renderWait(iwEnv *e, const bool starting, const bool ending, const int8_t winner, const int8_t winningTeam, const float time) {
-#ifdef __EMSCRIPTEN__
-    const double startTime = emscripten_get_now();
-    while (time > (emscripten_get_now() - startTime) / 1000.0) {
-        _renderEnv(e, starting, ending, winner, winningTeam);
-        emscripten_sleep(e->deltaTime * 1000.0);
+void puf_render(iwEnv *e) {
+    if (e->client == NULL) {
+        // create a rendering client, change the env to eval mode and ensure
+        // it's reset so training only maps and behaviors aren't evaluated
+        e->client = createRayClient();
+        e->isTraining = false;
+        setEnvFrameRate(e);
+        // FIXME: is this necessary?
+        e->needsReset = true;
     }
-#else
-    for (uint16_t i = 0; i < (uint16_t)(time * e->frameRate); i++) {
-        _renderEnv(e, starting, ending, winner, winningTeam);
-    }
-#endif
-}
 
-void renderEnv(iwEnv *e, const bool starting, const bool ending, const int8_t winner, const int8_t winningTeam) {
-    if (starting) {
-        renderWait(e, starting, ending, winner, winningTeam, START_READY_TIME);
-    } else if (ending) {
-        renderWait(e, starting, ending, winner, winningTeam, END_WAIT_TIME);
-    } else {
-        _renderEnv(e, starting, ending, winner, winningTeam);
+    // take inputs from humans every frame
+    updateHumanInputToggle(e);
+
+    for (uint8_t i = 0; i < e->numDrones; i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (drone->dead) {
+            continue;
+        }
+
+        if (droneControlledByHuman(e, i)) {
+            e->cachedActions[i] = getPlayerInputs(e, drone, i - e->humanDroneInput);
+        }
     }
+
+    renderEnv(e);
 }
 
 #endif

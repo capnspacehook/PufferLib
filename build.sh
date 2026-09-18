@@ -240,6 +240,11 @@ else
     NVCC_OPT="-O2 --threads 0"
     LINK_OPT="-O2"
 fi
+
+if [ "$ENV" = "impulse_wars" ] && [ "$MODE" = "cpu" ] && [ -z "$DEBUG" ]; then
+    CLANG_OPT+=(-flto -fno-math-errno)
+fi
+
 # Dashboard / cache / trailer: compile SRC_FILE only (not puffercpu / CUDA / obs_t).
 if [ "$STANDALONE" = "1" ]; then
     if [ "$MODE" = "web" ] || [ "$MODE" = "profile" ]; then

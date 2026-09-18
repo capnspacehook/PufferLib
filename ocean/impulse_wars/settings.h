@@ -12,7 +12,8 @@ static const uint8_t TRAINING_ACTIONS_PER_SECOND = 10;
 static const uint8_t TRAINING_FRAME_RATE = 30;
 static const uint8_t TRAINING_BOX2D_SUBSTEPS = 2;
 
-static const uint8_t EVAL_FRAME_RATE = 120;
+#define _EVAL_FRAME_RATE 120
+static const uint8_t EVAL_FRAME_RATE = _EVAL_FRAME_RATE;
 static const uint8_t EVAL_BOX2D_SUBSTEPS = 4;
 
 static const uint8_t NUM_MAPS = 9;

@@ -342,6 +342,13 @@ struct Log {
     float n;
 };
 
+enum roundState {
+    ROUND_STATE_INVALID,
+    ROUND_STATE_STARTING,
+    ROUND_STATE_PLAYING,
+    ROUND_STATE_ENDING,
+};
+
 typedef struct gameCamera {
     Camera3D camera3D;
     Camera2D camera2D;
@@ -375,6 +382,11 @@ typedef struct rayClient {
     RenderTexture2D projBloomTex;
     RenderTexture2D droneRawTex;
     RenderTexture2D droneBloomTex;
+
+    float maxExplosionLifetime;
+    float maxDronePieceLifetime;
+    float maxBrakeTrailLifetime;
+    float maxDroneRespawnGuideLifetime;
 } rayClient;
 
 typedef struct brakeTrailPoint {
@@ -485,12 +497,17 @@ struct Env {
     bool humanInput;
     uint8_t humanDroneInput;
     uint8_t connectedControllers;
+    agentActions *cachedActions;
 
     // used for rendering
     rayClient *client;
     float renderScale;
     CC_Array *explosions;
     CC_Array *debugPoints;
+    enum roundState roundState;
+    uint16_t tick_frames_left;
+    int8_t winner;
+    int8_t winningTeam;
 };
 typedef struct Env iwEnv;
 
