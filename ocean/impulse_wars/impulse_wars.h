@@ -1,3 +1,25 @@
+#ifndef IMPULSE_WARS_OBS_T
+#define IMPULSE_WARS_OBS_T
+typedef float obs_t;
+#endif
+
+// uncomment to use continuous actions
+// #define NUM_ATNS 7
+// #define ACT_SIZES {1, 1, 1, 1, 1, 1, 1}
+// #define CONTINUOUS_ACTIONS 1
+
+// actions:
+// 9: move, noop + 8 directions
+// 17: aim, noop + 16 directions
+// 2: shoot or not
+// 2: brake or not
+// 2: burst or not
+#define NUM_ATNS 5
+#define ACT_SIZES {9, 17, 2, 2, 2}
+#define CONTINUOUS_ACTIONS 0
+
+#define OBS_SIZE 395 // for 2 drones (players)
+
 #ifdef __cplusplus
 // Game/Box2D/collections-c are C (void* implicit conv); pufferl.cu is C++17.
 #define puf_init puf_init_cxx_decl
@@ -33,32 +55,8 @@ void puf_log(Log* log, Dict* out);
 #include "env.h"
 #include <pthread.h>
 
-#ifndef IMPULSE_WARS_OBS_T
-#define IMPULSE_WARS_OBS_T
-typedef float obs_t;
-#endif
-
-// uncomment to use continuous actions
-// #define NUM_ATNS 7
-// #define ACT_SIZES {1, 1, 1, 1, 1, 1, 1}
-// #define CONTINUOUS_ACTIONS 1
-
-// actions:
-// 9: move, noop + 8 directions
-// 17: aim, noop + 16 directions
-// 2: shoot or not
-// 2: brake or not
-// 2: burst or not
-#define NUM_ATNS 5
-#define ACT_SIZES {9, 17, 2, 2, 2}
-#define CONTINUOUS_ACTIONS 0
-
-#define OBS_SIZE 395 // for 2 drones (players)
-
-int b2InternalAssertFcn(const char* condition, const char* fileName,
-        int lineNumber) {
-    fprintf(stderr, "box2d assert %s at %s:%d\n", condition, fileName,
-        lineNumber);
+int b2InternalAssertFcn(const char* condition, const char* fileName, int lineNumber) {
+    fprintf(stderr, "box2d assert %s at %s:%d\n", condition, fileName, lineNumber);
     return 1;
 }
 
@@ -66,11 +64,10 @@ void puf_init(Env* env, Dict* kwargs) {
     uint8_t num_drones = dict_get(kwargs, "num_drones");
     uint8_t num_agents = dict_get(kwargs, "num_agents");
     int8_t map_idx = dict_get(kwargs, "map_idx");
-    uint64_t seed = dict_get(kwargs, "seed");
     bool enable_teams = dict_get(kwargs, "enable_teams");
     bool sitting_duck = dict_get(kwargs, "sitting_duck");
     bool is_training = dict_get(kwargs, "is_training");
-    initEnv(env, num_drones, num_agents, map_idx, seed, enable_teams,
+    initEnv(env, num_drones, num_agents, map_idx, env->rng, enable_teams,
         sitting_duck, is_training, (bool)CONTINUOUS_ACTIONS);
 
     static pthread_mutex_t maps_mu = PTHREAD_MUTEX_INITIALIZER;

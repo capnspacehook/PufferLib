@@ -708,7 +708,7 @@ static b2ShapeId weaponSensor(const b2BodyId bodyID, const enum weaponType type)
 }
 
 // amount of force to apply to projectile
-static float weaponFire(uint64_t *seed, const enum weaponType type) {
+static float weaponFire(unsigned int *seed, const enum weaponType type) {
     switch (type) {
     case STANDARD_WEAPON:
         return STANDARD_FIRE_MAGNITUDE;
@@ -739,7 +739,7 @@ static float weaponFire(uint64_t *seed, const enum weaponType type) {
     }
 }
 
-static b2Vec2 weaponAdjustAim(uint64_t *seed, const enum weaponType type, const uint16_t heat, const b2Vec2 normAim) {
+static b2Vec2 weaponAdjustAim(unsigned int *seed, const enum weaponType type, const uint16_t heat, const b2Vec2 normAim) {
     switch (type) {
     case MACHINEGUN_WEAPON: {
         const float swayCoef = logBasef((heat / 5.0f) + 1, 180);

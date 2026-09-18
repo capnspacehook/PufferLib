@@ -149,7 +149,7 @@ static inline bool b2VecEqual(const b2Vec2 v1, const b2Vec2 v2) {
 }
 
 static inline float randFloat(unsigned int *state, const float min, const float max) {
-    float n = rand_r(state) / (float)UINT64_MAX;
+    float n = rand_r(state) / (float)RAND_MAX;
     return min + n * (max - min);
 }
 

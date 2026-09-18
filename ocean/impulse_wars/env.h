@@ -553,7 +553,7 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     e->explosionHitRewardCoef = EXPLOSION_HIT_REWARD_COEF;
 
     e->obsSize = obsSize(e->numDrones);
-    e->discreteObsSize = alignedSize(discreteObsSize(e->numDrones) * sizeof(uint8_t), sizeof(float));
+    e->discreteObsSize = discreteObsSize(e->numDrones);
 
     e->continuousActions = continuousActions;
 
@@ -816,18 +816,16 @@ static inline bool isActionNoop(const b2Vec2 action) {
 agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *manualActions) {
     agentActions actions = {0};
 
-    const float* act = agentActions(e, drone->idx);
+    const float* envActions = agentActions(e, drone->idx);
     if (manualActions == NULL) {
         if (e->continuousActions) {
-            actions.move = (b2Vec2){.x = tanhf(act[0]), .y = tanf(act[1])};
-            actions.aim = (b2Vec2){.x = tanf(act[2]), .y = tanf(act[3])};
-            actions.chargingWeapon = act[4] > 0.0f;
-            actions.brake = act[5] > 0.0f;
-            actions.chargingBurst = act[6] > 0.0f;
+            actions.move = (b2Vec2){.x = tanhf(envActions[0]), .y = tanhf(envActions[1])};
+            actions.aim = (b2Vec2){.x = tanhf(envActions[2]), .y = tanhf(envActions[3])};
+            actions.chargingWeapon = envActions[4] > 0.0f;
+            actions.brake = envActions[5] > 0.0f;
+            actions.chargingBurst = envActions[6] > 0.0f;
         } else {
-            float (*envActions)[5] = (float (*)[5])act;
-
-            uint8_t move = envActions[drone->idx][0];
+            uint8_t move = envActions[0];
             // 0 is no-op for both move and aim
             ASSERT(move <= 8);
             if (move != 0) {
@@ -835,7 +833,7 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
                 actions.move.x = discMoveToContMoveMap[0][move];
                 actions.move.y = discMoveToContMoveMap[1][move];
             }
-            uint8_t aim = envActions[drone->idx][1];
+            uint8_t aim = envActions[1];
             ASSERT(aim <= 16);
             if (aim != 0) {
                 aim--;
@@ -843,9 +841,9 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
                 actions.aim.y = discAimToContAimMap[1][aim];
             }
 
-            actions.chargingWeapon = envActions[drone->idx][2] > 0.0f;
-            actions.brake = envActions[drone->idx][3] > 0.0f;
-            actions.chargingBurst = envActions[drone->idx][4] > 0.0f;   
+            actions.chargingWeapon = envActions[2] > 0.0f;
+            actions.brake = envActions[3] > 0.0f;
+            actions.chargingBurst = envActions[4] > 0.0f;   
         }
 
         actions.shoot = actions.chargingWeapon;
