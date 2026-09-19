@@ -789,10 +789,24 @@ static void weaponExplosion(const enum weaponType type, b2ExplosionDef *explosio
     }
 }
 
-// insertion sort should be faster than quicksort for small arrays
-static void insertionSort(nearEntity arr[], uint8_t size) {
+static void insertionSortWalls(nearWall arr[], uint8_t size) {
     for (int16_t i = 1; i < size; i++) {
-        nearEntity key = arr[i];
+        const nearWall key = arr[i];
+        int16_t j = i - 1;
+
+        while (j >= 0 && arr[j].distanceSquared > key.distanceSquared) {
+            arr[j + 1] = arr[j];
+            j = j - 1;
+        }
+
+        arr[j + 1] = key;
+    }
+}
+
+// insertion sort should be faster than quicksort for small arrays
+static void insertionSortEntities(nearEntity arr[], uint8_t size) {
+    for (int16_t i = 1; i < size; i++) {
+        const nearEntity key = arr[i];
         int16_t j = i - 1;
 
         while (j >= 0 && arr[j].distanceSquared > key.distanceSquared) {

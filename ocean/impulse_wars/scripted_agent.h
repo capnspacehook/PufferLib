@@ -14,9 +14,14 @@ static const float WALL_BURST_CHECK_SPEED = 20.0f;
 static const float BURST_MIN_RADIUS_SQUARED = SQUARED(DRONE_BURST_RADIUS_MIN);
 static const float STABILIZE_MOVE_SPEED = 5.0f;
 static const float SHOTGUN_DANGER_DISTANCE = 4.0f;
+// center to center distance past which a static wall cannot be within
+// WALL_BURST_CHECK_DISTANCE of the drone: the wall's half diagonal plus the
+// drone's (shielded) radius
+static const float WALL_IGNORE_DISTANCE_SQUARED =
+    SQUARED(WALL_BURST_CHECK_DISTANCE + (WALL_THICKNESS * 0.70710678f) + DRONE_SHIELD_RADIUS);
 
 void addDebugPoint(iwEnv *e, b2Vec2 pos, float size, Color color) {
-#ifndef NDEBUG
+#ifdef PUF_DEBUG
     debugPoint *point = fastCalloc(1, sizeof(debugPoint));
     point->pos = pos;
     point->size = size;
@@ -51,88 +56,6 @@ float castCircleCallback(b2ShapeId shapeId, b2Vec2 point, b2Vec2 normal, float f
     ctx->point = point;
 
     return 0.0f;
-}
-
-static inline uint32_t pathOffset(const iwEnv *e, uint16_t srcCellIdx, uint16_t destCellIdx) {
-    const uint32_t cellCount = e->map->rows * e->map->columns;
-    return destCellIdx * cellCount + srcCellIdx;
-}
-
-void pathfindBFS(const iwEnv *e, uint8_t *flatPaths, uint16_t destCellIdx) {
-    uint8_t (*paths)[e->map->columns] = (uint8_t (*)[e->map->columns])flatPaths;
-    int8_t (*buffer)[3] = (int8_t (*)[3])e->mapPathing[e->mapIdx].pathBuffer;
-
-    uint16_t start = 0;
-    uint16_t end = 1;
-
-    const mapCell *cell = safe_array_get_at(e->cells, destCellIdx);
-    if (cell->ent != NULL && entityTypeIsWall(cell->ent->type)) {
-        return;
-    }
-    const int8_t destCol = destCellIdx % e->map->columns;
-    const int8_t destRow = destCellIdx / e->map->columns;
-
-    buffer[start][0] = 8;
-    buffer[start][1] = destCol;
-    buffer[start][2] = destRow;
-    while (start < end) {
-        const int8_t direction = buffer[start][0];
-        const int8_t startCol = buffer[start][1];
-        const int8_t startRow = buffer[start][2];
-        start++;
-
-        if (startCol < 0 || startCol >= e->map->columns || startRow < 0 || startRow >= e->map->rows || paths[startRow][startCol] != UINT8_MAX) {
-            continue;
-        }
-        int16_t cellIdx = cellIndex(e, startCol, startRow);
-        const mapCell *cell = safe_array_get_at(e->cells, cellIdx);
-        if (cell->ent != NULL && entityTypeIsWall(cell->ent->type)) {
-            paths[startRow][startCol] = 8;
-            continue;
-        }
-
-        paths[startRow][startCol] = direction;
-
-        buffer[end][0] = 6; // up
-        buffer[end][1] = startCol;
-        buffer[end][2] = startRow + 1;
-        end++;
-
-        buffer[end][0] = 2; // down
-        buffer[end][1] = startCol;
-        buffer[end][2] = startRow - 1;
-        end++;
-
-        buffer[end][0] = 0; // right
-        buffer[end][1] = startCol - 1;
-        buffer[end][2] = startRow;
-        end++;
-
-        buffer[end][0] = 4; // left
-        buffer[end][1] = startCol + 1;
-        buffer[end][2] = startRow;
-        end++;
-
-        buffer[end][0] = 5; // up left
-        buffer[end][1] = startCol + 1;
-        buffer[end][2] = startRow + 1;
-        end++;
-
-        buffer[end][0] = 3; // down left
-        buffer[end][1] = startCol + 1;
-        buffer[end][2] = startRow - 1;
-        end++;
-
-        buffer[end][0] = 1; // down right
-        buffer[end][1] = startCol - 1;
-        buffer[end][2] = startRow - 1;
-        end++;
-
-        buffer[end][0] = 7; // up right
-        buffer[end][1] = startCol - 1;
-        buffer[end][2] = startRow + 1;
-        end++;
-    }
 }
 
 float distanceWithDamping(const iwEnv *e, const float speed, const float linearDamping, const float steps) {
@@ -228,14 +151,8 @@ void moveTo(iwEnv *e, const droneEntity *drone, agentActions *actions, const b2V
         return;
     }
 
-    uint32_t pathIdx = pathOffset(e, drone->mapCellIdx, dstIdx);
-    uint8_t *paths = e->mapPathing[e->mapIdx].paths;
-    uint8_t direction = paths[pathIdx];
-    if (direction == UINT8_MAX) {
-        uint32_t bfsIdx = pathOffset(e, 0, dstIdx);
-        pathfindBFS(e, &paths[bfsIdx], dstIdx);
-        direction = paths[pathIdx];
-    }
+    // fully precomputed in initMaps; 8 means "no route"
+    const uint8_t direction = e->map->paths[pathOffset(e, drone->mapCellIdx, dstIdx)];
     if (direction >= 8) {
         return;
     }
@@ -387,17 +304,23 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
     }
 
     // find the N nearest death walls or floating walls
-    nearEntity nearWalls[MAX_NEAREST_WALLS] = {0};
+    nearWall nearWalls[MAX_NEAREST_WALLS] = {0};
     findNearWalls(e, drone, nearWalls, NUM_NEAR_WALLS);
 
     // move away from and shoot at death walls if we're too close
     float closestWallDistance = FLT_MAX;
     for (uint8_t i = 0; i < NUM_NEAR_WALLS; i++) {
-        const wallEntity *wall = nearWalls[i].entity;
-        if (wall->type != DEATH_WALL_ENTITY) {
+        if (nearWalls[i].type != DEATH_WALL_ENTITY) {
+            continue;
+        }
+        // nothing below reacts to a wall further away than the burst check
+        // distance, so skip the exact distance query when the cheap center
+        // to center distance already rules the wall out
+        if (nearWalls[i].distanceSquared > WALL_IGNORE_DISTANCE_SQUARED) {
             continue;
         }
 
+        const wallEntity *wall = safe_array_get_at(e->walls, nearWalls[i].wallIdx);
         const b2DistanceOutput output = closestPoint(drone->ent, wall->ent);
         closestWallDistance = min(closestWallDistance, output.distance);
         handleWallProximity(e, drone, wall, output.distance, &actions);
@@ -483,7 +406,7 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
             nearPickups[numActivePickups++] = nearEnt;
         }
         if (numActivePickups > 0) {
-            insertionSort(nearPickups, numActivePickups);
+            insertionSortEntities(nearPickups, numActivePickups);
             const weaponPickupEntity *pickup = nearPickups[0].entity;
             moveTo(e, drone, &actions, pickup->pos);
             return actions;

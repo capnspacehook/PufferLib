@@ -37,7 +37,7 @@ uint16_t findNearestCell(const iwEnv *e, const b2Vec2 pos, const uint16_t cellId
             continue;
         }
         const int16_t newCellIdx = cellIndex(e, newCellCol, newCellRow);
-        const mapCell *cell = safe_array_get_at(e->cells, newCellIdx);
+        const mapCell *cell = (&e->cells[newCellIdx]);
         if (minDistance != min(minDistance, b2DistanceSquared(pos, cell->pos))) {
             closestCell = newCellIdx;
         }
@@ -116,7 +116,7 @@ void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffs
         for (int8_t row = startRow; row <= endRow; row++) {
             for (int8_t col = startCol; col <= endCol; col++) {
                 const int16_t cellIdx = cellIndex(e, col, row);
-                const mapCell *cell = safe_array_get_at(e->cells, cellIdx);
+                const mapCell *cell = (&e->cells[cellIdx]);
                 if (cell->ent == NULL) {
                     offset++;
                     continue;
@@ -191,20 +191,18 @@ void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffs
 
 // computes observations for N nearest walls, floating walls, and weapon pickups
 void computeNearObs(iwEnv *e, const droneEntity *drone, const uint16_t discreteObsStart, float *continuousObs) {
-    nearEntity nearWalls[NUM_NEAR_WALL_OBS];
+    nearWall nearWalls[NUM_NEAR_WALL_OBS];
     findNearWalls(e, drone, nearWalls, NUM_NEAR_WALL_OBS);
 
     uint16_t offset;
 
     // compute type and position of N nearest walls
     for (uint8_t i = 0; i < NUM_NEAR_WALL_OBS; i++) {
-        const wallEntity *wall = nearWalls[i].entity;
+        const nearWall *wall = &nearWalls[i];
 
         offset = discreteObsStart + NEAR_WALL_TYPES_OBS_OFFSET + i;
         ASSERTF(offset <= discreteObsStart + FLOATING_WALL_TYPES_OBS_OFFSET, "offset: %d", offset);
         agentObs(e, drone->idx)[offset] = (float)wall->type / 2.0f;
-
-        // DEBUG_LOGF("wall %d cell %d", i, wall->mapCellIdx);
 
         offset = NEAR_WALL_POS_OBS_OFFSET + (i * NEAR_WALL_POS_OBS_SIZE);
         ASSERTF(offset <= FLOATING_WALL_INFO_OBS_OFFSET, "offset: %d", offset);
@@ -225,7 +223,7 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, const uint16_t discreteO
             };
             nearFloatingWalls[i] = nearEnt;
         }
-        insertionSort(nearFloatingWalls, cc_array_size(e->floatingWalls));
+        insertionSortEntities(nearFloatingWalls, cc_array_size(e->floatingWalls));
 
         // compute type, position, angle and velocity of N nearest floating walls
         for (uint8_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
@@ -265,7 +263,7 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, const uint16_t discreteO
             };
             nearPickups[i] = nearEnt;
         }
-        insertionSort(nearPickups, cc_array_size(e->pickups));
+        insertionSortEntities(nearPickups, cc_array_size(e->pickups));
 
         // compute type and location of N nearest weapon pickups
         for (uint8_t i = 0; i < cc_array_size(e->pickups); i++) {
@@ -577,7 +575,8 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     e->idPool = b2CreateIdPool();
     create_array(&e->entities, 128);
 
-    create_array(&e->cells, 512);
+    e->cells = fastCalloc(MAX_CELLS, sizeof(mapCell));
+    e->numCells = 0;
     create_array(&e->walls, 128);
     create_array(&e->floatingWalls, MAX_FLOATING_WALLS);
     create_array(&e->drones, e->numDrones);
@@ -587,22 +586,13 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     create_array(&e->explodingProjectiles, 8);
     create_array(&e->dronePieces, 16);
 
-    e->mapPathing = fastCalloc(NUM_MAPS, sizeof(pathingInfo));
-    for (uint8_t i = 0; i < NUM_MAPS; i++) {
-        const mapEntry *map = maps[i];
-        pathingInfo *info = &e->mapPathing[i];
-        info->paths = fastMalloc(map->rows * map->columns * map->rows * map->columns * sizeof(uint8_t));
-        memset(info->paths, UINT8_MAX, map->rows * map->columns * map->rows * map->columns * sizeof(uint8_t));
-        info->pathBuffer = fastCalloc(3 * 8 * map->rows * map->columns, sizeof(int8_t));
-    }
-
     e->humanInput = false;
     e->humanDroneInput = 0;
     e->connectedControllers = 0;
 
     e->cachedActions = fastCalloc(e->numDrones, sizeof(agentActions));
 
-#ifndef NDEBUG
+#ifdef PUF_DEBUG
     create_array(&e->debugPoints, 4);
 #endif
 
@@ -675,21 +665,9 @@ void puf_close(iwEnv *e) {
 
     fastFree(e->cachedActions);
 
-    for (uint8_t i = 0; i < NUM_MAPS; i++) {
-        pathingInfo *info = &e->mapPathing[i];
-        fastFree(info->paths);
-        fastFree(info->pathBuffer);
-    }
-    fastFree(e->mapPathing);
-
     for (size_t i = 0; i < cc_array_size(e->walls); i++) {
         wallEntity *wall = safe_array_get_at(e->walls, i);
         destroyWall(e, wall, false);
-    }
-
-    for (size_t i = 0; i < cc_array_size(e->cells); i++) {
-        mapCell *cell = safe_array_get_at(e->cells, i);
-        fastFree(cell);
     }
 
     for (size_t i = 0; i < cc_array_size(e->entities); i++) {
@@ -700,7 +678,7 @@ void puf_close(iwEnv *e) {
     b2DestroyIdPool(&e->idPool);
 
     cc_array_destroy(e->entities);
-    cc_array_destroy(e->cells);
+    fastFree(e->cells);
     cc_array_destroy(e->walls);
     cc_array_destroy(e->drones);
     cc_array_destroy(e->floatingWalls);
@@ -712,7 +690,7 @@ void puf_close(iwEnv *e) {
 
     b2DestroyWorld(e->worldID);
 
-#ifndef NDEBUG
+#ifdef PUF_DEBUG
     cc_array_destroy(e->debugPoints);
 #endif
 }
@@ -1066,6 +1044,7 @@ void stepPhysicsFrame(iwEnv *e, const agentActions stepActions[]) {
     // handle collisions
     handleContactEvents(e);
     handleSensorEvents(e);
+    weaponPickupsOverlapStep(e);
 
     // handle sudden death
     e->stepsLeft = max(e->stepsLeft - 1, 0);
@@ -1227,6 +1206,7 @@ void stepPhysicsFrameMinimal(iwEnv *e) {
     handleBodyMoveEvents(e);
     handleContactEvents(e);
     handleSensorEvents(e);
+    weaponPickupsOverlapStep(e);
 
     projectilesStep(e);
 
@@ -1280,7 +1260,7 @@ void puf_step(iwEnv *e) {
     if (e->client == NULL || e->tick_frames_left <= 0) {
         e->tick_frames_left = e->frameRate / TRAINING_ACTIONS_PER_SECOND;
 
-#ifndef NDEBUG
+#ifdef PUF_DEBUG
         for (uint8_t i = 0; i < cc_array_size(e->debugPoints); i++) {
             debugPoint *point = safe_array_get_at(e->debugPoints, i);
             fastFree(point);

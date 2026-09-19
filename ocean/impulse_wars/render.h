@@ -10,8 +10,9 @@
 #include "helpers.h"
 
 void setEnvFrameRate(iwEnv *e);
-bool droneControlledByHuman(const iwEnv *e, uint8_t i);
 agentActions computeActions(iwEnv *e, droneEntity *drone, const agentActions *manualActions);
+bool droneControlledByHuman(const iwEnv *e, uint8_t i);
+void createDroneTrails(droneEntity *drone);
 
 #if defined(PLATFORM_DESKTOP)
 #define GLSL_VERSION 330
@@ -1329,17 +1330,17 @@ void renderDroneGuides(iwEnv *e, const droneEntity *drone, const bool ending) {
 }
 
 void renderDroneTrail(const droneEntity *drone) {
-    if (drone->trailPoints.length < 2) {
+    if (drone->trailPoints == NULL || drone->trailPoints->length < 2) {
         return;
     }
 
     const float trailWidth = DRONE_RADIUS;
-    const float numPoints = drone->trailPoints.length;
+    const float numPoints = drone->trailPoints->length;
     const Color droneColor = getDroneColor(drone->idx);
 
-    for (uint8_t i = 0; i < drone->trailPoints.length - 1; i++) {
-        const Vector2 p0 = drone->trailPoints.points[i];
-        const Vector2 p1 = drone->trailPoints.points[i + 1];
+    for (uint8_t i = 0; i < drone->trailPoints->length - 1; i++) {
+        const Vector2 p0 = drone->trailPoints->points[i];
+        const Vector2 p1 = drone->trailPoints->points[i + 1];
 
         // compute direction and a perpendicular vector
         Vector2 segment = Vector2Subtract(p1, p0);
@@ -1467,16 +1468,16 @@ void renderDroneUI(const droneEntity *drone) {
 }
 
 void renderProjectileTrail(const projectileEntity *proj) {
-    if (proj->trailPoints.length < 2) {
+    if (proj->trailPoints == NULL || proj->trailPoints->length < 2) {
         return; // need at least two points
     }
 
     const float maxWidth = proj->weaponInfo->radius;
-    const float numPoints = proj->trailPoints.length;
+    const float numPoints = proj->trailPoints->length;
 
-    for (uint8_t i = 0; i < proj->trailPoints.length - 1; i++) {
-        const Vector2 p0 = proj->trailPoints.points[i];
-        const Vector2 p1 = proj->trailPoints.points[i + 1];
+    for (uint8_t i = 0; i < proj->trailPoints->length - 1; i++) {
+        const Vector2 p0 = proj->trailPoints->points[i];
+        const Vector2 p1 = proj->trailPoints->points[i + 1];
 
         // Compute a perpendicular vector for the segment
         Vector2 dir = Vector2Subtract(p1, p0);
@@ -1790,7 +1791,7 @@ void renderEnv(iwEnv *e) {
         renderDroneUI(drone);
     }
 
-#ifndef NDEBUG
+#ifdef PUF_DEBUG
     for (uint8_t i = 0; i < cc_array_size(e->debugPoints); i++) {
         debugPoint *point = safe_array_get_at(e->debugPoints, i);
         const Vector2 pos = {.x = point->pos.x, .y = point->pos.y};
@@ -1829,6 +1830,13 @@ void puf_render(iwEnv *e) {
         setEnvFrameRate(e);
         // FIXME: is this necessary?
         e->needsReset = true;
+
+        // the env is setup before puf_render is called, so create drone
+        // trails now that we know we're rendering
+        for (size_t i = 0; i < cc_array_size(e->drones); i++) {
+            droneEntity *drone = safe_array_get_at(e->drones, i);
+            createDroneTrails(drone);
+        }
     }
 
     // Keep the camera used to unproject mouse input in sync with this frame's

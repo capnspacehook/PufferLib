@@ -202,8 +202,7 @@ typedef struct projectileEntity {
 
     entity *ent;
 
-    // for rendering
-    trailPoints trailPoints;
+    trailPoints *trailPoints;
 } projectileEntity;
 
 // used to keep track of what happened each step for reward purposes
@@ -297,8 +296,7 @@ typedef struct droneEntity {
     shieldEntity *shield;
     entity *ent;
 
-    // for rendering
-    trailPoints trailPoints;
+    trailPoints *trailPoints;
     CC_Array *brakeTrailPoints;
     uint16_t respawnGuideLifetime;
 } droneEntity;
@@ -413,11 +411,6 @@ typedef struct agentActions {
     bool discardWeapon;
 } agentActions;
 
-typedef struct pathingInfo {
-    uint8_t *paths;
-    int8_t *pathBuffer;
-} pathingInfo;
-
 typedef struct debugPoint {
     b2Vec2 pos;
     float size;
@@ -477,7 +470,9 @@ struct Env {
     weaponInformation *defaultWeapon;
     b2IdPool idPool;
     CC_Array *entities;
-    CC_Array *cells;
+    // flat, allocated once at MAX_CELLS; map layouts only ever shrink it
+    mapCell *cells;
+    uint16_t numCells;
     CC_Array *walls;
     CC_Array *floatingWalls;
     CC_Array *drones;
@@ -485,8 +480,6 @@ struct Env {
     CC_Array *projectiles;
     CC_Array *explodingProjectiles;
     CC_Array *dronePieces;
-
-    pathingInfo *mapPathing;
 
     uint16_t totalSteps;
     uint16_t totalSuddenDeathSteps;
