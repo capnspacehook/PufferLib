@@ -59,8 +59,13 @@ static const float droneThrusterLength = 1.5f * DRONE_RADIUS;
 static const float aimGuideLength = 0.3f * DRONE_RADIUS;
 static const float chargedAimGuideLength = DRONE_RADIUS;
 
-static inline b2Vec2 rayVecToB2Vec(const iwEnv *e, const Vector2 v) {
-    return (b2Vec2){.x = (v.x - e->client->halfWidth) / e->renderScale, .y = ((v.y - e->client->halfHeight - (2 * e->renderScale)) / e->renderScale)};
+static inline b2Vec2 mouseToWorldPos(const iwEnv *e, const Vector2 mousePos) {
+    const Ray ray = GetScreenToWorldRay(mousePos, e->client->camera->camera3D);
+    const float distance = -ray.position.y / ray.direction.y;
+    return (b2Vec2){
+        .x = ray.position.x + (distance * ray.direction.x),
+        .y = ray.position.z + (distance * ray.direction.z),
+    };
 }
 
 static void loadRenderTextures(rayClient *client) {
@@ -269,8 +274,8 @@ agentActions getPlayerInputs(iwEnv *e, droneEntity *drone, uint8_t gamepadIdx) {
     }
     actions.move = b2Normalize(move);
 
-    Vector2 mousePos = (Vector2){.x = (float)GetMouseX(), .y = (float)GetMouseY()};
-    actions.aim = b2Normalize(b2Sub(rayVecToB2Vec(e, mousePos), drone->pos));
+    const Vector2 mousePos = GetMousePosition();
+    actions.aim = b2Normalize(b2Sub(mouseToWorldPos(e, mousePos), drone->pos));
 
     if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
         actions.chargingWeapon = true;
@@ -1586,9 +1591,6 @@ void applyBloom(const iwEnv *e, RenderTexture2D srcTex, RenderTexture2D dstTex, 
 void renderEnv(iwEnv *e) {
     // UpdateCamera(&e->client->camera3D, CAMERA_ORBITAL);
 
-    syncRenderSize(e);
-    updateCamera(e);
-
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
         const droneEntity *drone = safe_array_get_at(e->drones, i);
         if (drone->dead) {
@@ -1828,6 +1830,11 @@ void puf_render(iwEnv *e) {
         // FIXME: is this necessary?
         e->needsReset = true;
     }
+
+    // Keep the camera used to unproject mouse input in sync with this frame's
+    // render camera.
+    syncRenderSize(e);
+    updateCamera(e);
 
     // take inputs from humans every frame
     updateHumanInputToggle(e);
