@@ -1028,15 +1028,6 @@ void updateVisuals(iwEnv *e) {
 void stepPhysicsFrame(iwEnv *e, const agentActions stepActions[]) {
     for (uint8_t i = 0; i < e->numDrones; i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
-        memset(&drone->stepInfo, 0x0, sizeof(droneStepInfo));
-        if (drone->dead) {
-            drone->diedThisStep = false;
-        }
-        memset(&drone->killed, 0x0, sizeof(drone->killed));
-    }
-
-    for (uint8_t i = 0; i < e->numDrones; i++) {
-        droneEntity *drone = safe_array_get_at(e->drones, i);
         if (drone->dead) {
             continue;
         }
@@ -1289,6 +1280,13 @@ void puf_step(iwEnv *e) {
         // preprocess agent actions for the next frameSkip steps
         for (uint8_t i = 0; i < e->numDrones; i++) {
             droneEntity *drone = safe_array_get_at(e->drones, i);
+
+            memset(&drone->stepInfo, 0x0, sizeof(droneStepInfo));
+            if (drone->dead) {
+                drone->diedThisStep = false;
+            }
+            memset(&drone->killed, 0x0, sizeof(drone->killed));
+
             if (drone->dead || droneControlledByHuman(e, i)) {
                 continue;
             }
