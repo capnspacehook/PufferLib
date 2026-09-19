@@ -56,9 +56,9 @@ void puf_log(Log *log, Dict *out);
 #define PUF_EVAL_SHOULD_FORWARD
 #endif
 
-int b2InternalAssert(const char *condition, const char *fileName, int lineNumber) {
+int b2InternalAssertFcn(const char *condition, const char *fileName, int lineNumber) {
     fprintf(stderr, "box2d assert %s at %s:%d\n", condition, fileName, lineNumber);
-    ON_ERROR;
+    return 1;
 }
 
 void puf_init(Env *env, Dict *kwargs) {

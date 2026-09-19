@@ -186,7 +186,7 @@ bool safeToFire(iwEnv *e, const droneEntity *drone, const b2Vec2 direction) {
     const b2QueryFilter filter = {.categoryBits = DRONE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | DRONE_SHAPE};
 
     castCircleCtx ctx = {0};
-    b2World_CastShape(e->worldID, b2Pos_zero, &cirProxy, translation, filter, castCircleCallback, &ctx);
+    b2World_CastShape(e->worldID, &cirProxy, translation, filter, castCircleCallback, &ctx);
     if (!ctx.hit) {
         addDebugPoint(e, recoilPos, 0.5f, LIME);
         return true;
@@ -293,7 +293,7 @@ bool shouldShootAtEnemy(iwEnv *e, const droneEntity *drone, const droneEntity *e
     const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | DRONE_SHAPE};
 
     castCircleCtx ctx = {0};
-    b2World_CastShape(e->worldID, b2Pos_zero, &cirProxy, translation, filter, castCircleCallback, &ctx);
+    b2World_CastShape(e->worldID, &cirProxy, translation, filter, castCircleCallback, &ctx);
     if (!ctx.hit) {
         return false;
     }
@@ -422,7 +422,7 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
         const b2QueryFilter filter = {.categoryBits = DRONE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE};
 
         castCircleCtx ctx = {0};
-        b2World_CastShape(e->worldID, b2Pos_zero, &cirProxy, translation, filter, castCircleCallback, &ctx);
+        b2World_CastShape(e->worldID, &cirProxy, translation, filter, castCircleCallback, &ctx);
         if (ctx.hit) {
             const entity *ent = b2Shape_GetUserData(ctx.shapeID);
             if (entityTypeIsWall(ent->type) && ent->type == DEATH_WALL_ENTITY) {

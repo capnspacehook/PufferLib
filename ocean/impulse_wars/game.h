@@ -103,7 +103,7 @@ bool isOverlappingAABB(const iwEnv *e, const b2Vec2 pos, const float distance, c
         .upperBound = {.x = pos.x + distance, .y = pos.y + distance},
     };
     overlapAABBCtx ctx = {.overlaps = false};
-    b2World_OverlapAABB(e->worldID, b2Pos_zero, bounds, filter, overlapAABBCallback, &ctx);
+    b2World_OverlapAABB(e->worldID, bounds, filter, overlapAABBCallback, &ctx);
     return ctx.overlaps;
 }
 
@@ -196,27 +196,21 @@ b2DistanceOutput closestPoint(const entity *srcEnt, const entity *dstEnt) {
     b2DistanceInput input;
     input.proxyA = makeDistanceProxy(srcEnt, &isCircle);
     input.proxyB = makeDistanceProxy(dstEnt, &isCircle);
-    const b2Transform transformA = entityTransform(srcEnt);
-    const b2Transform transformB = entityTransform(dstEnt);
-    input.transform = b2InvMulWorldTransforms(transformA, transformB);
+    input.transformA = entityTransform(srcEnt);
+    input.transformB = entityTransform(dstEnt);
     if (input.proxyA.radius != 0.0f && input.proxyB.radius != 0.0f) {
         b2DistanceOutput output = {0};
-        output.distance = b2Distance(transformB.p, transformA.p) - input.proxyA.radius - input.proxyB.radius;
-        output.normal = b2Normalize(b2Sub(transformB.p, transformA.p));
-        output.pointA = b2MulAdd(transformA.p, input.proxyA.radius, output.normal);
-        output.pointB = b2MulAdd(transformB.p, input.proxyB.radius, output.normal);
+        output.distance = b2Distance(input.transformB.p, input.transformA.p) - input.proxyA.radius - input.proxyB.radius;
+        output.normal = b2Normalize(b2Sub(input.transformB.p, input.transformA.p));
+        output.pointA = b2MulAdd(input.transformA.p, input.proxyA.radius, output.normal);
+        output.pointB = b2MulAdd(input.transformB.p, input.proxyB.radius, output.normal);
         return output;
     }
+
     input.useRadii = isCircle;
 
     b2SimplexCache cache = {0};
-    b2DistanceOutput output= b2ShapeDistance(&input, &cache, NULL, 0);
-    // transform the output so it refers to a world postion
-    output.pointA = b2TransformPoint(transformA, output.pointA);
-    output.pointB = b2TransformPoint(transformA, output.pointB);
-    output.normal = b2RotateVector(transformA.q, output.normal);
-
-    return output;
+    return b2ShapeDistance(&input, &cache, NULL, 0);
 }
 
 typedef struct behindWallContext {
@@ -302,7 +296,7 @@ bool isOverlappingCircleInLineOfSight(const iwEnv *e, const entity *ent, const b
         },
         .overlaps = false,
     };
-    b2World_OverlapShape(e->worldID, b2Pos_zero, &cirProxy, filter, isOverlappingCircleCallback, &ctx);
+    b2World_OverlapShape(e->worldID, &cirProxy, filter, isOverlappingCircleCallback, &ctx);
     return ctx.overlaps;
 }
 
@@ -1366,15 +1360,12 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     b2DistanceInput input;
     input.proxyA = makeDistanceProxy(entity, &isCircle);
     input.proxyB = b2MakeProxy(&ctx->def->position, 1, 0.0f);
-    input.transform = b2InvMulWorldTransforms(transform, b2Transform_identity);
+    input.transformA = transform;
+    input.transformB = b2Transform_identity;
     input.useRadii = isCircle;
 
     b2SimplexCache cache = {0};
-    b2DistanceOutput output = b2ShapeDistance(&input, &cache, NULL, 0);
-    // transform the output so it refers to a world postion
-    output.pointA = b2TransformPoint(transform, output.pointA);
-    output.pointB = b2TransformPoint(transform, output.pointB);
-    output.normal = b2RotateVector(transform.q, output.normal);
+    const b2DistanceOutput output = b2ShapeDistance(&input, &cache, NULL, 0);
 
     if (output.distance > ctx->def->radius) {
         return true;
@@ -1478,10 +1469,6 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
                 }
             }
         }
-
-        if (ctx->wallsHit >= MAX_WALL_HITS) {
-            return true;
-        } 
 
         // reduce the magnitude when pushing a drone away from a wall
         magnitude = log2f(magnitude) * (5.0f + (25.0f * ctx->parentDrone->burstCharge));
@@ -1661,7 +1648,7 @@ void createExplosion(iwEnv *e, droneEntity *drone, const projectileEntity *proje
         .closestWallIdx = -1,
         .wallsHit = 0,
     };
-    b2World_OverlapAABB(e->worldID, b2Pos_zero, aabb, filter, explodeCallback, &ctx);
+    b2World_OverlapAABB(e->worldID, aabb, filter, explodeCallback, &ctx);
 
     uint8_t wallsHit = ctx.wallsHit;
     if (isBurst && wallsHit != 0) {
