@@ -48,10 +48,6 @@ void puf_log(Log *log, Dict *out);
 
 #else
 
-#ifndef IW_DEBUG
-#define NDEBUG
-#endif
-
 #include "env.h"
 #include <pthread.h>
 

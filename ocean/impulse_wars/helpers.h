@@ -12,7 +12,6 @@
 
 #ifndef NDEBUG
 #define ON_ERROR __builtin_trap()
-#ifdef IW_DEBUG
 #define _DEBUG_GET_TIMEINFO() \
     time_t _t = time(NULL);   \
     struct tm *_timeinfo;     \
@@ -39,13 +38,6 @@
         printf(msg " %d:%d:%d %s:%d\n", _timeinfo->tm_hour, _timeinfo->tm_min, _timeinfo->tm_sec, __FILE__, __LINE__); \
         fflush(stdout);                                                                                                \
     } while (0)
-#else
-#define DEBUG_RAW_LOG(msg)
-#define DEBUG_RAW_LOGF(fmt, args...)
-#define DEBUG_LOGF(fmt, args...)
-#define DEBUG_LOG(msg)
-#endif
-
 #define ASSERT(condition)                                                                  \
     do {                                                                                   \
         if (!(condition)) {                                                                \

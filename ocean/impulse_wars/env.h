@@ -1190,7 +1190,7 @@ void stepPhysicsFrame(iwEnv *e, const agentActions stepActions[]) {
 
 #ifndef NDEBUG
     bool gotReward = false;
-    for (uint8_t i = 0; i < e->numDrones; i++) {
+    for (uint8_t i = 0; i < e->numAgents; i++) {
         if (agentRewards(e, i)[0] > REWARD_EPS || agentRewards(e, i)[0] < -REWARD_EPS) {
             gotReward = true;
             break;
@@ -1198,10 +1198,10 @@ void stepPhysicsFrame(iwEnv *e, const agentActions stepActions[]) {
     }
     if (gotReward) {
         DEBUG_RAW_LOG("!!! rewards: [");
-        for (uint8_t i = 0; i < e->numDrones; i++) {
+        for (uint8_t i = 0; i < e->numAgents; i++) {
             const float reward = agentRewards(e, i)[0];
             DEBUG_RAW_LOGF("%f", reward);
-            if (i < e->numDrones - 1) {
+            if (i < e->numAgents - 1) {
                 DEBUG_RAW_LOG(", ");
             }
         }

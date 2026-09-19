@@ -37,15 +37,14 @@ static const Color PUFF_BACKGROUND2 = BLACK;
 static const float DEFAULT_SCALE = 11.0f;
 static const uint16_t DEFAULT_WIDTH = 1280;
 static const uint16_t DEFAULT_HEIGHT = 720;
-static const uint16_t HEIGHT_LEEWAY = 75;
 
 static const float START_READY_TIME = 1.5f;
 static const float END_WAIT_TIME = 2.0f;
 
 static const float EXPLOSION_TIME = 0.5f;
 
-static const float DRONE_RESPAWN_GUIDE_SHRINK_TIME = 0.75f;
-static const float DRONE_RESPAWN_GUIDE_HOLD_TIME = 0.75f;
+static const float DRONE_RESPAWN_GUIDE_SHRINK_TIME = 1.5f;
+static const float DRONE_RESPAWN_GUIDE_HOLD_TIME = 1.5f;
 static const float DRONE_RESPAWN_GUIDE_MAX_RADIUS = DRONE_RADIUS * 5.5f;
 static const float DRONE_RESPAWN_GUIDE_MIN_RADIUS = DRONE_RADIUS * 2.5f;
 
@@ -64,28 +63,49 @@ static inline b2Vec2 rayVecToB2Vec(const iwEnv *e, const Vector2 v) {
     return (b2Vec2){.x = (v.x - e->client->halfWidth) / e->renderScale, .y = ((v.y - e->client->halfHeight - (2 * e->renderScale)) / e->renderScale)};
 }
 
+static void loadRenderTextures(rayClient *client) {
+    client->blurSrcTexture = LoadRenderTexture(client->width, client->height);
+    client->blurDstTexture = LoadRenderTexture(client->width, client->height);
+    client->droneRawTex = LoadRenderTexture(client->width, client->height);
+    client->droneBloomTex = LoadRenderTexture(client->width, client->height);
+    client->projRawTex = LoadRenderTexture(client->width, client->height);
+    client->projBloomTex = LoadRenderTexture(client->width, client->height);
+}
+
+static void unloadRenderTextures(rayClient *client) {
+    UnloadRenderTexture(client->blurSrcTexture);
+    UnloadRenderTexture(client->blurDstTexture);
+    UnloadRenderTexture(client->droneRawTex);
+    UnloadRenderTexture(client->droneBloomTex);
+    UnloadRenderTexture(client->projRawTex);
+    UnloadRenderTexture(client->projBloomTex);
+}
+
 rayClient *createRayClient() {
-    SetConfigFlags(FLAG_MSAA_4X_HINT);
+    unsigned int windowFlags = FLAG_MSAA_4X_HINT;
+#ifndef __EMSCRIPTEN__
+    windowFlags |= FLAG_WINDOW_RESIZABLE;
+#endif
+    SetConfigFlags(windowFlags);
     InitWindow(DEFAULT_WIDTH, DEFAULT_HEIGHT, "Impulse Wars");
 
-    rayClient *client = fastCalloc(1, sizeof(rayClient));
-
-    if (client->height == 0) {
 #ifndef __EMSCRIPTEN__
-        const int monitor = GetCurrentMonitor();
-        client->height = GetMonitorHeight(monitor) - HEIGHT_LEEWAY;
-        client->width = ((float)client->height * ((float)DEFAULT_WIDTH / (float)DEFAULT_HEIGHT));
-#else
-        client->width = DEFAULT_WIDTH;
-        client->height = DEFAULT_HEIGHT;
+    MaximizeWindow();
+
+    // GLFW reports the maximized client area through its resize event. Pump
+    // that event before sizing cameras and render textures from the window.
+    BeginDrawing();
+    ClearBackground(BLACK);
+    EndDrawing();
 #endif
-    }
+
+    rayClient *client = fastCalloc(1, sizeof(rayClient));
+    client->width = GetScreenWidth();
+    client->height = GetScreenHeight();
     client->scale = (float)client->height * (float)(DEFAULT_SCALE / DEFAULT_HEIGHT);
 
     client->halfWidth = client->width / 2.0f;
     client->halfHeight = client->height / 2.0f;
-
-    SetWindowSize(client->width, client->height);
 
 #ifndef __EMSCRIPTEN__
     SetTargetFPS(EVAL_FRAME_RATE);
@@ -107,12 +127,7 @@ rayClient *createRayClient() {
     client->camera->orthographic = false;
 
     client->wallTexture = LoadTexture("resources/impulse_wars/wall_texture_map.png");
-    client->blurSrcTexture = LoadRenderTexture(client->width, client->height);
-    client->blurDstTexture = LoadRenderTexture(client->width, client->height);
-    client->droneRawTex = LoadRenderTexture(client->width, client->height);
-    client->droneBloomTex = LoadRenderTexture(client->width, client->height);
-    client->projRawTex = LoadRenderTexture(client->width, client->height);
-    client->projBloomTex = LoadRenderTexture(client->width, client->height);
+    loadRenderTextures(client);
 
     const char *gridVSPath = TextFormat("resources/impulse_wars/shaders/gls%i/shader.vs", GLSL_VERSION);
     const char *gridFSPath = TextFormat("resources/impulse_wars/shaders/gls%i/grid.fs", GLSL_VERSION);
@@ -147,12 +162,7 @@ rayClient *createRayClient() {
 
 void destroyRayClient(rayClient *client) {
     UnloadTexture(client->wallTexture);
-    UnloadRenderTexture(client->blurSrcTexture);
-    UnloadRenderTexture(client->blurDstTexture);
-    UnloadRenderTexture(client->droneRawTex);
-    UnloadRenderTexture(client->droneBloomTex);
-    UnloadRenderTexture(client->projRawTex);
-    UnloadRenderTexture(client->projBloomTex);
+    unloadRenderTextures(client);
 
     UnloadShader(client->gridShader);
     UnloadShader(client->blurShader);
@@ -327,6 +337,41 @@ void setupEnvCamera(iwEnv *e) {
         camera->camera2D.target.y = 0.0f;
         setCamera2DZoom(e);
     }
+}
+
+static void syncRenderSize(iwEnv *e) {
+    const int width = GetScreenWidth();
+    const int height = GetScreenHeight();
+    rayClient *client = e->client;
+
+    // A minimized window can transiently report an unusable client area.
+    if (width <= 0 || height <= 0 || (width == client->width && height == client->height)) {
+        return;
+    }
+
+    unloadRenderTextures(client);
+
+    client->width = width;
+    client->height = height;
+    client->halfWidth = client->width / 2.0f;
+    client->halfHeight = client->height / 2.0f;
+    client->scale = (float)client->height * (DEFAULT_SCALE / DEFAULT_HEIGHT);
+
+    gameCamera *camera = client->camera;
+    camera->camera2D.offset = (Vector2){
+        .x = client->halfWidth,
+        .y = client->halfHeight,
+    };
+    if (camera->orthographic) {
+        camera->camera2D.zoom = (float)client->height / camera->camera3D.fovy;
+    } else {
+        setCamera2DZoom(e);
+    }
+
+    const float baseRows = 21.0f;
+    e->renderScale = client->scale * (baseRows / e->map->rows);
+
+    loadRenderTextures(client);
 }
 
 Rectangle calculatePlayersBoundingBox(const iwEnv *e) {
@@ -1541,6 +1586,7 @@ void applyBloom(const iwEnv *e, RenderTexture2D srcTex, RenderTexture2D dstTex, 
 void renderEnv(iwEnv *e) {
     // UpdateCamera(&e->client->camera3D, CAMERA_ORBITAL);
 
+    syncRenderSize(e);
     updateCamera(e);
 
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
@@ -1793,7 +1839,7 @@ void puf_render(iwEnv *e) {
         }
 
         if (droneControlledByHuman(e, i)) {
-            e->cachedActions[i] = getPlayerInputs(e, drone, i - e->humanDroneInput);
+            e->cachedActions[i] = getPlayerInputs(e, drone, e->humanDroneInput);
         }
     }
 
