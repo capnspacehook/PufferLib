@@ -1078,6 +1078,7 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     droneChangeWeapon(e, drone, e->defaultWeapon->type);
     drone->braking = false;
     drone->chargingBurst = false;
+    drone->burstCharge = 0.0f;
     drone->energyFullyDepleted = false;
     drone->shotThisStep = false;
     drone->velocity = b2Vec2_zero;
