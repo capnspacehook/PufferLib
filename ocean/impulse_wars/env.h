@@ -1179,7 +1179,7 @@ void stepPhysicsFrame(iwEnv *e, const agentActions stepActions[]) {
         updateVisuals(e);
     }
 
-#ifndef NDEBUG
+#ifdef PUF_DEBUG
     bool gotReward = false;
     for (uint8_t i = 0; i < e->numAgents; i++) {
         if (agentRewards(e, i)[0] > REWARD_EPS || agentRewards(e, i)[0] < -REWARD_EPS) {

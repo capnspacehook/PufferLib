@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+set -x
 
 # Usage:
 #   ./build.sh breakout              # Native train/eval -> ./puffer
@@ -231,14 +232,14 @@ else
     SIMD_FLAGS=()
 fi
 if [ -n "$DEBUG" ] || [ "$MODE" = "local" ]; then
-    CLANG_OPT=(-g -O0 "${CLANG_WARN[@]}" "${SANITIZE_FLAGS[@]}" "${SIMD_FLAGS[@]}")
+    CLANG_OPT=(-g -O0 "${CLANG_WARN[@]}" "${SANITIZE_FLAGS[@]}" "${SIMD_FLAGS[@]}" -DPUF_DEBUG)
     NVCC_OPT="-O0 -g"
     LINK_OPT="-g"
 else
 # No -DNDEBUG: keep assert() active (train/sweep fail-fast with messages).
-    CLANG_OPT=(-O2 "${CLANG_WARN[@]}" "${SIMD_FLAGS[@]}")
-    NVCC_OPT="-O2 --threads 0"
-    LINK_OPT="-O2"
+    CLANG_OPT=(-O3 "${CLANG_WARN[@]}" "${SIMD_FLAGS[@]}")
+    NVCC_OPT="-O3 --threads 0"
+    LINK_OPT="-O3"
 fi
 
 if [ "$ENV" = "impulse_wars" ] && [ "$MODE" = "cpu" ] && [ -z "$DEBUG" ]; then
@@ -494,6 +495,23 @@ if [ "$MODE" = "native" ]; then
     fi
     OSRS_RENDER_OBJECT=""
     case "$ENV" in
+        impulse_wars)
+            # build impulse_wars with LTO as it speeds up box2d
+            # emit LLVM bitcode first, then use clang to link it to a regular
+            # object that can be passed to nvcc
+            IW_LTO_BITCODE="build/impulse_wars_api_lto.bc"
+            IW_LTO_OBJECT="build/impulse_wars_api_lto.o"
+            $CC -c $LINK_OPT -flto -fno-math-errno \
+                "${SIMD_FLAGS[@]}" -std=c11 \
+                -I. -Isrc -I$SRC_DIR -Ivendor \
+                "${INCLUDES[@]}" \
+                -DPLATFORM_DESKTOP -D_POSIX_C_SOURCE=200809L \
+                "${EXTRA_CFLAGS[@]}" \
+                ocean/impulse_wars/impulse_wars_api.c \
+                -o "$IW_LTO_BITCODE"
+            $CC -r $LINK_OPT -flto "$IW_LTO_BITCODE" -o "$IW_LTO_OBJECT"
+            EXTRA_SRC="$IW_LTO_OBJECT"
+            ;;
         osrs_*)
             OSRS_RENDER_OBJECT="build/osrs_puffer_render.o"
             ENV_COMPILE_FLAGS+=(-DOSRS_PUFFER_RENDER)
