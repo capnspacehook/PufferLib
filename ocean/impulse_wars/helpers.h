@@ -10,7 +10,7 @@
 
 #include "include/cc_array.h"
 
-#ifndef NDEBUG
+#ifdef PUF_DEBUG
 #define ON_ERROR __builtin_trap()
 #define _DEBUG_GET_TIMEINFO() \
     time_t _t = time(NULL);   \
