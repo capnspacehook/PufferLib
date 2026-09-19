@@ -530,7 +530,7 @@ void setEnvFrameRate(iwEnv *e) {
     e->totalSuddenDeathSteps = SUDDEN_DEATH_STEPS * frameRate;
 }
 
-iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, uint64_t seed, bool enableTeams, bool sittingDuck, bool isTraining, bool continuousActions) {
+iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, uint64_t seed, bool enableTeams, bool sittingDuck, bool isTraining, bool continuousActions, float botCLNoise, float botCLDecay) {
     DEBUG_LOGF("seed: %lu", seed);
 
     e->numDrones = numDrones;
@@ -543,6 +543,8 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     }
     e->sittingDuck = sittingDuck;
     e->isTraining = isTraining;
+    e->botCLNoise = botCLNoise;
+    e->botCLDecay = botCLDecay;
 
     e->winReward = WIN_REWARD;
     e->selfKillPunishment = SELF_KILL_PUNISHMENT;
@@ -901,6 +903,7 @@ bool droneControlledByHuman(const iwEnv *e, uint8_t i) {
 void addLog(iwEnv *e, Log *log) {
     e->log.length += log->length;
     e->log.ties += log->ties;
+    e->log.botCLNoise += log->botCLNoise;
 
     for (uint8_t j = 0; j < e->numDrones; j++) {
         e->log.stats[j].returns += log->stats[j].returns;
@@ -1151,6 +1154,13 @@ void stepPhysicsFrame(iwEnv *e, const agentActions stepActions[]) {
         } else if (!e->teamsEnabled || (e->teamsEnabled && lastAliveTeam == -1)) {
             log.ties = 1.0f;
         }
+        log.botCLNoise = e->botCLNoise;
+
+        // TODO: handle multiple agents/teams correctly
+        if (e->botCLNoise > 0.0f && lastAlive == 0) {
+            e->botCLNoise -= e->botCLDecay;
+            e->botCLNoise = clamp(e->botCLNoise);
+        }
 
         for (uint8_t i = 0; i < e->numDrones; i++) {
             const droneEntity *drone = safe_array_get_at(e->drones, i);
@@ -1232,6 +1242,7 @@ void stepPhysicsFrameMinimal(iwEnv *e) {
 }
 
 void puf_step(iwEnv *e) {
+    // handle the start and end pause when rendering
     if (e->client != NULL) {
         if (e->roundState == ROUND_STATE_ENDING) {
             if (e->tick_frames_left > 0) {

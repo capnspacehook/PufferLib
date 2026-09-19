@@ -337,6 +337,7 @@ typedef struct droneStats {
 struct Log {
     float length;
     float ties;
+    float botCLNoise;
     droneStats stats[_MAX_DRONES];
 
     float n;
@@ -436,6 +437,9 @@ struct Env {
     bool teamsEnabled;
     bool sittingDuck;
     bool isTraining;
+
+    float botCLNoise;
+    float botCLDecay;
 
     float winReward;
     float selfKillPunishment;

@@ -68,7 +68,21 @@ void puf_init(Env *env, Dict *kwargs) {
     bool enable_teams = dict_get(kwargs, "enable_teams");
     bool sitting_duck = dict_get(kwargs, "sitting_duck");
     bool is_training = dict_get(kwargs, "is_training");
-    initEnv(env, num_drones, num_agents, map_idx, env->rng, enable_teams, sitting_duck, is_training, (bool)CONTINUOUS_ACTIONS);
+    float bot_cl_noise = dict_get(kwargs, "bot_cl_noise");
+    float bot_cl_decay = dict_get(kwargs, "bot_cl_decay");
+    initEnv(
+        env,
+        num_drones,
+        num_agents,
+        map_idx,
+        env->rng,
+        enable_teams,
+        sitting_duck,
+        is_training,
+        (bool)CONTINUOUS_ACTIONS,
+        bot_cl_noise,
+        bot_cl_decay
+    );
 
     static pthread_mutex_t maps_mu = PTHREAD_MUTEX_INITIALIZER;
     static bool maps_ready = false;
@@ -127,6 +141,7 @@ void puf_log(Log *log, Dict *out) {
     dict_set(out, "ties", log->ties);
     dict_set(out, "perf", log->stats[0].wins);
     dict_set(out, "score", log->stats[0].wins);
+    dict_set(out, "bot_cl_noise", log->botCLNoise);
     dict_set(out, "n", log->n);
 
     LOG_DRONE_STATS(log, out, 0, "0");

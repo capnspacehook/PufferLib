@@ -363,6 +363,23 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
         return actions;
     }
 
+    // pick a random action randomly if the bot noise is enabled
+    if (e->botCLNoise > 0.0f && randFloat(&e->rng, 0.0f, 1.0f) < e->botCLNoise) {
+        actions.move.x = randFloat(&e->rng, -1.0f, 1.0f);
+        actions.move.y = randFloat(&e->rng, -1.0f, 1.0f);
+        actions.aim.x = randFloat(&e->rng, -1.0f, 1.0f);
+        actions.aim.y = randFloat(&e->rng, -1.0f, 1.0f);
+        actions.brake = randInt(&e->rng, 0, 1) == 1;
+
+        if (randInt(&e->rng, 0, 1) == 1) {
+            scriptedAgentShoot(drone, &actions);
+        }
+        if (randInt(&e->rng, 0, 1) == 1) {
+            scriptedAgentBurst(drone, &actions);
+        }
+        return actions;
+    }
+
     // keep the weapon charged and ready
     if (drone->weaponInfo->charge != 0.0f) {
         actions.chargingWeapon = true;
