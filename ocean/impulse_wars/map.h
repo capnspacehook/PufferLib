@@ -413,7 +413,7 @@ void resetMap(iwEnv *e) {
                 continue;
             }
 
-            const mapCell *cell = safe_array_get_at(e->cells, cellIdx);
+            const mapCell *cell = (&e->cells[cellIdx]);
             createWall(e, cell->pos, FLOATING_WALL_THICKNESS, FLOATING_WALL_THICKNESS, cellIdx, wallType, true);
             cellIdx++;
         }
@@ -433,13 +433,8 @@ void setupMap(iwEnv *e, const uint8_t mapIdx) {
         destroyWall(e, wall, false);
     }
 
-    for (size_t i = 0; i < cc_array_size(e->cells); i++) {
-        mapCell *cell = safe_array_get_at(e->cells, i);
-        fastFree(cell);
-    }
-
     cc_array_remove_all(e->walls);
-    cc_array_remove_all(e->cells);
+    e->numCells = 0;
     e->suddenDeathWallsPlaced = false;
 
     const uint8_t columns = maps[mapIdx]->columns;
@@ -462,10 +457,10 @@ void setupMap(iwEnv *e, const uint8_t mapIdx) {
             const float y = (row - (rows - 1) * 0.5f) * WALL_THICKNESS;
 
             b2Vec2 pos = {.x = x, .y = y};
-            mapCell *cell = fastCalloc(1, sizeof(mapCell));
+            mapCell *cell = &e->cells[cellIdx];
             cell->ent = NULL;
             cell->pos = pos;
-            cc_array_add(e->cells, cell);
+            e->numCells++;
 
             bool floating = false;
             float thickness = WALL_THICKNESS;
@@ -582,12 +577,35 @@ void initMaps(iwEnv *e) {
 
         computeMapBoundsAndQuadrants(e, map);
 
-        bool *droneSpawns = fastCalloc(map->columns * map->rows, sizeof(bool));
-        float *packedLayout = fastCalloc(map->columns * map->rows, sizeof(float));
-        nearEntity *nearestWalls = fastCalloc(MAX_NEAREST_WALLS * map->columns * map->rows, sizeof(nearEntity));
+        const uint32_t cellCount = (uint32_t)map->columns * map->rows;
+        bool *droneSpawns = fastCalloc(cellCount, sizeof(bool));
+        float *packedLayout = fastCalloc(cellCount, sizeof(float));
+        nearWall *nearestWalls = fastCalloc(MAX_NEAREST_WALLS * cellCount, sizeof(nearWall));
 
-        for (uint16_t i = 0; i < cc_array_size(e->cells); i++) {
-            const mapCell *cell = safe_array_get_at(e->cells, i);
+        // Precompute the flow field to every destination cell. This used to
+        // be a lazily filled per-env cache, which cost ~2MiB per env (over
+        // 8GiB across a 4096 env rollout) and re-ran the BFS on every miss,
+        // including for unreachable destinations where it could never cache
+        // a result. The field only depends on the static wall layout, so one
+        // read-only copy per map serves every env.
+        uint8_t *paths = fastMalloc(cellCount * cellCount * sizeof(uint8_t));
+        memset(paths, UINT8_MAX, cellCount * cellCount * sizeof(uint8_t));
+        int8_t (*pathBuffer)[3] = fastCalloc(8 * cellCount, 3 * sizeof(int8_t));
+        for (uint16_t dst = 0; dst < cellCount; dst++) {
+            pathfindBFS(e, paths + ((size_t)dst * cellCount), pathBuffer, dst);
+        }
+        // cells the BFS never reached (walls, or open cells walled off from
+        // the destination) are marked unreachable so callers stop retrying
+        for (size_t i = 0; i < (size_t)cellCount * cellCount; i++) {
+            if (paths[i] == UINT8_MAX) {
+                paths[i] = 8;
+            }
+        }
+        fastFree(pathBuffer);
+        map->paths = paths;
+
+        for (uint16_t i = 0; i < e->numCells; i++) {
+            const mapCell *cell = (&e->cells[i]);
 
             // precompute packed map layout
             if (cell->ent != NULL) {
@@ -600,22 +618,24 @@ void initMaps(iwEnv *e) {
 
             // find nearest walls for each empty cell
             uint16_t wallIdx = 0;
-            nearEntity walls[map->columns * map->rows];
-            memset(walls, 0x0, map->columns * map->rows * sizeof(nearEntity));
-            for (uint16_t j = 0; j < cc_array_size(e->cells); j++) {
-                const mapCell *c = safe_array_get_at(e->cells, j);
+            nearWall walls[map->columns * map->rows];
+            memset(walls, 0x0, map->columns * map->rows * sizeof(nearWall));
+            for (uint16_t j = 0; j < e->numCells; j++) {
+                const mapCell *c = (&e->cells[j]);
                 if (c->ent == NULL) {
                     continue;
                 }
 
-                walls[wallIdx].idx = wallIdx;
+                walls[wallIdx].wallIdx = wallIdx;
+                walls[wallIdx].type = c->ent->type;
+                walls[wallIdx].pos = c->pos;
                 walls[wallIdx].distanceSquared = b2DistanceSquared(cell->pos, c->pos);
                 wallIdx++;
             }
-            insertionSort(walls, wallIdx);
+            insertionSortWalls(walls, wallIdx);
 
             const uint32_t startIdx = i * MAX_NEAREST_WALLS;
-            memcpy(nearestWalls + startIdx, walls, MAX_NEAREST_WALLS * sizeof(nearEntity));
+            memcpy(nearestWalls + startIdx, walls, MAX_NEAREST_WALLS * sizeof(nearWall));
         }
         map->droneSpawns = droneSpawns;
         map->packedLayout = packedLayout;
@@ -638,6 +658,7 @@ void destroyMaps() {
         fastFree(map->droneSpawns);
         fastFree(map->packedLayout);
         fastFree(map->nearestWalls);
+        fastFree(map->paths);
     }
 }
 

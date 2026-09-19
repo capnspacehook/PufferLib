@@ -145,6 +145,12 @@ static const float MIN_SD_SPAWN_DISTANCE = 3.0f;
 static const float WALL_THICKNESS = 4.0f;
 static const float FLOATING_WALL_THICKNESS = 3.0f;
 static const float FLOATING_WALL_DAMPING = 0.75f;
+// box2d's default sleep threshold is 0.05, tuned for a world where a typical
+// body is about a meter across. Floating walls are 3 units wide and everything
+// here moves at tens of units per second, so at the default they creep along
+// below any visible speed forever and never sleep, staying in the broad phase
+// and the solver for the whole round.
+static const float FLOATING_WALL_SLEEP_THRESHOLD = 0.5f;
 static const float STANDARD_WALL_RESTITUTION = 0.01f;
 static const float STANDARD_WALL_FRICTION = 0.3f;
 static const float BOUNCY_WALL_RESTITUTION = 1.0f;

@@ -82,6 +82,17 @@ typedef struct nearEntity {
     float distanceSquared;
 } nearEntity;
 
+// One of the nearest static walls to a map cell. Static wall geometry is
+// fixed per map, so position and type are stored alongside the index here
+// and callers never have to chase a pointer into the per-env wall array to
+// compute distances or fill observations.
+typedef struct nearWall {
+    float distanceSquared;
+    uint16_t wallIdx;
+    uint8_t type;
+    b2Vec2 pos;
+} nearWall;
+
 typedef struct mapEntry {
     const char *layout;
     const uint8_t columns;
@@ -99,7 +110,11 @@ typedef struct mapEntry {
     mapBounds spawnQuads[4];
     bool *droneSpawns;
     float *packedLayout;
-    nearEntity *nearestWalls;
+    nearWall *nearestWalls;
+    // flow field for every (destination, source) cell pair; identical for
+    // every env on this map so it's built once in initMaps and read-only
+    // afterwards
+    uint8_t *paths;
 } mapEntry;
 
 // a cell in the map; ent will be NULL if the cell is empty

@@ -73,7 +73,7 @@ static inline int16_t entityPosToCellIdx(const iwEnv *e, const b2Vec2 pos) {
         return -1;
     }
     const int16_t cellIdx = cellIndex(e, (int8_t)cellCol, (int8_t)cellRow);
-    if (cellIdx < 0 || (uint16_t)cellIdx >= cc_array_size(e->cells)) {
+    if (cellIdx < 0 || (uint16_t)cellIdx >= e->numCells) {
         DEBUG_LOGF("invalid cell index: %d from position: (%f, %f)", cellIdx, pos.x, pos.y);
         return -1;
     }
@@ -166,6 +166,7 @@ b2Transform entityTransform(const entity *ent) {
     wallEntity *wall;
     projectileEntity *proj;
     droneEntity *drone;
+    weaponPickupEntity *pickup;
 
     switch (ent->type) {
     case STANDARD_WALL_ENTITY:
@@ -183,6 +184,11 @@ b2Transform entityTransform(const entity *ent) {
     case DRONE_ENTITY:
         drone = ent->entity;
         transform.p = drone->pos;
+        transform.q = b2Rot_identity;
+        return transform;
+    case WEAPON_PICKUP_ENTITY:
+        pickup = ent->entity;
+        transform.p = pickup->pos;
         transform.q = b2Rot_identity;
         return transform;
     default:
@@ -318,7 +324,7 @@ uint8_t cellOffsets[8][2] = {
 // will be returned
 bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos, int8_t quad) {
     uint8_t checkedCells[BITNSLOTS(MAX_CELLS)] = {0};
-    const size_t nCells = cc_array_size(e->cells) - 1;
+    const size_t nCells = e->numCells - 1;
     uint16_t attempts = 0;
     bool laxDroneDistanceChecks = false;
     float minSpawnDistance = MIN_SPAWN_DISTANCE;
@@ -357,7 +363,7 @@ bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos,
         bitSet(checkedCells, cellIdx);
         attempts++;
 
-        const mapCell *cell = safe_array_get_at(e->cells, cellIdx);
+        const mapCell *cell = (&e->cells[cellIdx]);
         if (cell->ent != NULL) {
             continue;
         }
@@ -394,7 +400,7 @@ bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos,
                             continue;
                         }
                         const int16_t testCellIdx = cellIndex(e, col, row);
-                        const mapCell *testCell = safe_array_get_at(e->cells, testCellIdx);
+                        const mapCell *testCell = (&e->cells[testCellIdx]);
                         if (testCell->ent != NULL && testCell->ent->type == DEATH_WALL_ENTITY) {
                             deathWallNeighboring = true;
                             break;
@@ -470,6 +476,7 @@ entity *createWall(iwEnv *e, const b2Vec2 pos, const float width, const float he
         wallBodyDef.linearDamping = FLOATING_WALL_DAMPING;
         wallBodyDef.angularDamping = FLOATING_WALL_DAMPING;
         wallBodyDef.isAwake = false;
+        wallBodyDef.sleepThreshold = FLOATING_WALL_SLEEP_THRESHOLD;
     }
     b2BodyId wallBodyID = b2CreateBody(e->worldID, &wallBodyDef);
 
@@ -527,7 +534,7 @@ void destroyWall(iwEnv *e, wallEntity *wall, const bool full) {
     destroyEntity(e, wall->ent);
 
     if (full) {
-        mapCell *cell = safe_array_get_at(e->cells, wall->mapCellIdx);
+        mapCell *cell = (&e->cells[wall->mapCellIdx]);
         cell->ent = NULL;
     }
 
@@ -587,7 +594,10 @@ void createWeaponPickupBodyShape(const iwEnv *e, weaponPickupEntity *pickup) {
     pickupShapeDef.filter.categoryBits = WEAPON_PICKUP_SHAPE;
     pickupShapeDef.filter.maskBits = FLOATING_WALL_SHAPE | DRONE_SHAPE;
     pickupShapeDef.isSensor = true;
-    pickupShapeDef.enableSensorEvents = true;
+    // overlaps are resolved in weaponPickupsOverlapStep instead; box2d
+    // re-derives every sensor's overlap set inside b2World_Step, which is far
+    // more expensive than testing a handful of static boxes directly
+    pickupShapeDef.enableSensorEvents = false;
     pickupShapeDef.userData = pickup->ent;
     const b2Polygon pickupPolygon = b2MakeBox(PICKUP_THICKNESS / 2.0f, PICKUP_THICKNESS / 2.0f);
     pickup->shapeID = b2CreatePolygonShape(pickup->bodyID, &pickupShapeDef, &pickupPolygon);
@@ -615,7 +625,7 @@ void createWeaponPickup(iwEnv *e) {
         ERRORF("invalid position for weapon pickup spawn: (%f, %f)", pos.x, pos.y);
     }
     pickup->mapCellIdx = cellIdx;
-    mapCell *cell = safe_array_get_at(e->cells, cellIdx);
+    mapCell *cell = (&e->cells[cellIdx]);
     cell->ent = ent;
 
     createWeaponPickupBodyShape(e, pickup);
@@ -626,7 +636,7 @@ void createWeaponPickup(iwEnv *e) {
 void destroyWeaponPickup(iwEnv *e, weaponPickupEntity *pickup) {
     destroyEntity(e, pickup->ent);
 
-    mapCell *cell = safe_array_get_at(e->cells, pickup->mapCellIdx);
+    mapCell *cell = (&e->cells[pickup->mapCellIdx]);
     cell->ent = NULL;
 
     if (!pickup->bodyDestroyed) {
@@ -651,7 +661,7 @@ void disableWeaponPickup(iwEnv *e, weaponPickupEntity *pickup) {
     b2DestroyBody(pickup->bodyID);
     pickup->bodyDestroyed = true;
 
-    mapCell *cell = safe_array_get_at(e->cells, pickup->mapCellIdx);
+    mapCell *cell = (&e->cells[pickup->mapCellIdx]);
     ASSERT(cell->ent != NULL);
     cell->ent = NULL;
 
@@ -711,6 +721,11 @@ void createDroneShield(iwEnv *e, droneEntity *drone, const int8_t groupIdx) {
     drone->shield = shield;
 }
 
+void createDroneTrails(droneEntity *drone) {
+    create_array(&drone->brakeTrailPoints, 64);
+    drone->trailPoints = fastCalloc(1, sizeof(trailPoints));
+}
+
 void createDrone(iwEnv *e, const uint8_t idx) {
     const int8_t groupIdx = -(idx + 1);
     b2BodyDef droneBodyDef = b2DefaultBodyDef();
@@ -760,15 +775,19 @@ void createDrone(iwEnv *e, const uint8_t idx) {
         drone->team = idx / (e->numDrones / 2);
     }
     drone->initalPos = droneBodyDef.position;
+    drone->lastPos = droneBodyDef.position;
     drone->pos = droneBodyDef.position;
     drone->mapCellIdx = entityPosToCellIdx(e, droneBodyDef.position);
     drone->lastAim = (b2Vec2){.x = 0.0f, .y = -1.0f};
     drone->livesLeft = DRONE_LIVES;
-    create_array(&drone->brakeTrailPoints, 64);
     drone->respawnGuideLifetime = UINT16_MAX;
     memset(&drone->stepInfo, 0x0, sizeof(droneStepInfo));
     create_array(&drone->physicsTracking, 128);
     drone->killedBy = -1;
+
+    if (e->client != NULL) {
+        createDroneTrails(drone);
+    }
 
     entity *ent = createEntity(e, DRONE_ENTITY, drone);
     drone->ent = ent;
@@ -796,6 +815,15 @@ void createDronePiece(iwEnv *e, droneEntity *drone, const bool fromShield) {
     const b2Vec2 direction = {.x = randFloat(&e->rng, -1.0f, 1.0f), .y = randFloat(&e->rng, -1.0f, 1.0f)};
     const b2Vec2 pos = b2MulAdd(drone->pos, distance, direction);
     const b2Rot rot = b2MakeRot(randFloat(&e->rng, -PI, PI));
+    const float bonus = 1.0f + min(b2Length(drone->velocity) / 15.0f, 5.0f);
+    const float speed = randFloat(&e->rng, DRONE_PIECE_MIN_SPEED, DRONE_PIECE_MAX_SPEED) * bonus;
+    const float angularVelocity = randFloat(&e->rng, -PI, PI);
+
+    // only create drone pieces when we're rendering, but always draw
+    // random values to keep the rng consistent
+    if (e->client == NULL) {
+        return;
+    }
 
     dronePieceEntity *piece = fastCalloc(1, sizeof(dronePieceEntity));
     piece->droneIdx = drone->idx;
@@ -814,16 +842,18 @@ void createDronePiece(iwEnv *e, droneEntity *drone, const bool fromShield) {
     pieceBodyDef.rotation = rot;
     pieceBodyDef.linearDamping = DRONE_PIECE_LINEAR_DAMPING;
     pieceBodyDef.angularDamping = DRONE_PIECE_ANGULAR_DAMPING;
-    const float bonus = 1.0f + min(b2Length(drone->velocity) / 15.0f, 5.0f);
-    const float speed = randFloat(&e->rng, DRONE_PIECE_MIN_SPEED, DRONE_PIECE_MAX_SPEED) * bonus;
+    pieceBodyDef.sleepThreshold = FLOATING_WALL_SLEEP_THRESHOLD;
     pieceBodyDef.linearVelocity = b2MulSV(speed, direction);
-    pieceBodyDef.angularVelocity = randFloat(&e->rng, -PI, PI);
+    pieceBodyDef.angularVelocity = angularVelocity;
     pieceBodyDef.userData = ent;
     piece->bodyID = b2CreateBody(e->worldID, &pieceBodyDef);
 
     b2ShapeDef pieceShapeDef = b2DefaultShapeDef();
     pieceShapeDef.filter.categoryBits = DRONE_PIECE_SHAPE;
-    pieceShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | DRONE_PIECE_SHAPE;
+    // debris must not push floating walls around: it only exists when a client
+    // is attached, so letting it affect them would make rendered rounds play
+    // differently from headless ones
+    pieceShapeDef.filter.maskBits = WALL_SHAPE | DRONE_PIECE_SHAPE;
     pieceShapeDef.density = 1.0f;
     pieceShapeDef.material.friction = 0.5f;
     pieceShapeDef.userData = ent;
@@ -877,11 +907,6 @@ void destroyDroneShield(iwEnv *e, shieldEntity *shield, const bool createPieces)
 }
 
 void destroyDrone(iwEnv *e, droneEntity *drone) {
-    for (size_t i = 0; i < cc_array_size(drone->brakeTrailPoints); i++) {
-        brakeTrailPoint *trailPoint = safe_array_get_at(drone->brakeTrailPoints, i);
-        fastFree(trailPoint);
-    }
-    cc_array_destroy(drone->brakeTrailPoints);
     for (size_t i = 0; i < cc_array_size(drone->physicsTracking); i++) {
         physicsStepInfo *physicsStep = safe_array_get_at(drone->physicsTracking, i);
         fastFree(physicsStep);
@@ -893,6 +918,17 @@ void destroyDrone(iwEnv *e, droneEntity *drone) {
     shieldEntity *shield = drone->shield;
     if (shield != NULL) {
         destroyDroneShield(e, shield, false);
+    }
+
+    if (drone->brakeTrailPoints != NULL) {
+        for (size_t i = 0; i < cc_array_size(drone->brakeTrailPoints); i++) {
+            brakeTrailPoint *trailPoint = safe_array_get_at(drone->brakeTrailPoints, i);
+            fastFree(trailPoint);
+        }
+        cc_array_destroy(drone->brakeTrailPoints);
+    }
+    if (drone->trailPoints != NULL) {
+        fastFree(drone->trailPoints);
     }
 
     b2DestroyBody(drone->bodyID);
@@ -1096,6 +1132,7 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
 
     drone->dead = false;
     drone->pos = pos;
+    drone->lastPos = pos;
     drone->mapCellIdx = entityPosToCellIdx(e, drone->pos);
     drone->respawnGuideLifetime = UINT16_MAX;
     drone->killedBy = -1;
@@ -1104,8 +1141,8 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
 
     createDroneShield(e, drone, -(drone->idx + 1));
 
-    if (e->client != NULL) {
-        drone->trailPoints.length = 0;
+    if (drone->trailPoints != NULL) {
+        drone->trailPoints->length = 0;
     }
 
     return true;
@@ -1129,7 +1166,7 @@ void createProjectile(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
     if (cellIdx == -1) {
         projectileInWall = true;
     } else {
-        const mapCell *cell = safe_array_get_at(e->cells, cellIdx);
+        const mapCell *cell = (&e->cells[cellIdx]);
         if (cell->ent != NULL && entityTypeIsWall(cell->ent->type)) {
             projectileInWall = true;
         }
@@ -1184,6 +1221,9 @@ void createProjectile(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
     projectile->lastSpeed = projectile->speed;
     if (projectile->weaponInfo->type == BLACK_HOLE_WEAPON) {
         create_array(&projectile->entsInBlackHole, 4);
+    }
+    if (e->client != NULL) {
+        projectile->trailPoints = fastCalloc(1, sizeof(trailPoints));
     }
     cc_array_add(e->projectiles, projectile);
 
@@ -1683,6 +1723,10 @@ void destroyProjectile(iwEnv *e, projectileEntity *projectile, const bool proces
         cc_array_destroy(projectile->entsInBlackHole);
     }
 
+    if (projectile->trailPoints != NULL) {
+        fastFree(projectile->trailPoints);
+    }
+
     fastFree(projectile);
 }
 
@@ -1731,7 +1775,7 @@ void createSuddenDeathWalls(iwEnv *e, const b2Vec2 startPos, const b2Vec2 size) 
         ERRORF("invalid position for sudden death wall: (%f, %f)", startPos.x, startPos.y);
     }
     for (uint16_t i = startIdx; i <= endIdx; i += indexIncrement) {
-        mapCell *cell = safe_array_get_at(e->cells, i);
+        mapCell *cell = (&e->cells[i]);
         if (cell->ent != NULL) {
             if (cell->ent->type == WEAPON_PICKUP_ENTITY) {
                 weaponPickupEntity *pickup = cell->ent->entity;
@@ -1826,7 +1870,7 @@ void handleSuddenDeath(iwEnv *e) {
     cc_array_iter_init(&floatingWallIter, e->floatingWalls);
     wallEntity *wall;
     while (cc_array_iter_next(&floatingWallIter, (void **)&wall) != CC_ITER_END) {
-        const mapCell *cell = safe_array_get_at(e->cells, wall->mapCellIdx);
+        const mapCell *cell = (&e->cells[wall->mapCellIdx]);
         if (cell->ent != NULL && entityTypeIsWall(cell->ent->type)) {
             // floating wall is overlapping with a wall, destroy it
             const enum cc_stat res = cc_array_iter_remove_fast(&floatingWallIter, NULL);
@@ -1846,7 +1890,7 @@ void handleSuddenDeath(iwEnv *e) {
     cc_array_iter_init(&projectileIter, e->projectiles);
     projectileEntity *projectile;
     while (cc_array_iter_next(&projectileIter, (void **)&projectile) != CC_ITER_END) {
-        const mapCell *cell = safe_array_get_at(e->cells, projectile->mapCellIdx);
+        const mapCell *cell = (&e->cells[projectile->mapCellIdx]);
         if (cell->ent != NULL && entityTypeIsWall(cell->ent->type)) {
             cc_array_iter_remove_fast(&projectileIter, NULL);
             destroyProjectile(e, projectile, false, false);
@@ -2100,6 +2144,7 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
 
     const float distance = b2Distance(drone->lastPos, drone->pos);
     e->stats[drone->idx].distanceTraveled += distance;
+    drone->lastPos = drone->pos;
 
     shieldEntity *shield = drone->shield;
     if (shield != NULL) {
@@ -2276,6 +2321,129 @@ void projectilesStep(iwEnv *e) {
     destroyExplodedProjectiles(e);
 }
 
+// a pickup and a floating wall are both boxes, so their centers have to be
+// closer than the sum of their half diagonals to touch at all
+static const float PICKUP_WALL_CHECK_DISTANCE_SQUARED =
+    SQUARED(((PICKUP_THICKNESS + FLOATING_WALL_THICKNESS) * 0.70710678f) / 2.0f * 2.0f);
+
+// squared distance from a point to the axis aligned pickup box
+static inline float pickupDistanceSquared(const b2Vec2 pickupPos, const b2Vec2 pos) {
+    const float halfExtent = PICKUP_THICKNESS / 2.0f;
+    const float dx = max(fabsf(pos.x - pickupPos.x) - halfExtent, 0.0f);
+    const float dy = max(fabsf(pos.y - pickupPos.y) - halfExtent, 0.0f);
+    return SQUARED(dx) + SQUARED(dy);
+}
+
+static inline bool pickupOverlapsDrone(const b2Vec2 pickupPos, const b2Vec2 dronePos) {
+    return pickupDistanceSquared(pickupPos, dronePos) <= SQUARED(DRONE_RADIUS);
+}
+
+// A drone can cross a whole pickup within one physics frame, so test the
+// segment it actually travelled rather than only where it ended up. Distance to
+// a box is convex along a segment, so a ternary search finds the closest
+// approach exactly; the bounding box reject means it almost never runs.
+static bool pickupOverlapsDronePath(const b2Vec2 pickupPos, const b2Vec2 from, const b2Vec2 to) {
+    const float reach = (PICKUP_THICKNESS / 2.0f) + DRONE_RADIUS;
+    if (min(from.x, to.x) - pickupPos.x > reach || pickupPos.x - max(from.x, to.x) > reach ||
+        min(from.y, to.y) - pickupPos.y > reach || pickupPos.y - max(from.y, to.y) > reach) {
+        return false;
+    }
+
+    float lo = 0.0f;
+    float hi = 1.0f;
+    for (uint8_t i = 0; i < 16; i++) {
+        const float third = (hi - lo) / 3.0f;
+        const float m1 = lo + third;
+        const float m2 = hi - third;
+        if (pickupDistanceSquared(pickupPos, b2Lerp(from, to, m1)) <
+            pickupDistanceSquared(pickupPos, b2Lerp(from, to, m2))) {
+            hi = m2;
+        } else {
+            lo = m1;
+        }
+    }
+    return pickupDistanceSquared(pickupPos, b2Lerp(from, to, 0.5f * (lo + hi))) <= SQUARED(DRONE_RADIUS);
+}
+
+// Resolves weapon pickup overlaps without box2d sensors. Pickups are a handful
+// of static 3x3 boxes, so testing them against the drones and floating walls
+// directly costs a few dozen float compares, where box2d's sensor pass rebuilds
+// the overlap set for every sensor on every step.
+void weaponPickupsOverlapStep(iwEnv *e) {
+    const size_t numPickups = cc_array_size(e->pickups);
+    if (numPickups == 0) {
+        return;
+    }
+
+    // gather the moving entities once; the inner loops below would otherwise
+    // chase the same scattered pointers for every pickup
+    const size_t numFloatingWalls = cc_array_size(e->floatingWalls);
+    b2Vec2 wallPositions[MAX_FLOATING_WALLS];
+    wallEntity *walls[MAX_FLOATING_WALLS];
+    for (size_t i = 0; i < numFloatingWalls; i++) {
+        wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
+        walls[i] = wall;
+        wallPositions[i] = wall->pos;
+    }
+
+    b2Vec2 dronePositions[_MAX_DRONES];
+    b2Vec2 droneLastPositions[_MAX_DRONES];
+    uint8_t liveDrones[_MAX_DRONES];
+    uint8_t numLiveDrones = 0;
+    for (uint8_t i = 0; i < e->numDrones; i++) {
+        const droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (drone->dead) {
+            continue;
+        }
+        dronePositions[numLiveDrones] = drone->pos;
+        droneLastPositions[numLiveDrones] = drone->lastPos;
+        liveDrones[numLiveDrones] = i;
+        numLiveDrones++;
+    }
+
+    for (size_t i = 0; i < numPickups; i++) {
+        weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
+        if (pickup->respawnWait != 0.0f) {
+            continue;
+        }
+        const b2Vec2 pickupPos = pickup->pos;
+
+        // a pickup covered by a floating wall can't be picked up
+        uint8_t floatingWallsTouching = 0;
+        for (size_t j = 0; j < numFloatingWalls; j++) {
+            if (b2DistanceSquared(pickupPos, wallPositions[j]) > PICKUP_WALL_CHECK_DISTANCE_SQUARED) {
+                continue;
+            }
+            const b2DistanceOutput output = closestPoint(pickup->ent, walls[j]->ent);
+            if (output.distance <= 0.0f) {
+                floatingWallsTouching++;
+            }
+        }
+        pickup->floatingWallsTouching = floatingWallsTouching;
+        if (floatingWallsTouching != 0) {
+            continue;
+        }
+
+        for (uint8_t j = 0; j < numLiveDrones; j++) {
+            if (!pickupOverlapsDrone(pickupPos, dronePositions[j]) &&
+                !pickupOverlapsDronePath(pickupPos, droneLastPositions[j], dronePositions[j])) {
+                continue;
+            }
+
+            droneEntity *drone = safe_array_get_at(e->drones, liveDrones[j]);
+            disableWeaponPickup(e, pickup);
+            drone->stepInfo.pickedUpWeapon = true;
+            drone->stepInfo.prevWeapon = drone->weaponInfo->type;
+            droneChangeWeapon(e, drone, pickup->weapon);
+
+            e->stats[drone->idx].weaponsPickedUp[pickup->weapon]++;
+            e->stats[drone->idx].totalWeaponsPickedUp++;
+            DEBUG_LOGF("drone %d picked up weapon %d", drone->idx, pickup->weapon);
+            break;
+        }
+    }
+}
+
 void weaponPickupsStep(iwEnv *e) {
     CC_ArrayIter iter;
     cc_array_iter_init(&iter, e->pickups);
@@ -2312,7 +2480,7 @@ void weaponPickupsStep(iwEnv *e) {
         pickup->mapCellIdx = cellIdx;
         createWeaponPickupBodyShape(e, pickup);
 
-        mapCell *cell = safe_array_get_at(e->cells, cellIdx);
+        mapCell *cell = (&e->cells[cellIdx]);
         cell->ent = pickup->ent;
     }
 }
@@ -2381,8 +2549,8 @@ void handleBodyMoveEvents(iwEnv *e) {
                 proj->speed = b2Length(proj->velocity);
             }
 
-            if (e->client != NULL) {
-                updateTrailPoints(&proj->trailPoints, MAX_PROJECTLE_TRAIL_POINTS, newPos);
+            if (proj->trailPoints != NULL) {
+                updateTrailPoints(proj->trailPoints, MAX_PROJECTLE_TRAIL_POINTS, newPos);
             }
             break;
         case DRONE_ENTITY:
@@ -2399,8 +2567,8 @@ void handleBodyMoveEvents(iwEnv *e) {
             drone->lastVelocity = drone->velocity;
             drone->velocity = b2Body_GetLinearVelocity(drone->bodyID);
 
-            if (e->client != NULL) {
-                updateTrailPoints(&drone->trailPoints, MAX_DRONE_TRAIL_POINTS, newPos);
+            if (drone->trailPoints != NULL) {
+                updateTrailPoints(drone->trailPoints, MAX_DRONE_TRAIL_POINTS, newPos);
             }
             break;
         case SHIELD_ENTITY:
@@ -2729,45 +2897,6 @@ void handleContactEvents(iwEnv *e) {
 
 // set pickup to respawn somewhere else randomly if a drone touched it,
 // mark the pickup as disabled if a floating wall is touching it
-void handleWeaponPickupBeginTouch(iwEnv *e, const entity *sensor, entity *visitor) {
-    weaponPickupEntity *pickup = sensor->entity;
-    if (pickup->floatingWallsTouching != 0) {
-        return;
-    }
-
-    wallEntity *wall;
-
-    switch (visitor->type) {
-    case DRONE_ENTITY:
-        disableWeaponPickup(e, pickup);
-
-        droneEntity *drone = visitor->entity;
-        drone->stepInfo.pickedUpWeapon = true;
-        drone->stepInfo.prevWeapon = drone->weaponInfo->type;
-        droneChangeWeapon(e, drone, pickup->weapon);
-
-        e->stats[drone->idx].weaponsPickedUp[pickup->weapon]++;
-        e->stats[drone->idx].totalWeaponsPickedUp++;
-        DEBUG_LOGF("drone %d picked up weapon %d", drone->idx, pickup->weapon);
-        break;
-    case STANDARD_WALL_ENTITY:
-    case BOUNCY_WALL_ENTITY:
-    case DEATH_WALL_ENTITY:
-        wall = visitor->entity;
-        if (!wall->isFloating) {
-            if (!wall->isSuddenDeath) {
-                ERRORF("non sudden death wall type %d at cell %d touched weapon pickup", visitor->type, wall->mapCellIdx);
-            }
-            return;
-        }
-
-        pickup->floatingWallsTouching++;
-        break;
-    default:
-        ERRORF("invalid weapon pickup begin touch visitor %d", visitor->type);
-    }
-}
-
 // explode proximity detonating projectiles
 void handleProjectileBeginTouch(iwEnv *e, const entity *sensor, entity *visitor) {
     projectileEntity *projectile = sensor->entity;
@@ -2815,33 +2944,6 @@ void handleProjectileBeginTouch(iwEnv *e, const entity *sensor, entity *visitor)
         break;
     default:
         ERRORF("invalid projectile type %d for begin touch event", sensor->type);
-    }
-}
-
-// mark the pickup as enabled if no floating walls are touching it
-void handleWeaponPickupEndTouch(const entity *sensor, entity *visitor) {
-    weaponPickupEntity *pickup = sensor->entity;
-    if (pickup->respawnWait != 0.0f) {
-        return;
-    }
-
-    wallEntity *wall;
-
-    switch (visitor->type) {
-    case DRONE_ENTITY:
-        break;
-    case STANDARD_WALL_ENTITY:
-    case BOUNCY_WALL_ENTITY:
-    case DEATH_WALL_ENTITY:
-        wall = visitor->entity;
-        if (!wall->isFloating) {
-            return;
-        }
-
-        pickup->floatingWallsTouching--;
-        break;
-    default:
-        ERRORF("invalid weapon pickup end touch visitor %d", visitor->type);
     }
 }
 
@@ -2895,16 +2997,10 @@ void handleSensorEvents(iwEnv *e) {
         entity *v = b2Shape_GetUserData(event->visitorShapeId);
         ASSERT(v != NULL);
 
-        switch (s->type) {
-        case WEAPON_PICKUP_ENTITY:
-            handleWeaponPickupBeginTouch(e, s, v);
-            break;
-        case PROJECTILE_ENTITY:
-            handleProjectileBeginTouch(e, s, v);
-            break;
-        default:
+        if (s->type != PROJECTILE_ENTITY) {
             ERRORF("unknown entity type %d for sensor begin touch event", s->type);
         }
+        handleProjectileBeginTouch(e, s, v);
     }
 
     for (int i = 0; i < events.endCount; ++i) {
@@ -2921,29 +3017,106 @@ void handleSensorEvents(iwEnv *e) {
             ASSERT(v != NULL);
         }
 
-        if (s->type == PROJECTILE_ENTITY) {
-            handleProjectileEndTouch(s, v);
-            continue;
-        }
-
-        if (v != NULL) {
-            handleWeaponPickupEndTouch(s, v);
-        }
+        ASSERT(s->type == PROJECTILE_ENTITY);
+        handleProjectileEndTouch(s, v);
     }
 }
 
-void findNearWalls(const iwEnv *e, const droneEntity *drone, nearEntity nearestWalls[], const uint8_t nWalls) {
-    nearEntity nearWalls[MAX_NEAREST_WALLS];
+// index of the (destination, source) pair in a map's flow field
+static inline uint32_t pathOffset(const iwEnv *e, const uint16_t srcCellIdx, const uint16_t destCellIdx) {
+    const uint32_t cellCount = e->map->rows * e->map->columns;
+    return (uint32_t)destCellIdx * cellCount + srcCellIdx;
+}
 
-    for (uint8_t i = 0; i < MAX_NEAREST_WALLS; ++i) {
-        const uint32_t idx = (MAX_NEAREST_WALLS * drone->mapCellIdx) + i;
-        const uint16_t wallIdx = e->map->nearestWalls[idx].idx;
-        wallEntity *wall = safe_array_get_at(e->walls, wallIdx);
-        nearWalls[i].entity = wall;
-        nearWalls[i].distanceSquared = b2DistanceSquared(drone->pos, wall->pos);
+// flood fills flatPaths with the direction each cell should move in to
+// reach destCellIdx; buffer is scratch space for the BFS queue and must
+// hold at least 8 entries per cell
+void pathfindBFS(const iwEnv *e, uint8_t *flatPaths, int8_t (*buffer)[3], const uint16_t destCellIdx) {
+    uint8_t (*paths)[e->map->columns] = (uint8_t (*)[e->map->columns])flatPaths;
+
+    uint16_t start = 0;
+    uint16_t end = 1;
+
+    const mapCell *cell = (&e->cells[destCellIdx]);
+    if (cell->ent != NULL && entityTypeIsWall(cell->ent->type)) {
+        return;
     }
-    insertionSort(nearWalls, MAX_NEAREST_WALLS);
-    memcpy(nearestWalls, nearWalls, nWalls * sizeof(nearEntity));
+    const int8_t destCol = destCellIdx % e->map->columns;
+    const int8_t destRow = destCellIdx / e->map->columns;
+
+    buffer[start][0] = 8;
+    buffer[start][1] = destCol;
+    buffer[start][2] = destRow;
+    while (start < end) {
+        const int8_t direction = buffer[start][0];
+        const int8_t startCol = buffer[start][1];
+        const int8_t startRow = buffer[start][2];
+        start++;
+
+        if (startCol < 0 || startCol >= e->map->columns || startRow < 0 || startRow >= e->map->rows || paths[startRow][startCol] != UINT8_MAX) {
+            continue;
+        }
+        int16_t cellIdx = cellIndex(e, startCol, startRow);
+        const mapCell *cell = (&e->cells[cellIdx]);
+        if (cell->ent != NULL && entityTypeIsWall(cell->ent->type)) {
+            paths[startRow][startCol] = 8;
+            continue;
+        }
+
+        paths[startRow][startCol] = direction;
+
+        buffer[end][0] = 6; // up
+        buffer[end][1] = startCol;
+        buffer[end][2] = startRow + 1;
+        end++;
+
+        buffer[end][0] = 2; // down
+        buffer[end][1] = startCol;
+        buffer[end][2] = startRow - 1;
+        end++;
+
+        buffer[end][0] = 0; // right
+        buffer[end][1] = startCol - 1;
+        buffer[end][2] = startRow;
+        end++;
+
+        buffer[end][0] = 4; // left
+        buffer[end][1] = startCol + 1;
+        buffer[end][2] = startRow;
+        end++;
+
+        buffer[end][0] = 5; // up left
+        buffer[end][1] = startCol + 1;
+        buffer[end][2] = startRow + 1;
+        end++;
+
+        buffer[end][0] = 3; // down left
+        buffer[end][1] = startCol + 1;
+        buffer[end][2] = startRow - 1;
+        end++;
+
+        buffer[end][0] = 1; // down right
+        buffer[end][1] = startCol - 1;
+        buffer[end][2] = startRow - 1;
+        end++;
+
+        buffer[end][0] = 7; // up right
+        buffer[end][1] = startCol - 1;
+        buffer[end][2] = startRow + 1;
+        end++;
+    }
+}
+
+void findNearWalls(const iwEnv *e, const droneEntity *drone, nearWall nearestWalls[], const uint8_t nWalls) {
+    nearWall nearWalls[MAX_NEAREST_WALLS];
+
+    const nearWall *candidates = e->map->nearestWalls + (MAX_NEAREST_WALLS * drone->mapCellIdx);
+    for (uint8_t i = 0; i < MAX_NEAREST_WALLS; ++i) {
+        nearWalls[i] = candidates[i];
+        nearWalls[i].distanceSquared = b2DistanceSquared(drone->pos, candidates[i].pos);
+    }
+    insertionSortWalls(nearWalls, MAX_NEAREST_WALLS);
+    memcpy(nearestWalls, nearWalls, nWalls * sizeof(nearWall));
 }
 
 #endif
