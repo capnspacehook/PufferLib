@@ -54,11 +54,8 @@ float castCircleCallback(b2ShapeId shapeId, b2Vec2 point, b2Vec2 normal, float f
 }
 
 static inline uint32_t pathOffset(const iwEnv *e, uint16_t srcCellIdx, uint16_t destCellIdx) {
-    const uint8_t srcCol = srcCellIdx % e->map->columns;
-    const uint8_t srcRow = srcCellIdx / e->map->columns;
-    const uint8_t destCol = destCellIdx % e->map->columns;
-    const uint8_t destRow = destCellIdx / e->map->columns;
-    return (destRow * e->map->rows * e->map->columns * e->map->rows) + (destCol * e->map->rows * e->map->columns) + (srcRow * e->map->columns) + srcCol;
+    const uint32_t cellCount = e->map->rows * e->map->columns;
+    return destCellIdx * cellCount + srcCellIdx;
 }
 
 void pathfindBFS(const iwEnv *e, uint8_t *flatPaths, uint16_t destCellIdx) {
