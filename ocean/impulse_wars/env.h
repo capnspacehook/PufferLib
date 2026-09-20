@@ -703,7 +703,7 @@ void puf_reset(iwEnv *e) {
 float computeReward(iwEnv *e, droneEntity *drone) {
     float reward = 0.0f;
 
-    if (drone->energyFullyDepleted && drone->energyRefillWait == DRONE_ENERGY_REFILL_EMPTY_WAIT) {
+    if (drone->stepInfo.emptiedEnergy) {
         reward += e->energyEmptiedPunishment;
     }
 
@@ -782,7 +782,7 @@ void computeRewards(iwEnv *e, const bool roundOver, const int8_t winner, const i
         if (!drone->dead && roundOver && (winner == i || winningTeam == drone->team)) {
             reward += e->winReward;
         } else if (drone->diedThisStep) {
-            reward = e->deathPunishment;
+            reward += e->deathPunishment;
             if (drone->killedBy == drone->idx) {
                 reward += e->selfKillPunishment;
             }
@@ -1006,7 +1006,10 @@ void updateVisuals(iwEnv *e) {
 }
 
 // TODO: 2nd agent doesn't seem to work right
-void stepPhysicsFrame(iwEnv *e, const agentActions stepActions[]) {
+bool stepPhysicsFrame(iwEnv *e, const agentActions stepActions[], int8_t *winner, int8_t *winningTeam) {
+    int8_t lastAlive = -1;
+    int8_t lastAliveTeam = -1;
+
     for (uint8_t i = 0; i < e->numDrones; i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
         if (drone->dead) {
@@ -1059,8 +1062,6 @@ void stepPhysicsFrame(iwEnv *e, const agentActions stepActions[]) {
 
     projectilesStep(e);
 
-    int8_t lastAlive = -1;
-    int8_t lastAliveTeam = -1;
     bool allAliveOnSameTeam = false;
     bool roundOver = false;
     uint8_t deadDrones = 0;
@@ -1113,81 +1114,15 @@ void stepPhysicsFrame(iwEnv *e, const agentActions stepActions[]) {
     if (roundOver && deadDrones < e->numDrones - 1) {
         lastAlive = -1;
     }
-    computeRewards(e, roundOver, lastAlive, lastAliveTeam);
-
-    if (roundOver) {
-        if (e->numDrones != e->numAgents && e->stepsLeft == 0) {
-            DEBUG_LOG("truncating episode");
-        } else {
-            DEBUG_LOG("terminating episode");
-        }
-
-        for (uint8_t t = 0; t < e->numAgents; t++) {
-            agentTerminals(e, t)[0] = 1.0f;
-        }
-
-        Log log = {0};
-        log.length = e->episodeLength;
-        if (lastAlive != -1) {
-            e->stats[lastAlive].wins = 1.0f;
-        } else if (!e->teamsEnabled || (e->teamsEnabled && lastAliveTeam == -1)) {
-            log.ties = 1.0f;
-        }
-        log.botCLNoise = e->botCLNoise;
-
-        // TODO: handle multiple agents/teams correctly
-        if (e->botCLNoise > 0.0f && lastAlive == 0) {
-            e->botCLNoise -= e->botCLDecay;
-            e->botCLNoise = clamp(e->botCLNoise);
-        }
-
-        for (uint8_t i = 0; i < e->numDrones; i++) {
-            const droneEntity *drone = safe_array_get_at(e->drones, i);
-            if (!drone->dead && e->teamsEnabled && drone->team == lastAliveTeam) {
-                e->stats[i].wins = 1.0f;
-            }
-            // set absolute distance traveled of agent drones
-            e->stats[i].absDistanceTraveled = b2Distance(drone->initalPos, drone->pos);
-        }
-
-        memcpy(log.stats, e->stats, sizeof(e->stats));
-        addLog(e, &log);
-
-        if (e->client != NULL) {
-            e->roundState = ROUND_STATE_ENDING;
-            e->tick_frames_left = END_WAIT_TIME * e->frameRate;
-
-            e->winner = lastAlive;
-            e->winningTeam = lastAliveTeam;
-        }
-
-        e->needsReset = true;
-    }
 
     if (e->client != NULL) {
         updateVisuals(e);
     }
 
-#ifdef PUF_DEBUG
-    bool gotReward = false;
-    for (uint8_t i = 0; i < e->numAgents; i++) {
-        if (agentRewards(e, i)[0] > REWARD_EPS || agentRewards(e, i)[0] < -REWARD_EPS) {
-            gotReward = true;
-            break;
-        }
-    }
-    if (gotReward) {
-        DEBUG_RAW_LOG("!!! rewards: [");
-        for (uint8_t i = 0; i < e->numAgents; i++) {
-            const float reward = agentRewards(e, i)[0];
-            DEBUG_RAW_LOGF("%f", reward);
-            if (i < e->numAgents - 1) {
-                DEBUG_RAW_LOG(", ");
-            }
-        }
-        DEBUG_RAW_LOGF("] step %d\n", e->totalSteps - e->stepsLeft);
-    }
-#endif
+    *winner = lastAlive;
+    *winningTeam = lastAliveTeam;
+
+    return roundOver;
 }
 
 void stepPhysicsFrameMinimal(iwEnv *e) {
@@ -1296,14 +1231,68 @@ void puf_step(iwEnv *e) {
         }
     }
 
+    bool roundOver = false;
+    int8_t lastAlive = -1;
+    int8_t lastAliveTeam = -1;
     for (int i = 0; i < e->frameSkip; i++) {
         e->episodeLength++;
-        stepPhysicsFrame(e, e->cachedActions);
+        roundOver = stepPhysicsFrame(e, e->cachedActions, &lastAlive, &lastAliveTeam);
         e->tick_frames_left--;
 
-        if (e->needsReset) {
+        if (roundOver || e->needsReset) {
             break;
         }
+    }
+
+    computeRewards(e, roundOver, lastAlive, lastAliveTeam);
+
+    if (roundOver) {
+        if (e->numDrones != e->numAgents && e->stepsLeft == 0) {
+            DEBUG_LOG("truncating episode");
+        } else {
+            DEBUG_LOG("terminating episode");
+        }
+
+        for (uint8_t t = 0; t < e->numAgents; t++) {
+            agentTerminals(e, t)[0] = 1.0f;
+        }
+
+        Log log = {0};
+        log.length = e->episodeLength;
+        if (lastAlive != -1) {
+            e->stats[lastAlive].wins = 1.0f;
+        } else if (!e->teamsEnabled || (e->teamsEnabled && lastAliveTeam == -1)) {
+            log.ties = 1.0f;
+        }
+        log.botCLNoise = e->botCLNoise;
+
+        // TODO: handle multiple agents/teams correctly
+        if (e->botCLNoise > 0.0f && e->stats[0].kills > 0.0f) {
+            e->botCLNoise -= e->botCLDecay;
+            e->botCLNoise = clamp(e->botCLNoise);
+        }
+
+        for (uint8_t i = 0; i < e->numDrones; i++) {
+            const droneEntity *drone = safe_array_get_at(e->drones, i);
+            if (!drone->dead && e->teamsEnabled && drone->team == lastAliveTeam) {
+                e->stats[i].wins = 1.0f;
+            }
+            // set absolute distance traveled of agent drones
+            e->stats[i].absDistanceTraveled = b2Distance(drone->initalPos, drone->pos);
+        }
+
+        memcpy(log.stats, e->stats, sizeof(e->stats));
+        addLog(e, &log);
+
+        if (e->client != NULL) {
+            e->roundState = ROUND_STATE_ENDING;
+            e->tick_frames_left = END_WAIT_TIME * e->frameRate;
+
+            e->winner = lastAlive;
+            e->winningTeam = lastAliveTeam;
+        }
+
+        e->needsReset = true;
     }
 
     if (e->client == NULL && e->needsReset) {
@@ -1311,6 +1300,27 @@ void puf_step(iwEnv *e) {
     } else if (e->client == NULL || e->tick_frames_left == 0) {
         computeObs(e);
     }
+
+#ifdef PUF_DEBUG
+    bool gotReward = false;
+    for (uint8_t i = 0; i < e->numAgents; i++) {
+        if (agentRewards(e, i)[0] > REWARD_EPS || agentRewards(e, i)[0] < -REWARD_EPS) {
+            gotReward = true;
+            break;
+        }
+    }
+    if (gotReward) {
+        DEBUG_RAW_LOG("!!! rewards: [");
+        for (uint8_t i = 0; i < e->numAgents; i++) {
+            const float reward = agentRewards(e, i)[0];
+            DEBUG_RAW_LOGF("%f", reward);
+            if (i < e->numAgents - 1) {
+                DEBUG_RAW_LOG(", ");
+            }
+        }
+        DEBUG_RAW_LOGF("] step %d\n", e->totalSteps - e->stepsLeft);
+    }
+#endif
 }
 
 #endif

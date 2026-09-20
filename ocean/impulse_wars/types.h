@@ -224,6 +224,7 @@ typedef struct projectileEntity {
 typedef struct droneStepInfo {
     bool firedShot;
     bool pickedUpWeapon;
+    bool emptiedEnergy;
     enum weaponType prevWeapon;
     float shotHit[_MAX_DRONES];
     float explosionHit[_MAX_DRONES];

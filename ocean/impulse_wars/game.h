@@ -1898,6 +1898,13 @@ void handleSuddenDeath(iwEnv *e) {
     }
 }
 
+void droneEmptyEnergy(droneEntity *drone) {
+    drone->energyFullyDepleted = true;
+    drone->energyFullyDepletedThisStep = true;
+    drone->stepInfo.emptiedEnergy = true;
+    drone->energyRefillWait = DRONE_ENERGY_REFILL_EMPTY_WAIT;
+}
+
 void droneMove(const iwEnv *e, droneEntity *drone, b2Vec2 direction) {
     ASSERT_VEC_BOUNDED(direction);
 
@@ -2007,9 +2014,7 @@ void droneBrake(iwEnv *e, droneEntity *drone, const bool brake) {
     // if energy is empty but burst is being charged, let burst functions
     // handle energy refill
     if (drone->energyLeft == 0.0f && !drone->chargingBurst) {
-        drone->energyFullyDepleted = true;
-        drone->energyFullyDepletedThisStep = true;
-        drone->energyRefillWait = DRONE_ENERGY_REFILL_EMPTY_WAIT;
+        droneEmptyEnergy(drone);
         e->stats[drone->idx].energyEmptied++;
     }
 
@@ -2062,8 +2067,7 @@ void droneBurst(iwEnv *e, droneEntity *drone) {
     drone->burstCharge = 0.0f;
     drone->burstCooldown = DRONE_BURST_COOLDOWN;
     if (drone->energyLeft == 0.0f) {
-        drone->energyFullyDepletedThisStep = true;
-        drone->energyRefillWait = DRONE_ENERGY_REFILL_EMPTY_WAIT;
+        droneEmptyEnergy(drone);
     } else {
         drone->energyRefillWait = DRONE_ENERGY_REFILL_WAIT;
     }
@@ -2091,9 +2095,7 @@ void droneDiscardWeapon(iwEnv *e, droneEntity *drone) {
     }
 
     if (drone->energyLeft == 0.0f) {
-        drone->energyFullyDepleted = true;
-        drone->energyFullyDepletedThisStep = true;
-        drone->energyRefillWait = DRONE_ENERGY_REFILL_EMPTY_WAIT;
+        droneEmptyEnergy(drone);
         e->stats[drone->idx].energyEmptied++;
     } else {
         drone->energyRefillWait = DRONE_ENERGY_REFILL_WAIT;
