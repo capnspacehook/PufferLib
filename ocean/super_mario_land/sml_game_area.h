@@ -174,8 +174,6 @@ static inline int smlFloorDiv8(int v) {
 }
 
 void smlGameArea(const SmlState *s, float *out) {
-    const float classMax = (float)SML_TILE_CLASS_MAX;
-
     int world = s->worldLevel >> 4;
     const uint8_t *classes =
         smlTileClasses[world >= 1 && world <= 4 ? world - 1 : 0];
@@ -191,7 +189,7 @@ void smlGameArea(const SmlState *s, float *out) {
             uint8_t tile = mapRow[(column0 + x) % 32];
             const uint8_t cls =
                 classes[signedTiles && tile < 0x80 ? tile + 256 : tile];
-            out[y * SML_GAME_AREA_WIDTH + x] = (float)cls / classMax;
+            out[y * SML_GAME_AREA_WIDTH + x] = cls;
         }
     }
 
@@ -206,7 +204,7 @@ void smlGameArea(const SmlState *s, float *out) {
         if (x >= 0 && x < SML_GAME_AREA_WIDTH && y >= 0 &&
             y < SML_GAME_AREA_HEIGHT) {
             out[y * SML_GAME_AREA_WIDTH + x] =
-                (float)classes[s->oam[i].tile] / classMax;
+                classes[s->oam[i].tile];
         }
     }
 
@@ -234,7 +232,7 @@ void smlGameArea(const SmlState *s, float *out) {
             for (int k = 0; k < 2; k++) {
                 if (ys[j] >= 0 && ys[j] < SML_GAME_AREA_HEIGHT && xs[k] >= 0 &&
                     xs[k] < SML_GAME_AREA_WIDTH) {
-                    out[ys[j] * SML_GAME_AREA_WIDTH + xs[k]] = 1.0f / classMax;
+                    out[ys[j] * SML_GAME_AREA_WIDTH + xs[k]] = 1.0f;
                 }
             }
         }

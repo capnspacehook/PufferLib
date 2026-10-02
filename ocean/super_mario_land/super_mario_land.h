@@ -15,6 +15,25 @@ typedef float obs_t;
 
 #define PUF_STEPS_PER_SEC 60
 
+struct LevelLog {
+    float progress;
+    float cleared;
+};
+
+#define SML_LEVELS_COUNT 10
+
+const uint16_t LEVEL_1_1_END = 2602;
+const uint16_t LEVEL_1_2_END = 2442;
+const uint16_t LEVEL_1_3_END = 2588;
+const uint16_t LEVEL_2_1_END = 2762;
+const uint16_t LEVEL_2_2_END = 2442;
+const uint16_t LEVEL_3_1_END = 3882;
+const uint16_t LEVEL_3_2_END = 2762;
+const uint16_t LEVEL_3_3_END = 2588;
+const uint16_t LEVEL_4_1_END = 3882;
+const uint16_t LEVEL_4_2_END = 3402;
+const uint32_t GAME_END = LEVEL_1_1_END + LEVEL_1_2_END + LEVEL_1_3_END + LEVEL_2_1_END + LEVEL_2_2_END + LEVEL_3_1_END + LEVEL_3_2_END + LEVEL_3_3_END + LEVEL_4_1_END + LEVEL_4_2_END;
+
 struct Log {
     float perf;
     float score;
@@ -31,6 +50,8 @@ struct Log {
     float deaths;
     float levelsCleared;
 
+    struct LevelLog levels[SML_LEVELS_COUNT];
+
     float n;
 };
 
@@ -39,6 +60,61 @@ typedef enum {
     MUSHROOM,
     SUPERBALL,
 } Powerup;
+
+struct SmlProfile {
+    const uint8_t nextLevelIdx;
+    const char *path;
+    uint8_t *data;
+};
+
+#define SML_PROFILES_COUNT 45
+static struct SmlProfile profiles[SML_PROFILES_COUNT] = {
+    {4, "./ocean/super_mario_land/profiles/1-1-0_e.profile.bin", NULL},
+    {4, "./ocean/super_mario_land/profiles/1-1-1_e.profile.bin", NULL},
+    {4, "./ocean/super_mario_land/profiles/1-1-2_e.profile.bin", NULL},
+    {4, "./ocean/super_mario_land/profiles/1-1-3_e.profile.bin", NULL},
+    {8, "./ocean/super_mario_land/profiles/1-2-0_e.profile.bin", NULL},
+    {8, "./ocean/super_mario_land/profiles/1-2-1_e.profile.bin", NULL},
+    {8, "./ocean/super_mario_land/profiles/1-2-2_e.profile.bin", NULL},
+    {8, "./ocean/super_mario_land/profiles/1-2-3_e.profile.bin", NULL},
+    {12, "./ocean/super_mario_land/profiles/1-3-0_e.profile.bin", NULL},
+    {12, "./ocean/super_mario_land/profiles/1-3-1_e.profile.bin", NULL},
+    {12, "./ocean/super_mario_land/profiles/1-3-2_e.profile.bin", NULL},
+    {12, "./ocean/super_mario_land/profiles/1-3-3_e.profile.bin", NULL},
+    {16, "./ocean/super_mario_land/profiles/2-1-0_e.profile.bin", NULL},
+    {16, "./ocean/super_mario_land/profiles/2-1-1_e.profile.bin", NULL},
+    {16, "./ocean/super_mario_land/profiles/2-1-2_e.profile.bin", NULL},
+    {16, "./ocean/super_mario_land/profiles/2-1-3_e.profile.bin", NULL},
+    {20, "./ocean/super_mario_land/profiles/2-2-0_e.profile.bin", NULL},
+    {20, "./ocean/super_mario_land/profiles/2-2-1_e.profile.bin", NULL},
+    {20, "./ocean/super_mario_land/profiles/2-2-2_e.profile.bin", NULL},
+    {20, "./ocean/super_mario_land/profiles/2-2-3_e.profile.bin", NULL},
+    {26, "./ocean/super_mario_land/profiles/3-1-0_e.profile.bin", NULL},
+    {26, "./ocean/super_mario_land/profiles/3-1-1_e.profile.bin", NULL},
+    {26, "./ocean/super_mario_land/profiles/3-1-2_e.profile.bin", NULL},
+    {26, "./ocean/super_mario_land/profiles/3-1-3_e.profile.bin", NULL},
+    {26, "./ocean/super_mario_land/profiles/3-1-4_e.profile.bin", NULL},
+    {26, "./ocean/super_mario_land/profiles/3-1-5_e.profile.bin", NULL},
+    {30, "./ocean/super_mario_land/profiles/3-2-0_e.profile.bin", NULL},
+    {30, "./ocean/super_mario_land/profiles/3-2-1_e.profile.bin", NULL},
+    {30, "./ocean/super_mario_land/profiles/3-2-2_e.profile.bin", NULL},
+    {30, "./ocean/super_mario_land/profiles/3-2-3_e.profile.bin", NULL},
+    {34, "./ocean/super_mario_land/profiles/3-3-0_e.profile.bin", NULL},
+    {34, "./ocean/super_mario_land/profiles/3-3-1_e.profile.bin", NULL},
+    {34, "./ocean/super_mario_land/profiles/3-3-2_e.profile.bin", NULL},
+    {34, "./ocean/super_mario_land/profiles/3-3-3_e.profile.bin", NULL},
+    {40, "./ocean/super_mario_land/profiles/4-1-0_e.profile.bin", NULL},
+    {40, "./ocean/super_mario_land/profiles/4-1-1_e.profile.bin", NULL},
+    {40, "./ocean/super_mario_land/profiles/4-1-2_e.profile.bin", NULL},
+    {40, "./ocean/super_mario_land/profiles/4-1-3_e.profile.bin", NULL},
+    {40, "./ocean/super_mario_land/profiles/4-1-4_e.profile.bin", NULL},
+    {40, "./ocean/super_mario_land/profiles/4-1-5_e.profile.bin", NULL},
+    {0, "./ocean/super_mario_land/profiles/4-2-0_e.profile.bin", NULL},
+    {0, "./ocean/super_mario_land/profiles/4-2-1_e.profile.bin", NULL},
+    {0, "./ocean/super_mario_land/profiles/4-2-2_e.profile.bin", NULL},
+    {0, "./ocean/super_mario_land/profiles/4-2-3_e.profile.bin", NULL},
+    {0, "./ocean/super_mario_land/profiles/4-2-4_e.profile.bin", NULL},
+};
 
 struct Env {
     Log log;
@@ -58,15 +134,17 @@ struct Env {
     float gameOverPunishment;
 
     uint8_t *rom;
-    uint8_t *profile;
+    uint8_t profileIdx;
     SmlState *prevState;
     SmlState *state;
+    bool isEval;
 
     float episodeReward;
-    uint16_t steps;
+    uint32_t steps;
 
     uint16_t initialPos;
     uint16_t furthestPos;
+    uint32_t progress;
     uint16_t coins;
     uint8_t mushrooms;
     uint8_t superballs;
@@ -76,20 +154,56 @@ struct Env {
     uint8_t deaths;
     uint8_t levelsCleared;
 
+    struct LevelLog levels[SML_LEVELS_COUNT];
+
     Texture2D texture;
     uint8_t *pixels;
 };
 typedef Env SmlEnv;
 
+#define SML_LEVEL_HASH(world, level) ((world << 4) | level)
+
+#define SML_LEVEL_IDX(state) (smlLevelIdx(state->worldLevel >> 4, state->worldLevel & 0x0F))
+
+uint8_t smlLevelIdx(uint8_t world, uint8_t level) {
+    switch (SML_LEVEL_HASH(world, level)) {
+    case SML_LEVEL_HASH(1, 1):
+        return 0;
+    case SML_LEVEL_HASH(1, 2):
+        return 1;
+    case SML_LEVEL_HASH(1, 3):
+        return 2;
+    case SML_LEVEL_HASH(2, 1):
+        return 3;
+    case SML_LEVEL_HASH(2, 2):
+        return 4;
+    case SML_LEVEL_HASH(3, 1):
+        return 5;
+    case SML_LEVEL_HASH(3, 2):
+        return 6;
+    case SML_LEVEL_HASH(3, 3):
+        return 7;
+    case SML_LEVEL_HASH(4, 1):
+        return 8;
+    case SML_LEVEL_HASH(4, 2):
+        return 9;
+    default:
+        printf("Invalid level %d %d\n", world, level);
+        exit(1);
+    }
+}
+
 void addLog(SmlEnv *env) {
     Log *log = &env->log;
 
-    log->perf += env->episodeReward;
-    log->score += env->episodeReward;
+    const uint32_t totalProgress = env->progress + (env->furthestPos - env->initialPos);
+
+    log->perf += (float)totalProgress / (float)GAME_END;
+    log->score += totalProgress;
     log->episode_return += env->episodeReward;
     log->episode_length += env->steps;
 
-    log->progress += env->furthestPos - env->initialPos;
+    log->progress += totalProgress;
     log->coins += env->coins;
     log->mushrooms += env->mushrooms;
     log->superballs += env->superballs;
@@ -98,6 +212,14 @@ void addLog(SmlEnv *env) {
     log->hearts += env->hearts;
     log->deaths += env->deaths;
     log->levelsCleared += env->levelsCleared;
+
+    const uint8_t levelIdx = SML_LEVEL_IDX(env->state);
+    log->levels[levelIdx].progress += env->furthestPos - env->initialPos;
+
+    for (uint8_t i = 0; i < SML_LEVELS_COUNT; i++) {
+        log->levels[i].progress += env->levels[i].progress;
+        log->levels[i].cleared += env->levels[i].cleared;
+    }
 
     log->n += 1.0f;
 }
@@ -117,6 +239,27 @@ void puf_log(Log *log, Dict *out) {
     dict_set(out, "hearts", log->hearts);
     dict_set(out, "deaths", log->deaths);
     dict_set(out, "levelsCleared", log->levelsCleared);
+
+    dict_set(out, "1-1_progress", log->levels[0].progress);
+    dict_set(out, "1-1_cleared", log->levels[0].cleared);
+    dict_set(out, "1-2_progress", log->levels[1].progress);
+    dict_set(out, "1-2_cleared", log->levels[1].cleared);
+    dict_set(out, "1-3_progress", log->levels[2].progress);
+    dict_set(out, "1-3_cleared", log->levels[2].cleared);
+    dict_set(out, "2-1_progress", log->levels[3].progress);
+    dict_set(out, "2-1_cleared", log->levels[3].cleared);
+    dict_set(out, "2-2_progress", log->levels[4].progress);
+    dict_set(out, "2-2_cleared", log->levels[4].cleared);
+    dict_set(out, "3-1_progress", log->levels[5].progress);
+    dict_set(out, "3-1_cleared", log->levels[5].cleared);
+    dict_set(out, "3-2_progress", log->levels[6].progress);
+    dict_set(out, "3-2_cleared", log->levels[6].cleared);
+    dict_set(out, "3-3_progress", log->levels[7].progress);
+    dict_set(out, "3-3_cleared", log->levels[7].cleared);
+    dict_set(out, "4-1_progress", log->levels[8].progress);
+    dict_set(out, "4-1_cleared", log->levels[8].cleared);
+    dict_set(out, "4-2_progress", log->levels[9].progress);
+    dict_set(out, "4-2_cleared", log->levels[9].cleared);
 
     dict_set(out, "n", log->n);
 }
@@ -295,6 +438,8 @@ void puf_init(SmlEnv *env, Dict *kwargs) {
     env->deathPunishment = dict_get(kwargs, "death_reward");
     env->gameOverPunishment = dict_get(kwargs, "game_over_reward");
 
+    env->isEval = (bool)dict_get(kwargs, "PUFFER_IS_EVAL");
+
     uint8_t *rom = (uint8_t *)calloc(1, SML_ROM_SIZE);
     if (smlLoadRom("./ocean/super_mario_land/sml_patched.gb", rom) != 0) {
         printf("rom load failed\n");
@@ -302,22 +447,30 @@ void puf_init(SmlEnv *env, Dict *kwargs) {
     }
     env->rom = rom;
 
-    uint8_t *profile = (uint8_t *)calloc(1, SML_PROFILE_SIZE);
-    if (smlInitProfile("./ocean/super_mario_land/profiles/1-1-0_e.profile.bin", profile) != 0) {
-        printf("profile load failed\n");
-        exit(1);
-    }
-    env->profile = profile;
-
     env->state = (SmlState *)calloc(1, sizeof(SmlState));
     env->prevState = (SmlState *)calloc(1, sizeof(SmlState));
 
-    smlGameAreaInit();
+    static pthread_mutex_t sml_mutex = PTHREAD_MUTEX_INITIALIZER;
+    static bool initialized = false;
+    pthread_mutex_lock(&sml_mutex);
+    if (!initialized) {
+        initialized = true;
+
+        for (uint8_t i = 0; i < SML_PROFILES_COUNT; i++) {
+            profiles[i].data = (uint8_t *)calloc(1, SML_PROFILE_SIZE);
+            if (smlInitProfile(profiles[i].path, profiles[i].data) != 0) {
+                printf("profile load %d failed\n", i);
+                exit(1);
+            }
+        }
+
+        smlGameAreaInit();
+    }
+    pthread_mutex_unlock(&sml_mutex);
 }
 
 void puf_close(SmlEnv *env) {
     free(env->rom);
-    free(env->profile);
     free(env->state);
     free(env->prevState);
 
@@ -450,7 +603,6 @@ SmlStepStatus stepStatus(const SmlState *s, const SmlStepStatus status) {
 bool isResetStatus(const SmlStepStatus status) {
     switch (status) {
     case SML_STEP_GAME_OVER:
-    case SML_STEP_LEVEL_CLEAR:
     case SML_STEP_UNSUPPORTED:
         return true;
     default:
@@ -521,26 +673,51 @@ void setReward(SmlEnv *env, const uint16_t curPos, const SmlStepStatus status, b
     env->episodeReward += reward;
 }
 
-void puf_reset(SmlEnv *env) {
-    smlInitProfileBytes(env->state, env->rom, env->profile);
+void setTimer(SmlEnv *env, const uint16_t timer) {
+    env->state->timerHundreds = timer / 100;
+    const uint8_t timerTens = timer - (env->state->timerHundreds * 100);
+    env->state->timerDigits = decToBcd(timerTens);
+    env->state->timerTicks = 0x28;
+}
 
-    env->state->lives = decToBcd(randInt(&env->rng, 0, 4));
-    env->state->coins = decToBcd(randInt(&env->rng, 0, 99));
-    if (randInt(&env->rng, 0, 3) == 0) {
-        switch (randInt(&env->rng, 0, 1)) {
-        case 0:
-            env->state->superStatus = 2;
-            env->state->mario.pose |= 0x10;
-            break;
-        case 1:
-            env->state->superStatus = 2;
-            env->state->mario.pose |= 0x10;
-            env->state->superballMario = 2;
-            break;
-        }
+void puf_reset(SmlEnv *env) {
+    if (env->isEval) {
+        env->profileIdx = 0;
+    } else {
+        env->profileIdx = randInt(&env->rng, 0, SML_PROFILES_COUNT - 1);
     }
-    if (randInt(&env->rng, 0, 3) == 0) {
-        env->state->invincibilityTimer = randInt(&env->rng, 40, 240);
+    const uint8_t *profile = profiles[env->profileIdx].data;
+    smlInitProfileBytes(env->state, env->rom, profile);
+
+    if (env->isEval) {
+        env->state->lives = 2;
+        env->state->coins = 0;
+        env->state->superStatus = 0;
+        env->state->superballMario = 0;
+        env->state->invincibilityTimer = 0;
+
+        setTimer(env, 400);
+    } else  {
+        setTimer(env, randInt(&env->rng, 100, 400));
+
+        env->state->lives = decToBcd(randInt(&env->rng, 0, 4));
+        env->state->coins = decToBcd(randInt(&env->rng, 0, 99));
+        if (randInt(&env->rng, 0, 3) == 0) {
+            switch (randInt(&env->rng, 0, 1)) {
+            case 0:
+                env->state->superStatus = 2;
+                env->state->mario.pose |= 0x10;
+                break;
+            case 1:
+                env->state->superStatus = 2;
+                env->state->mario.pose |= 0x10;
+                env->state->superballMario = 2;
+                break;
+            }
+        }
+        if (randInt(&env->rng, 0, 3) == 0) {
+            env->state->invincibilityTimer = randInt(&env->rng, 40, 240);
+        }
     }
 
     memcpy(env->prevState, env->state, sizeof(SmlState));
@@ -550,6 +727,7 @@ void puf_reset(SmlEnv *env) {
 
     env->initialPos = levelPos(env->state);
     env->furthestPos = env->initialPos;
+    env->progress = 0;
     env->coins = 0;
     env->mushrooms = 0;
     env->superballs = 0;
@@ -558,6 +736,8 @@ void puf_reset(SmlEnv *env) {
     env->hearts = 0;
     env->deaths = 0;
     env->levelsCleared = 0;
+
+    memset(env->levels, 0x0, sizeof(env->levels));
 
     setObs(env);
 }
@@ -591,11 +771,19 @@ void puf_step(SmlEnv *env) {
                 }
             }
 
+            const uint8_t timerTens = bcdToDec(env->state->timerDigits);
+            const uint16_t timer = (env->state->timerHundreds * 100) + timerTens;
+            if (timer > 20) {
+                setTimer(env, timer - 20);
+            }
+
             break;
         }
 
         if (isResetStatus(status)) {
             needsReset = true;
+            break;
+        } else if (status == SML_STEP_LEVEL_CLEAR) {
             break;
         }
     }
@@ -605,6 +793,29 @@ void puf_step(SmlEnv *env) {
 
     if (curPos > env->furthestPos) {
         env->furthestPos = curPos;
+    }
+
+    if (status == SML_STEP_LEVEL_CLEAR) {
+        const uint8_t levelIdx = SML_LEVEL_IDX(env->state);
+        env->levels[levelIdx].progress += env->furthestPos - env->initialPos;
+        env->levels[levelIdx].cleared += 1;
+
+        memcpy(env->prevState, env->state, sizeof(SmlState));
+        env->profileIdx = profiles[env->profileIdx].nextLevelIdx;
+        smlInitProfileBytes(env->state, env->rom, profiles[env->profileIdx].data);
+
+        env->state->lives = env->prevState->lives;
+        env->state->coins = env->prevState->coins;
+        env->state->superStatus = env->prevState->superStatus;
+        if (env->state->superStatus == 2) {
+            env->state->mario.pose |= 0x10;
+        }
+        env->state->superballMario = env->prevState->superballMario;
+        env->state->invincibilityTimer = env->prevState->invincibilityTimer;
+
+        env->progress += env->furthestPos - env->initialPos;
+        env->initialPos = levelPos(env->state);
+        env->furthestPos = env->initialPos;
     }
 
     if (needsReset) {

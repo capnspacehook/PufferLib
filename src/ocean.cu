@@ -51,6 +51,9 @@ __device__ static const float OSRS_ITEM_OBS_TABLE_DEV
 #ifdef PUFFER_CRAFTAX
 #include "../ocean/craftax/craftax.cu"
 #endif
+#ifdef PUFFER_SUPER_MARIO_LAND
+#include "../ocean/super_mario_land/super_mario_land.cu"
+#endif
 
 // Override encoder vtable when this env has a custom net. No-op otherwise.
 static void create_custom_encoder(Encoder* enc) {
@@ -58,6 +61,8 @@ static void create_custom_encoder(Encoder* enc) {
     create_nethack_encoder(enc);
 #elif defined(PUFFER_CRAFTAX)
     create_craftax_encoder(enc);
+#elif defined(PUFFER_SUPER_MARIO_LAND)
+    create_sml_encoder(enc);
 #elif defined(PUFFER_NMMO3)
 #ifdef N3_ATTN
     create_nmmo3_attn_encoder(enc);
