@@ -1777,7 +1777,7 @@ static void master_weights_setup(Float* mw, Prec* param,
     }
 }
 
-PuffeRL* create_pufferl(Ini* ini, TrainContext* ctx) {
+PuffeRL* create_pufferl(Ini* ini, TrainContext* ctx, bool is_eval) {
     Hypers hypers = {
         .horizon = puf_ini_get(ini, "train", "horizon"),
         .total_agents = puf_ini_get(ini, "vec", "total_agents"),
@@ -1816,6 +1816,7 @@ PuffeRL* create_pufferl(Ini* ini, TrainContext* ctx) {
     Dict vec_kwargs = {0};
     dict_copy(&vec_kwargs, puf_ini_section(ini, "vec", 0));
     Dict* env_kwargs = puf_ini_section(ini, "env", 0);
+    dict_set(env_kwargs, "PUFFER_IS_EVAL", (double)is_eval);
     ncclUniqueId* nccl_id = ctx->nccl_id;
 
     PuffeRL* pufferl = (PuffeRL*)calloc(1, sizeof(PuffeRL));
@@ -2913,7 +2914,9 @@ static PuffeRL* eval_make(Ini* ini, TrainContext* ctx, int mode, int render) {
         // not use env.num_agents; default.ini's 1 then under-sizes the buffer
         // and env_setup's offset==apb assert fires.
         Env probe = {0};
-        puf_init(&probe, puf_ini_section(ini, "env", 0));
+        Dict *env_kwargs = puf_ini_section(ini, "env", 0);
+        dict_set(env_kwargs, "PUFFER_IS_EVAL", 1.0);
+        puf_init(&probe, env_kwargs);
         int n = probe.num_agents;
         puf_close(&probe);
         assert(n > 0 && "render eval: env reported 0 agents");
@@ -2945,7 +2948,7 @@ static PuffeRL* eval_make(Ini* ini, TrainContext* ctx, int mode, int render) {
     if (render) {
         puf_ini_put(ini, "train.horizon", "1");
     }
-    PuffeRL* p = create_pufferl(ini, ctx);
+    PuffeRL* p = create_pufferl(ini, ctx, true);
     if (match) {
         char a_buf[4096], b_buf[4096];
         const char* a = puf_checkpoint_path_key(ini, "load_model_path", a_buf, sizeof(a_buf));
@@ -3026,7 +3029,7 @@ TrainResult run_train(Ini* ini, TrainContext* ctx) {
         mkdir_p(log_dir);
     }
 
-    PuffeRL* pufferl = create_pufferl(ini, ctx);
+    PuffeRL* pufferl = create_pufferl(ini, ctx, false);
     Selfplay selfplay = {0};
     if (use_selfplay) {
         char initial_checkpoint[4096];
