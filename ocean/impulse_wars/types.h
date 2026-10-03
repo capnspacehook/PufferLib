@@ -390,6 +390,11 @@ typedef struct rayClient {
     Shader gridShader;
     int32_t gridShaderPosLoc[4];
     int32_t gridShaderColorLoc[4];
+    Shader explosionShader;
+    int32_t explosionResolutionLoc;
+    int32_t explosionBlastsLoc;
+    int32_t explosionAmplitudesLoc;
+    int32_t explosionCountLoc;
     Texture2D wallTexture;
     RenderTexture2D blurSrcTexture;
     RenderTexture2D blurDstTexture;
@@ -397,8 +402,8 @@ typedef struct rayClient {
     RenderTexture2D projBloomTex;
     RenderTexture2D droneRawTex;
     RenderTexture2D droneBloomTex;
+    RenderTexture2D explosionSceneTex;
 
-    float maxExplosionLifetime;
     float maxDronePieceLifetime;
     float maxBrakeTrailLifetime;
     float maxDroneRespawnGuideLifetime;
@@ -413,8 +418,10 @@ typedef struct brakeTrailPoint {
 typedef struct explosionInfo {
     b2ExplosionDef def;
     bool isBurst;
+    bool isBlackHole;
     uint8_t droneIdx;
     uint16_t renderSteps;
+    uint16_t maxRenderSteps;
 } explosionInfo;
 
 typedef struct agentActions {

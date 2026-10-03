@@ -42,8 +42,6 @@ static const uint16_t DEFAULT_HEIGHT = 720;
 static const float START_READY_TIME = 1.5f;
 static const float END_WAIT_TIME = 2.0f;
 
-static const float EXPLOSION_TIME = 0.5f;
-
 static const float DRONE_RESPAWN_GUIDE_SHRINK_TIME = 1.5f;
 static const float DRONE_RESPAWN_GUIDE_HOLD_TIME = 1.5f;
 static const float DRONE_RESPAWN_GUIDE_MAX_RADIUS = DRONE_RADIUS * 5.5f;
@@ -59,6 +57,45 @@ static const float halfDroneRadius = DRONE_RADIUS / 2.0f;
 static const float droneThrusterLength = 1.5f * DRONE_RADIUS;
 static const float aimGuideLength = 0.3f * DRONE_RADIUS;
 static const float chargedAimGuideLength = DRONE_RADIUS;
+
+// Explosion visual lifetime in seconds (rebuild after tuning).
+// Reference radius/impulse produce BASE_TIME. Exponents of 0 ignore that factor.
+// Uses world radius and absolute impulse, so zoom and implosion direction don't affect timing.
+static const float EXPLOSION_FADE_BASE_TIME = 0.5f;
+static const float EXPLOSION_FADE_REFERENCE_RADIUS = 15.0f;
+static const float EXPLOSION_FADE_REFERENCE_IMPULSE = 200.0f;
+static const float EXPLOSION_FADE_RADIUS_EXPONENT = 0.5f;
+static const float EXPLOSION_FADE_IMPULSE_EXPONENT = 0.25f;
+static const float EXPLOSION_FADE_MIN_TIME = 0.2f;
+static const float EXPLOSION_FADE_MAX_TIME = 1.25f;
+
+// Explosion distortion (visual only; rebuild after tuning).
+// Master multiplier: 0 disables distortion, 1 is normal, 2 doubles it,
+// including the pixel cap. Radius outlines and UI are never distorted.
+static const float EXPLOSION_DISTORTION_STRENGTH = 0.5f;
+// Displacement as a fraction of the blast's on-screen radius, before power scaling.
+static const float EXPLOSION_DISTORTION_RADIUS_SCALE = 0.15f;
+// 0 ignores impulse strength; 1 fully scales by sqrt(abs(impulse) / reference).
+// Intermediate values blend these responses. Explosions and implosions use magnitude.
+static const float EXPLOSION_DISTORTION_POWER_WEIGHT = 0.5f;
+static const float EXPLOSION_DISTORTION_REFERENCE_IMPULSE = 200.0f;
+// Maximum displacement in pixels, including overlapping ripples, before the master multiplier.
+static const float EXPLOSION_DISTORTION_MAX_PIXELS = 32.0f;
+// Ripple width as a fraction of blast radius; higher values spread the wave out.
+static const float EXPLOSION_DISTORTION_WAVE_WIDTH = 0.2f;
+// Lower values keep distortion strong longer; 1 fades linearly with remaining life.
+static const float EXPLOSION_DISTORTION_FADE_EXPONENT = 0.66f;
+
+// Steady distortion inside BLACK_HOLE_PROXIMITY_RADIUS; no visible outline.
+// Independent of explosion distortion. Set strength to 0 to disable.
+static const float BLACK_HOLE_DISTORTION_STRENGTH = 0.75f;
+static const float BLACK_HOLE_DISTORTION_RADIUS_SCALE = 0.06f;
+static const float BLACK_HOLE_DISTORTION_MAX_PIXELS = 8.0f;
+static const Color BLACK_HOLE_DISTORTION_COLOR = {120, 65, 200, 255};
+// Peak opacity at the center; fades smoothly to zero at the pull area's edge.
+static const float BLACK_HOLE_DISTORTION_TINT_OPACITY = 0.15f;
+// Seconds for the visual pull field and tint to fade after projectile destruction.
+static const float BLACK_HOLE_DISTORTION_FADE_TIME = 0.3f;
 
 static inline b2Vec2 mouseToWorldPos(const iwEnv *e, const Vector2 mousePos) {
     const Ray ray = GetScreenToWorldRay(mousePos, e->client->camera->camera3D);
@@ -76,6 +113,7 @@ static void loadRenderTextures(rayClient *client) {
     client->droneBloomTex = LoadRenderTexture(client->width, client->height);
     client->projRawTex = LoadRenderTexture(client->width, client->height);
     client->projBloomTex = LoadRenderTexture(client->width, client->height);
+    client->explosionSceneTex = LoadRenderTexture(client->width, client->height);
 }
 
 static void unloadRenderTextures(rayClient *client) {
@@ -85,6 +123,7 @@ static void unloadRenderTextures(rayClient *client) {
     UnloadRenderTexture(client->droneBloomTex);
     UnloadRenderTexture(client->projRawTex);
     UnloadRenderTexture(client->projBloomTex);
+    UnloadRenderTexture(client->explosionSceneTex);
 }
 
 rayClient *createRayClient() {
@@ -158,7 +197,26 @@ rayClient *createRayClient() {
     client->bloomTexColorLoc = GetShaderLocation(client->bloomShader, "uTexColor");
     client->bloomTexBloomBlurLoc = GetShaderLocation(client->bloomShader, "uTexBloomBlur");
 
-    client->maxExplosionLifetime = EXPLOSION_TIME * EVAL_FRAME_RATE;
+    client->explosionShader = LoadShader(NULL, TextFormat("resources/impulse_wars/shaders/gls%i/explosion.fs", GLSL_VERSION));
+    client->explosionResolutionLoc = GetShaderLocation(client->explosionShader, "resolution");
+    client->explosionBlastsLoc = GetShaderLocation(client->explosionShader, "blasts[0]");
+    client->explosionAmplitudesLoc = GetShaderLocation(client->explosionShader, "amplitudes[0]");
+    client->explosionCountLoc = GetShaderLocation(client->explosionShader, "blastCount");
+    const float distortionSettings[3] = {
+        max(max(0.0f, EXPLOSION_DISTORTION_MAX_PIXELS) * max(0.0f, EXPLOSION_DISTORTION_STRENGTH),
+            max(0.0f, BLACK_HOLE_DISTORTION_MAX_PIXELS) * max(0.0f, BLACK_HOLE_DISTORTION_STRENGTH)),
+        max(0.001f, EXPLOSION_DISTORTION_WAVE_WIDTH),
+        max(0.0f, EXPLOSION_DISTORTION_FADE_EXPONENT),
+    };
+    SetShaderValue(client->explosionShader, GetShaderLocation(client->explosionShader, "distortionSettings"), distortionSettings, SHADER_UNIFORM_VEC3);
+    const float blackHoleTint[4] = {
+        BLACK_HOLE_DISTORTION_COLOR.r / 255.0f,
+        BLACK_HOLE_DISTORTION_COLOR.g / 255.0f,
+        BLACK_HOLE_DISTORTION_COLOR.b / 255.0f,
+        Clamp(BLACK_HOLE_DISTORTION_TINT_OPACITY, 0.0f, 1.0f),
+    };
+    SetShaderValue(client->explosionShader, GetShaderLocation(client->explosionShader, "blackHoleTint"), blackHoleTint, SHADER_UNIFORM_VEC4);
+
     client->maxDronePieceLifetime = DRONE_PIECE_LIFETIME * EVAL_FRAME_RATE;
     client->maxBrakeTrailLifetime = 3.0f * EVAL_FRAME_RATE;
     client->maxDroneRespawnGuideLifetime = (DRONE_RESPAWN_GUIDE_SHRINK_TIME + DRONE_RESPAWN_GUIDE_HOLD_TIME) * EVAL_FRAME_RATE;
@@ -173,6 +231,7 @@ void destroyRayClient(rayClient *client) {
     UnloadShader(client->gridShader);
     UnloadShader(client->blurShader);
     UnloadShader(client->bloomShader);
+    UnloadShader(client->explosionShader);
 
     CloseWindow();
     fastFree(client->camera);
@@ -1054,53 +1113,159 @@ void renderBrakeTrails(iwEnv *e, const droneEntity *drone) {
     }
 }
 
-// TODO: make 2D circles
+static float explosionFadeTime(const b2ExplosionDef *def) {
+    const float radiusRatio = max(0.0f, def->radius) / max(0.001f, EXPLOSION_FADE_REFERENCE_RADIUS);
+    const float impulseRatio = fabsf(def->impulsePerLength) / max(0.001f, EXPLOSION_FADE_REFERENCE_IMPULSE);
+    const float duration = EXPLOSION_FADE_BASE_TIME *
+                           powf(radiusRatio, max(0.0f, EXPLOSION_FADE_RADIUS_EXPONENT)) *
+                           powf(impulseRatio, max(0.0f, EXPLOSION_FADE_IMPULSE_EXPONENT));
+    const float minimum = max(0.0f, EXPLOSION_FADE_MIN_TIME);
+    return b2ClampFloat(duration, minimum, max(minimum, EXPLOSION_FADE_MAX_TIME));
+}
+
+static float explosionRemaining(const explosionInfo *explosion) {
+    if (explosion->renderSteps == UINT16_MAX) {
+        return 1.0f;
+    }
+    if (explosion->maxRenderSteps == 0) {
+        return 0.0f;
+    }
+    return Clamp((float)explosion->renderSteps / explosion->maxRenderSteps, 0.0f, 1.0f);
+}
+
+static float projectDistortionSource(const rayClient *client, b2Vec2 position, float radius, float source[4]) {
+    const Vector3 center = {position.x, 0.0f, position.y};
+    const Vector2 screen = GetWorldToScreen(center, client->camera->camera3D);
+    const Vector2 edge = GetWorldToScreen((Vector3){center.x + radius, 0.0f, center.z}, client->camera->camera3D);
+    source[0] = screen.x;
+    source[1] = client->height - screen.y;
+    return Vector2Distance(screen, edge);
+}
+
+static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float amplitudes[16]) {
+    rayClient *client = e->client;
+    int count = 0;
+    // Reserve slots for persistent pull fields before transient blast ripples.
+    if (BLACK_HOLE_DISTORTION_STRENGTH > 0.0f && BLACK_HOLE_DISTORTION_MAX_PIXELS > 0.0f) {
+        for (size_t i = 0; i < cc_array_size(e->projectiles) && count < 16; ++i) {
+            const projectileEntity *projectile = safe_array_get_at(e->projectiles, i);
+            if (projectile->needsToBeDestroyed || projectile->weaponInfo->type != BLACK_HOLE_WEAPON) {
+                continue;
+            }
+            const float radius = projectDistortionSource(client, projectile->pos, BLACK_HOLE_PROXIMITY_RADIUS, blasts[count]);
+            blasts[count][2] = radius;
+            // Negative remaining life selects a steady pull field in the shared shader.
+            blasts[count][3] = -1.0f;
+            amplitudes[count] = BLACK_HOLE_DISTORTION_STRENGTH *
+                                min(radius * max(0.0f, BLACK_HOLE_DISTORTION_RADIUS_SCALE), BLACK_HOLE_DISTORTION_MAX_PIXELS);
+            count++;
+        }
+    }
+    CC_ArrayIter iter;
+    cc_array_iter_init(&iter, e->explosions);
+    explosionInfo *explosion;
+    while (count < 16 && cc_array_iter_next(&iter, (void **)&explosion) != CC_ITER_END) {
+        const float remaining = explosionRemaining(explosion);
+        if (remaining <= 0.0f || explosion->def.radius <= 0.0f) {
+            continue;
+        }
+        if (explosion->isBlackHole) {
+            if (BLACK_HOLE_DISTORTION_STRENGTH <= 0.0f || BLACK_HOLE_DISTORTION_MAX_PIXELS <= 0.0f) {
+                continue;
+            }
+            const float radius = projectDistortionSource(client, explosion->def.position, explosion->def.radius, blasts[count]);
+            blasts[count][2] = radius;
+            blasts[count][3] = -remaining;
+            amplitudes[count] = BLACK_HOLE_DISTORTION_STRENGTH *
+                                min(radius * max(0.0f, BLACK_HOLE_DISTORTION_RADIUS_SCALE), BLACK_HOLE_DISTORTION_MAX_PIXELS);
+            count++;
+            continue;
+        }
+        if (EXPLOSION_DISTORTION_STRENGTH <= 0.0f || EXPLOSION_DISTORTION_MAX_PIXELS <= 0.0f) {
+            continue;
+        }
+        const float radius = projectDistortionSource(client, explosion->def.position, explosion->def.radius, blasts[count]);
+        blasts[count][2] = explosion->def.impulsePerLength < 0.0f ? -radius : radius;
+        blasts[count][3] = remaining;
+        const float impulseRatio = fabsf(explosion->def.impulsePerLength) / max(0.001f, EXPLOSION_DISTORTION_REFERENCE_IMPULSE);
+        const float powerScale = Lerp(1.0f, sqrtf(impulseRatio), Clamp(EXPLOSION_DISTORTION_POWER_WEIGHT, 0.0f, 1.0f));
+        amplitudes[count] = max(0.0f, EXPLOSION_DISTORTION_STRENGTH) *
+                            min(radius * max(0.0f, EXPLOSION_DISTORTION_RADIUS_SCALE) * powerScale,
+                                max(0.0f, EXPLOSION_DISTORTION_MAX_PIXELS));
+        count++;
+    }
+    return count;
+}
+
+// One scene sample per pixel for both steady pull fields and transient ripples.
+static void renderSceneDistortion(const iwEnv *e, const float blasts[16][4], const float amplitudes[16], int count) {
+    rayClient *client = e->client;
+    const Vector2 resolution = {client->width, client->height};
+    BeginShaderMode(client->explosionShader);
+    SetShaderValue(client->explosionShader, client->explosionResolutionLoc, &resolution, SHADER_UNIFORM_VEC2);
+    SetShaderValue(client->explosionShader, client->explosionCountLoc, &count, SHADER_UNIFORM_INT);
+    if (count > 0) {
+        SetShaderValueV(client->explosionShader, client->explosionBlastsLoc, blasts, SHADER_UNIFORM_VEC4, count);
+        SetShaderValueV(client->explosionShader, client->explosionAmplitudesLoc, amplitudes, SHADER_UNIFORM_FLOAT, count);
+    }
+    DrawTextureRec(client->explosionSceneTex.texture, (Rectangle){0.0f, 0.0f, client->width, -client->height}, Vector2Zero(), WHITE);
+    EndShaderMode();
+}
+
 void renderExplosions(const iwEnv *e) {
     CC_ArrayIter iter;
     cc_array_iter_init(&iter, e->explosions);
     explosionInfo *explosion;
 
+    BeginBlendMode(BLEND_ALPHA);
+    // Range indicators must remain visible even where walls occlude the blast.
+    rlDrawRenderBatchActive();
+    rlDisableDepthTest();
     while (cc_array_iter_next(&iter, (void **)&explosion) != CC_ITER_END) {
-        // color bursts with a bit of the parent drone's color
-        const float alpha = (float)explosion->renderSteps / e->client->maxExplosionLifetime;
-        BeginBlendMode(BLEND_ALPHA);
-        if (false && explosion->isBurst) {
-            const Color droneColor = Fade(getDroneColor(explosion->droneIdx), alpha);
-            DrawSphereEx(
-                (Vector3){.x = explosion->def.position.x, .y = 0.5f, .z = explosion->def.position.y},
-                explosion->def.radius + explosion->def.falloff,
-                20,
-                50,
-                DARKGRAY
-            );
-            DrawSphereEx(
-                (Vector3){.x = explosion->def.position.x, .y = 0.5f, .z = explosion->def.position.y},
-                explosion->def.radius,
-                20,
-                50,
-                droneColor
-            );
-        } else {
-            const Color falloffColor = Fade(GRAY, alpha);
-            const Color explosionColor = Fade(RAYWHITE, alpha);
-
-            DrawSphereEx(
-                (Vector3){.x = explosion->def.position.x, .y = 0.5f, .z = explosion->def.position.y},
-                explosion->def.radius + explosion->def.falloff,
-                20,
-                50,
-                falloffColor
-            );
-            DrawSphereEx(
-                (Vector3){.x = explosion->def.position.x, .y = 0.5f, .z = explosion->def.position.y},
-                explosion->def.radius,
-                20,
-                50,
-                explosionColor
-            );
+        if (explosion->renderSteps == 0 || explosion->isBlackHole) {
+            continue;
         }
-        EndBlendMode();
+        // Ease the wave out quickly, then let it linger and fade.
+        const float remaining = explosionRemaining(explosion);
+        const float age = 1.0f - remaining;
+        const float travel = 1.0f - remaining * remaining * remaining;
+        // The collision query uses radius alone, not Box2D's falloff field.
+        const float radius = explosion->def.radius;
+        const bool implosion = explosion->def.impulsePerLength < 0.0f;
+        const Color color = explosion->isBurst ? getDroneColor(explosion->droneIdx) : RAYWHITE;
+        const float waveRadius = radius * (implosion ? 0.85f - 0.75f * travel : 0.15f + 0.7f * travel);
+        const float waveWidth = max(0.12f, radius * 0.045f * remaining);
+        const float waveOpacity = explosion->isBurst ? 0.35f : 0.15f;
+
+        // Put simple 2D shapes on the arena's XZ plane.
+        rlPushMatrix();
+        rlTranslatef(explosion->def.position.x, 0.0f, explosion->def.position.y);
+        rlRotatef(90.0f, 1.0f, 0.0f, 0.0f);
+        DrawRing(Vector2Zero(), max(0.0f, waveRadius - waveWidth), waveRadius, 0.0f, 360.0f, 64, Fade(color, remaining * remaining * waveOpacity));
+
+        const float flash = max(0.0f, 1.0f - age * 4.0f);
+        if (flash > 0.0f) {
+            DrawCircleV(Vector2Zero(), explosion->def.radius * (0.12f + 0.3f * flash), Fade(color, flash * flash * 0.3f));
+        }
+
+        // Stable variation without touching the simulation's random state.
+        const float phase = explosion->def.position.x * 0.73f + explosion->def.position.y * 1.17f;
+        for (int i = 0; i < 7; i++) {
+            const float angle = phase + i * (2.0f * PI / 7.0f);
+            const Vector2 direction = {cosf(angle), sinf(angle)};
+            const float reach = radius * (0.6f + 0.1f * sinf(phase + i * 2.3f));
+            const float head = reach * (implosion ? 1.0f - travel : 0.15f + 0.85f * travel);
+            const float tail = implosion ? head + reach * 0.18f * remaining : max(0.0f, head - reach * 0.18f * remaining);
+            DrawLineEx(Vector2Scale(direction, tail), Vector2Scale(direction, head), max(0.08f, radius * 0.012f * remaining), Fade(color, remaining * remaining * 0.45f));
+        }
+        // Keep the exact outer edge fixed while its outline fades away.
+        const float boundaryWidth = min(radius, Clamp(radius * 0.008f, 0.16f, 0.3f));
+        DrawRing(Vector2Zero(), radius - boundaryWidth, radius, 0.0f, 360.0f, 96, Fade(color, 0.9f * remaining));
+        rlPopMatrix();
     }
+    rlDrawRenderBatchActive();
+    rlEnableDepthTest();
+    EndBlendMode();
 }
 
 // TODO: add bloom lines at drone level
@@ -1655,11 +1820,14 @@ void renderEnv(iwEnv *e) {
     applyBloom(e, e->client->projRawTex, e->client->projBloomTex, 3.0f);
 
     BeginDrawing();
+    float distortionSources[16][4];
+    float distortionAmplitudes[16];
+    const int distortionCount = collectSceneDistortions(e, distortionSources, distortionAmplitudes);
+    const bool distortScene = distortionCount > 0 && e->client->explosionShader.id != rlGetShaderIdDefault();
+    if (distortScene) {
+        BeginTextureMode(e->client->explosionSceneTex);
+    }
     ClearBackground(BLACK);
-
-#ifndef __EMSCRIPTEN__
-    DrawFPS(e->client->scale, e->client->scale);
-#endif
 
     BeginMode3D(e->client->camera->camera3D);
 
@@ -1772,13 +1940,25 @@ void renderEnv(iwEnv *e) {
         renderWall(e, wall);
     }
 
-    renderExplosions(e);
     EndMode3D();
 
     BeginBlendMode(BLEND_ADDITIVE);
     DrawTextureRec(e->client->projRawTex.texture, (Rectangle){0.0f, 0.0f, e->client->width, -e->client->height}, Vector2Zero(), WHITE);
     DrawTextureRec(e->client->projBloomTex.texture, (Rectangle){0.0f, 0.0f, e->client->width, -e->client->height}, Vector2Zero(), WHITE);
     EndBlendMode();
+
+    if (distortScene) {
+        EndTextureMode();
+        renderSceneDistortion(e, distortionSources, distortionAmplitudes, distortionCount);
+    }
+    // Draw blast geometry and range outlines after refraction so they stay exact.
+    BeginMode3D(e->client->camera->camera3D);
+    renderExplosions(e);
+    EndMode3D();
+
+#ifndef __EMSCRIPTEN__
+    DrawFPS(e->client->scale, e->client->scale);
+#endif
 
     BeginMode2D(e->client->camera->camera2D);
 

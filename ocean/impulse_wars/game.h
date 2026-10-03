@@ -1697,6 +1697,15 @@ void createExplosion(iwEnv *e, droneEntity *drone, const projectileEntity *proje
 }
 
 void destroyProjectile(iwEnv *e, projectileEntity *projectile, const bool processExplosions, const bool full) {
+    if (e->client != NULL && projectile->weaponInfo->type == BLACK_HOLE_WEAPON && BLACK_HOLE_DISTORTION_FADE_TIME > 0.0f) {
+        // Keep only a visual field at the final position; gameplay pull ends now.
+        explosionInfo *field = fastCalloc(1, sizeof(explosionInfo));
+        field->def.position = projectile->pos;
+        field->def.radius = BLACK_HOLE_PROXIMITY_RADIUS;
+        field->isBlackHole = true;
+        field->renderSteps = UINT16_MAX;
+        cc_array_add(e->explosions, field);
+    }
     // explode projectile if necessary
     if (processExplosions && projectile->weaponInfo->explosive) {
         createProjectileExplosion(e, projectile, true);
@@ -2803,7 +2812,6 @@ void handleProjectileEndContact(const entity *proj, const entity *ent) {
     projectile->lastSpeed = newSpeed;
 }
 
-// TODO: drone on drone collisions should reduce shield health
 void handleContactEvents(iwEnv *e) {
     b2ContactEvents events = b2World_GetContactEvents(e->worldID);
     for (int i = 0; i < events.beginCount; ++i) {
@@ -2830,8 +2838,11 @@ void handleContactEvents(iwEnv *e) {
                 b2Vec2 hitImpulse = b2MulSV(manifold.points[0].normalImpulse, manifold.normal);
                 trackImpulse(e, drone2->physicsTracking, hitImpulse, drone1->idx);
                 trackImpulse(e, drone1->physicsTracking, b2Neg(hitImpulse), drone2->idx);
+                // TODO: continue here?
             }
         }
+
+        // TODO: drone on drone collisions should reduce shield health
 
         if (e1 != NULL) {
             if (e1->type == PROJECTILE_ENTITY) {

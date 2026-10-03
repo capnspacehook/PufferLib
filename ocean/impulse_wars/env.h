@@ -939,7 +939,9 @@ void updateExplosions(iwEnv *e) {
 
     while (cc_array_iter_next(&iter, (void **)&explosion) != CC_ITER_END) {
         if (explosion->renderSteps == UINT16_MAX) {
-            explosion->renderSteps = e->client->maxExplosionLifetime;
+            const float duration = explosion->isBlackHole ? BLACK_HOLE_DISTORTION_FADE_TIME : explosionFadeTime(&explosion->def);
+            explosion->maxRenderSteps = (uint16_t)min((float)(UINT16_MAX - 1), max(1.0f, ceilf(duration * e->frameRate)));
+            explosion->renderSteps = explosion->maxRenderSteps;
         } else if (explosion->renderSteps == 0) {
             fastFree(explosion);
             cc_array_iter_remove(&iter, NULL);
@@ -1005,7 +1007,6 @@ void updateVisuals(iwEnv *e) {
     }
 }
 
-// TODO: 2nd agent doesn't seem to work right
 bool stepPhysicsFrame(iwEnv *e, const agentActions stepActions[], int8_t *winner, int8_t *winningTeam) {
     int8_t lastAlive = -1;
     int8_t lastAliveTeam = -1;
