@@ -390,8 +390,8 @@ bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos,
                     // spawn points as they may be covered by death walls;
                     // instead just try and find a cell that doesn't neighbor
                     // a death wall
-                    const uint8_t cellCol = cellIdx / e->map->columns;
-                    const uint8_t cellRow = cellIdx % e->map->columns;
+                    const uint8_t cellCol = cellIdx % e->map->columns;
+                    const uint8_t cellRow = cellIdx / e->map->columns;
                     bool deathWallNeighboring = false;
                     for (uint8_t i = 0; i < 8; i++) {
                         const int8_t col = cellCol + cellOffsets[i][0];
@@ -1150,6 +1150,10 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
 
 void createProjectile(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
     ASSERT_VEC_NORMALIZED(normAim);
+
+    if (drone->weaponInfo->type == MACHINEGUN_WEAPON) {
+        drone->heat += MACHINEGUN_HEAT_BUILDUP;
+    }
 
     const float radius = drone->weaponInfo->radius;
     float droneRadius = DRONE_RADIUS;
@@ -1931,9 +1935,6 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
     ASSERT(drone->ammo != 0);
 
     drone->shotThisStep = true;
-    // TODO: rework heat to only increase when projectiles are fired,
-    // and only cool down after the next shot was skipped
-    drone->heat++;
     if (drone->weaponCooldown != 0.0f) {
         return;
     }
@@ -2128,10 +2129,11 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
     // manage weapon charge and heat
     if (drone->weaponCooldown != 0.0f) {
         drone->weaponCooldown = max(drone->weaponCooldown - e->deltaTime, 0.0f);
+    } else {
+        drone->heat = max(drone->heat - (120.0f * e->deltaTime), 0);
     }
     if (!drone->shotThisStep) {
         drone->weaponCharge = max(drone->weaponCharge - e->deltaTime, 0);
-        drone->heat = max(drone->heat - 1, 0);
     } else {
         drone->shotThisStep = false;
     }

@@ -339,7 +339,12 @@ void computeObs(iwEnv *e) {
 
                 discreteObsOffset = discreteObsStart + PROJECTILE_DRONE_OBS_OFFSET + i;
                 ASSERTF(discreteObsOffset <= discreteObsStart + PROJECTILE_WEAPONS_OBS_OFFSET, "offset: %d", discreteObsOffset);
-                obs[discreteObsOffset] = (float)(projectile->droneIdx + 1) / e->numDrones;
+                // TODO: fix for >2 drones
+                if (projectile->droneIdx == agentIdx) {
+                    obs[discreteObsOffset] = 1.0f;
+                } else {
+                    obs[discreteObsOffset] = 0.5f;
+                }
 
                 discreteObsOffset = discreteObsStart + PROJECTILE_WEAPONS_OBS_OFFSET + i;
                 ASSERTF(discreteObsOffset <= discreteObsStart + WEAPON_PICKUP_WEAPONS_OBS_OFFSET, "offset: %d", discreteObsOffset);
@@ -379,7 +384,8 @@ void computeObs(iwEnv *e) {
 
             const b2Vec2 enemyDroneRelPos = b2Sub(enemyDrone->pos, agentDrone->pos);
             const float enemyDroneDistance = b2Distance(enemyDrone->pos, agentDrone->pos);
-            const b2Vec2 enemyDroneAccel = b2Sub(enemyDrone->velocity, enemyDrone->lastVelocity);
+            // multiple by delta time to make acceleration consistent between training and interactive eval
+            const b2Vec2 enemyDroneAccel = b2MulSV(1.0f / e->deltaTime, b2Sub(enemyDrone->velocity, enemyDrone->lastVelocity));
             const b2Vec2 enemyDroneRelNormPos = b2Normalize(b2Sub(enemyDrone->pos, agentDrone->pos));
             const float enemyDroneAimAngle = atan2f(enemyDrone->lastAim.y, enemyDrone->lastAim.x);
             float enemyDroneBraking = 0.0f;
@@ -703,6 +709,13 @@ void puf_reset(iwEnv *e) {
 float computeReward(iwEnv *e, droneEntity *drone) {
     float reward = 0.0f;
 
+    if (drone->diedThisStep) {
+        reward += e->deathPunishment;
+        if (drone->killedBy == drone->idx) {
+            reward += e->selfKillPunishment;
+        }
+    }
+
     if (drone->stepInfo.emptiedEnergy) {
         reward += e->energyEmptiedPunishment;
     }
@@ -756,17 +769,6 @@ float computeReward(iwEnv *e, droneEntity *drone) {
             }
             continue;
         }
-
-        // const b2Vec2 enemyDirection = b2Normalize(b2Sub(enemyDrone->pos, drone->pos));
-        // const float velocityToEnemy = b2Dot(drone->lastVelocity, enemyDirection);
-        // const float enemyDistance = b2Distance(enemyDrone->pos, drone->pos);
-        // // stop rewarding approaching an enemy if they're very close
-        // // to avoid constant clashing; always reward approaching when
-        // // the current weapon is the shotgun, it greatly benefits from
-        // // being close to enemies
-        // if (velocityToEnemy > 0.1f && (drone->weaponInfo->type == SHOTGUN_WEAPON || enemyDistance > DISTANCE_CUTOFF)) {
-        //     reward += APPROACH_REWARD;
-        // }
     }
 
     return reward;
@@ -779,13 +781,8 @@ void computeRewards(iwEnv *e, const bool roundOver, const int8_t winner, const i
         float reward = 0.0f;
         droneEntity *drone = safe_array_get_at(e->drones, i);
         reward = computeReward(e, drone);
-        if (!drone->dead && roundOver && (winner == i || winningTeam == drone->team)) {
+        if (roundOver && (winner == i || winningTeam == drone->team)) {
             reward += e->winReward;
-        } else if (drone->diedThisStep) {
-            reward += e->deathPunishment;
-            if (drone->killedBy == drone->idx) {
-                reward += e->selfKillPunishment;
-            }
         }
         if (i < e->numAgents) {
             agentRewards(e, i)[0] += reward;
@@ -1073,15 +1070,16 @@ bool stepPhysicsFrame(iwEnv *e, const agentActions stepActions[], int8_t *winner
                 // couldn't find a respawn position, end the round
                 deadDrones++;
                 roundOver = true;
-            }
-            lastAlive = i;
+            } else {
+                lastAlive = i;
 
-            if (e->teamsEnabled) {
-                if (lastAliveTeam == -1) {
-                    lastAliveTeam = drone->team;
-                    allAliveOnSameTeam = true;
-                } else if (drone->team != lastAliveTeam) {
-                    allAliveOnSameTeam = false;
+                if (e->teamsEnabled) {
+                    if (lastAliveTeam == -1) {
+                        lastAliveTeam = drone->team;
+                        allAliveOnSameTeam = true;
+                    } else if (drone->team != lastAliveTeam) {
+                        allAliveOnSameTeam = false;
+                    }
                 }
             }
         } else {
@@ -1090,9 +1088,6 @@ bool stepPhysicsFrame(iwEnv *e, const agentActions stepActions[], int8_t *winner
                 if (drone->diedThisStep) {
                     agentTerminals(e, i)[0] = 1.0f;
                 }
-                // else {
-                //     e->masks[i] = 0;
-                // }
             }
         }
     }
