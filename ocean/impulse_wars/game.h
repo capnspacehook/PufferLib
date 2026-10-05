@@ -3122,7 +3122,110 @@ void pathfindBFS(const iwEnv *e, uint8_t *flatPaths, int8_t (*buffer)[3], const 
     }
 }
 
+static inline void considerNearWallCell(const iwEnv *e, const droneEntity *drone, const int16_t col, const int16_t row, nearWall nearestWalls[], const uint8_t nWalls, uint8_t *found) {
+    if (col < 0 || col >= e->map->columns || row < 0 || row >= e->map->rows) {
+        return;
+    }
+    const mapCell *cell = &e->cells[col + row * e->map->columns];
+    if (cell->ent == NULL || !entityTypeIsWall(cell->ent->type)) {
+        return;
+    }
+    const wallEntity *wall = cell->ent->entity;
+    if (wall->isFloating) {
+        return;
+    }
+
+    const nearWall candidate = {
+        .pos = wall->pos,
+        .type = wall->type,
+        .distanceSquared = b2DistanceSquared(drone->pos, wall->pos),
+    };
+    uint8_t insert = 0;
+
+    while (insert < *found) {
+        const nearWall *other = &nearestWalls[insert];
+        // Break distance ties by grid order, independently of spiral order.
+        if (candidate.distanceSquared < other->distanceSquared ||
+            (candidate.distanceSquared == other->distanceSquared &&
+             (candidate.pos.y < other->pos.y ||
+              (candidate.pos.y == other->pos.y && candidate.pos.x < other->pos.x)))) {
+            break;
+        }
+        insert++;
+    }
+    if (insert == nWalls) {
+        return;
+    }
+
+    if (*found < nWalls) {
+        (*found)++;
+    }
+    for (uint8_t i = *found - 1; i > insert; i--) {
+        nearestWalls[i] = nearestWalls[i - 1];
+    }
+    nearestWalls[insert] = candidate;
+}
+
+// Visit complete square rings of live cells. All static walls, including
+// sudden-death walls, are at cell centers; floating walls are observed separately.
+static void findNearWallsSpiral(const iwEnv *e, const droneEntity *drone, nearWall nearestWalls[], const uint8_t nWalls) {
+    const b2Vec2 origin = e->cells[0].pos;
+    const int16_t col = (int16_t)fminf(e->map->columns - 1, fmaxf(0.0f, floorf((drone->pos.x - origin.x) / WALL_THICKNESS + 0.5f)));
+    const int16_t row = (int16_t)fminf(e->map->rows - 1, fmaxf(0.0f, floorf((drone->pos.y - origin.y) / WALL_THICKNESS + 0.5f)));
+    const int16_t maxRadius = max(max(col, e->map->columns - 1 - col), max(row, e->map->rows - 1 - row));
+    uint8_t found = 0;
+
+    for (uint8_t i = 0; i < nWalls; i++) {
+        nearestWalls[i] = (nearWall){.distanceSquared = FLT_MAX};
+    }
+    considerNearWallCell(e, drone, col, row, nearestWalls, nWalls, &found);
+
+    for (int16_t radius = 0; radius <= maxRadius; radius++) {
+        if (radius != 0) {
+            for (int16_t x = max(0, col - radius); x <= min(e->map->columns - 1, col + radius); x++) {
+                considerNearWallCell(e, drone, x, row - radius, nearestWalls, nWalls, &found);
+                considerNearWallCell(e, drone, x, row + radius, nearestWalls, nWalls, &found);
+            }
+            // Exclude corners already visited along the horizontal edges.
+            for (int16_t y = max(0, row - radius + 1); y <= min(e->map->rows - 1, row + radius - 1); y++) {
+                considerNearWallCell(e, drone, col - radius, y, nearestWalls, nWalls, &found);
+                considerNearWallCell(e, drone, col + radius, y, nearestWalls, nWalls, &found);
+            }
+        }
+
+        // Every unvisited cell is beyond at least one searched edge. Its
+        // distance is at least the axis distance to that side's next cell
+        // center. Ignore sides exhausted by the map boundary. Use strict >
+        // so equal-distance candidates still receive deterministic tie ordering.
+        float remainingDistance = FLT_MAX;
+        if (col - radius > 0) {
+            remainingDistance = min(remainingDistance, drone->pos.x - e->cells[col - radius - 1].pos.x);
+        }
+        if (col + radius + 1 < e->map->columns) {
+            remainingDistance = min(remainingDistance, e->cells[col + radius + 1].pos.x - drone->pos.x);
+        }
+        if (row - radius > 0) {
+            remainingDistance = min(remainingDistance, drone->pos.y - e->cells[(row - radius - 1) * e->map->columns].pos.y);
+        }
+        if (row + radius + 1 < e->map->rows) {
+            remainingDistance = min(remainingDistance, e->cells[(row + radius + 1) * e->map->columns].pos.y - drone->pos.y);
+        }
+        if (found == nWalls && (remainingDistance == FLT_MAX ||
+                                remainingDistance * remainingDistance > nearestWalls[nWalls - 1].distanceSquared)) {
+            break;
+        }
+    }
+}
+
 void findNearWalls(const iwEnv *e, const droneEntity *drone, nearWall nearestWalls[], const uint8_t nWalls) {
+    ASSERT(nWalls <= MAX_NEAREST_WALLS);
+    if (nWalls == 0) {
+        return;
+    }
+    if (e->suddenDeathWallsPlaced) {
+        findNearWallsSpiral(e, drone, nearestWalls, nWalls);
+        return;
+    }
     nearWall nearWalls[MAX_NEAREST_WALLS];
 
     const nearWall *candidates = e->map->nearestWalls + (MAX_NEAREST_WALLS * drone->mapCellIdx);
