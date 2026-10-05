@@ -44,6 +44,7 @@ void puf_step(Env *env);
 void puf_render(Env *env);
 void puf_close(Env *env);
 void puf_log(Log *log, Dict *out);
+void puf_set_bot_policy(Env *env, int botPolicy);
 }
 
 #else
@@ -66,7 +67,6 @@ void puf_init(Env *env, Dict *kwargs) {
     uint8_t num_agents = dict_get(kwargs, "num_agents");
     int8_t map_idx = dict_get(kwargs, "map_idx");
     bool enable_teams = dict_get(kwargs, "enable_teams");
-    bool sitting_duck = dict_get(kwargs, "sitting_duck");
     bool is_training = dict_get(kwargs, "is_training");
     float bot_cl_noise = dict_get(kwargs, "bot_cl_noise");
     float bot_cl_decay = dict_get(kwargs, "bot_cl_decay");
@@ -77,7 +77,6 @@ void puf_init(Env *env, Dict *kwargs) {
         map_idx,
         env->rng,
         enable_teams,
-        sitting_duck,
         is_training,
         (bool)CONTINUOUS_ACTIONS,
         bot_cl_noise,
@@ -113,6 +112,14 @@ void puf_init(Env *env, Dict *kwargs) {
         env->agents[i].policy = i;
         env->agents[i].action_mask = NULL;
     }
+}
+
+void puf_set_bot_policy(iwEnv *e, int botPolicy) {
+    if (botPolicy != BOT_SITTING_DUCK && botPolicy != BOT_SCRIPTED) {
+        fprintf(stderr, "impulse_wars: unknown bot policy %d\n", botPolicy);
+        abort();
+    }
+    e->botPolicy = (enum botPolicy)botPolicy;
 }
 
 #define LOG_DRONE_STATS(log, out, idx, idxStr)                                                    \

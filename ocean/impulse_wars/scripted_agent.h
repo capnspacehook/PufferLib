@@ -276,7 +276,7 @@ void wallBurst(iwEnv *e, const droneEntity *drone, const float distance, agentAc
 
 agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
     agentActions actions = {0};
-    if (e->sittingDuck) {
+    if (e->botPolicy == BOT_SITTING_DUCK) {
         return actions;
     }
 

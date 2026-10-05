@@ -1016,7 +1016,7 @@ void renderUI(const iwEnv *e, const bool starting) {
         } else if (drone->idx < e->numAgents) {
             playerType = "NN";
         } else {
-            if (e->sittingDuck) {
+            if (e->botPolicy == BOT_SITTING_DUCK) {
                 playerType = "Sitting Duck";
             } else {
                 playerType = "Scripted";

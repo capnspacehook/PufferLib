@@ -6,6 +6,7 @@
 #include "raylib.h"
 #include "rlights.h"
 
+#define PUF_HAS_BOT_POLICY
 #include "pufferenv.h"
 
 #include "include/cc_array.h"
@@ -440,6 +441,12 @@ typedef struct debugPoint {
     Color color;
 } debugPoint;
 
+// Scripted opponents, weakest first. These are the rungs of [selfplay] eval_bots.
+enum botPolicy {
+    BOT_SITTING_DUCK = 0,
+    BOT_SCRIPTED = 1,
+};
+
 struct Env {
     Agent agents[_MAX_DRONES];
     int num_agents;
@@ -451,7 +458,7 @@ struct Env {
     uint8_t numAgents;
     uint8_t numTeams;
     bool teamsEnabled;
-    bool sittingDuck;
+    enum botPolicy botPolicy;
     bool isTraining;
 
     float botCLNoise;
