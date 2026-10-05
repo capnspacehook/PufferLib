@@ -95,17 +95,15 @@ void puf_init(Env *env, Dict *kwargs) {
     setRewards(
         env,
         dict_get(kwargs, "reward_win"),
+        dict_get(kwargs, "reward_life"),
+        dict_get(kwargs, "reward_kill"),
         dict_get(kwargs, "reward_self_kill"),
-        dict_get(kwargs, "reward_enemy_death"),
-        dict_get(kwargs, "reward_enemy_kill"),
         0.0f, // teammate death punishment
         0.0f, // teammate kill punishment
-        dict_get(kwargs, "reward_death"),
         dict_get(kwargs, "reward_energy_emptied"),
         dict_get(kwargs, "reward_weapon_pickup"),
         dict_get(kwargs, "reward_shield_break"),
-        dict_get(kwargs, "reward_shot_hit_coef"),
-        dict_get(kwargs, "reward_explosion_hit_coef")
+        dict_get(kwargs, "reward_hit_coef")
     );
 
     for (int i = 0; i < env->num_agents; i++) {

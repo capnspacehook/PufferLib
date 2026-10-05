@@ -465,17 +465,15 @@ struct Env {
     float botCLDecay;
 
     float winReward;
+    float lifeReward;
+    float killReward;
     float selfKillPunishment;
-    float enemyDeathReward;
-    float enemyKillReward;
     float teammateDeathPunishment;
     float teammateKillPunishment;
-    float deathPunishment;
     float energyEmptiedPunishment;
     float weaponPickupReward;
     float shieldBreakReward;
-    float shotHitRewardCoef;
-    float explosionHitRewardCoef;
+    float hitRewardCoef;
 
     uint16_t obsSize;
     uint16_t discreteObsSize;

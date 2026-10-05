@@ -33,25 +33,11 @@ static const uint8_t SUDDEN_DEATH_STEPS = 5;
 
 static const uint8_t MAX_DRONES = _MAX_DRONES;
 
-static const uint16_t LOG_BUFFER_SIZE = 1024;
-
-// reward settings
-static const float WIN_REWARD = 2.0f;
-static const float SELF_KILL_PUNISHMENT = -1.0f;
-static const float ENEMY_DEATH_REWARD = 1.0f;
-static const float ENEMY_KILL_REWARD = 1.0f;
-static const float TEAMMATE_DEATH_PUNISHMENT = -0.5f;
-static const float TEAMMATE_KILL_PUNISHMENT = -1.0f;
-static const float DEATH_PUNISHMENT = 0.0f;
-static const float ENERGY_EMPTY_PUNISHMENT = -0.75f;
-static const float WEAPON_PICKUP_REWARD = 0.5f;
-static const float SHIELD_BREAK_REWARD = 0.5f;
-static const float SHOT_HIT_REWARD_COEF = 0.005f;
-static const float EXPLOSION_HIT_REWARD_COEF = 0.005f;
-static const float APPROACH_REWARD = 0.0f;
-
-// approach reward doesn't apply within the cutoff to avoid constant clashing
-static const uint8_t DISTANCE_CUTOFF = 15.0f;
+// the reported impulses from collisions seem to be roughly half what is
+// actually applied (the bounce impulse isn't included in normalImpulse),
+// and they're applied again, so it's 3x what's reported
+static const float PROJECTILE_RESTITUTION = 1.0f;
+static const float SHOT_HIT_IMPULSE_SCALE = 1.0f + PROJECTILE_RESTITUTION + 1.0f;
 
 // observation constants
 

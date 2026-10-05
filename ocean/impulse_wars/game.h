@@ -1197,7 +1197,7 @@ void createProjectile(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
     b2ShapeDef projectileShapeDef = b2DefaultShapeDef();
     projectileShapeDef.enableContactEvents = true;
     projectileShapeDef.density = drone->weaponInfo->density;
-    projectileShapeDef.material.restitution = 1.0f;
+    projectileShapeDef.material.restitution = PROJECTILE_RESTITUTION;
     projectileShapeDef.material.friction = 0.0f;
     projectileShapeDef.filter.categoryBits = PROJECTILE_SHAPE;
     projectileShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | PROJECTILE_SHAPE | DRONE_SHAPE | SHIELD_SHAPE;
@@ -1242,14 +1242,6 @@ void createProjectile(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
         projectile->sensorID = weaponSensor(projectile->bodyID, projectile->weaponInfo->type);
         b2Shape_SetUserData(projectile->sensorID, ent);
     }
-}
-
-// compute value generally from 0-1 based off of how much a projectile(s)
-// or explosion(s) caused the hit drone to change velocity
-float computeHitStrength(const droneEntity *hitDrone) {
-    const float prevSpeed = b2Length(hitDrone->lastVelocity);
-    const float curSpeed = b2Length(hitDrone->velocity);
-    return fabsf(curSpeed - prevSpeed) / MAX_SPEED;
 }
 
 // simplified and copied from box2d/src/shape.c
@@ -1573,12 +1565,12 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         drone->lastVelocity = drone->velocity;
         drone->velocity = b2Body_GetLinearVelocity(drone->bodyID);
 
-        shieldEntity *shield = drone->shield;
-
         // add energy to the drone that fired the projectile that is
         // currently exploding if it hit another drone
+        shieldEntity *shield = drone->shield;
+        const float explosionStrength = fabsf(magnitude);
         if (!ctx->isBurst && drone->team != ctx->parentDrone->team && shield == NULL) {
-            const float energyRefill = computeHitStrength(drone) * EXPLOSION_ENERGY_REFILL_COEF;
+            const float energyRefill = explosionStrength * DRONE_INV_MASS / MAX_SPEED * EXPLOSION_ENERGY_REFILL_COEF;
             droneAddEnergy(ctx->parentDrone, energyRefill);
         } else if (shield != NULL && shield->health > 0.0f) {
             const float damage = fabsf(magnitude) * DRONE_SHIELD_HEALTH_EXPLOSION_COEF;
@@ -1586,10 +1578,11 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
             shield->health -= damage;
             if (shield->health <= 0.0f) {
                 droneAddEnergy(ctx->parentDrone, DRONE_SHIELD_BREAK_ENERGY_REFILL);
+                ctx->parentDrone->stepInfo.brokeShield[shield->drone->idx] = true;
+                ctx->e->stats[ctx->parentDrone->idx].shieldsBroken++;
             }
         }
 
-        const float explosionStrength = b2AbsFloat(b2Length(impulse));
         ctx->parentDrone->stepInfo.explosionHit[drone->idx] += explosionStrength;
         drone->stepInfo.explosionTaken[ctx->parentDrone->idx] += explosionStrength;
 
@@ -2675,22 +2668,23 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             if (!projIsShapeA) {
                 hitImpulse = b2Neg(hitImpulse);
             }
-            applyTrackedImpulse(e, hitDrone->bodyID, hitDrone->physicsTracking, hitImpulse, projectile->droneIdx);
+
+            b2Body_ApplyLinearImpulseToCenter(hitDrone->bodyID, hitImpulse, true);
+            trackImpulse(e, hitDrone->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), projectile->droneIdx);
             hitStrength = b2AbsFloat(b2Length(hitImpulse));
         }
 
         if (projectile->droneIdx != hitDrone->idx) {
             droneEntity *shooterDrone = safe_array_get_at(e->drones, projectile->droneIdx);
-
             if (shooterDrone->team != hitDrone->team) {
                 const float impulseEnergy = projectile->lastSpeed * projectile->weaponInfo->mass * projectile->weaponInfo->energyRefillCoef;
                 droneAddEnergy(shooterDrone, impulseEnergy);
             }
-            shooterDrone->stepInfo.shotHit[hitDrone->idx] += hitStrength;
+            shooterDrone->stepInfo.shotHit[hitDrone->idx] += hitStrength * SHOT_HIT_IMPULSE_SCALE;
             e->stats[shooterDrone->idx].shotsHit[projectile->weaponInfo->type]++;
             e->stats[shooterDrone->idx].totalShotsHit++;
             DEBUG_LOGF("drone %d hit drone %d with weapon %d", shooterDrone->idx, hitDrone->idx, projectile->weaponInfo->type);
-            hitDrone->stepInfo.shotTaken[shooterDrone->idx] += hitStrength;
+            hitDrone->stepInfo.shotTaken[shooterDrone->idx] += hitStrength * SHOT_HIT_IMPULSE_SCALE;
             e->stats[hitDrone->idx].shotsTaken[projectile->weaponInfo->type]++;
             e->stats[hitDrone->idx].totalShotsTaken++;
             DEBUG_LOGF("drone %d hit by drone %d with weapon %d", hitDrone->idx, shooterDrone->idx, projectile->weaponInfo->type);

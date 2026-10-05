@@ -443,7 +443,8 @@ void computeObs(iwEnv *e) {
 
         // compute active drone observations
         continuousObsOffset = ENEMY_DRONE_OBS_OFFSET + ((e->numDrones - 1) * ENEMY_DRONE_OBS_SIZE);
-        const b2Vec2 agentDroneAccel = b2Sub(agentDrone->velocity, agentDrone->lastVelocity);
+        // multiple by delta time to make acceleration consistent between training and interactive eval
+        const b2Vec2 agentDroneAccel = b2MulSV(1.0f / e->deltaTime, b2Sub(agentDrone->velocity, agentDrone->lastVelocity));
         float agentDroneBraking = 0.0f;
         if (agentDrone->braking) {
             agentDroneBraking = 1.0f;
@@ -575,19 +576,6 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     e->botCLNoise = botCLNoise;
     e->botCLDecay = botCLDecay;
 
-    e->winReward = WIN_REWARD;
-    e->selfKillPunishment = SELF_KILL_PUNISHMENT;
-    e->enemyDeathReward = ENEMY_DEATH_REWARD;
-    e->enemyKillReward = ENEMY_KILL_REWARD;
-    e->teammateDeathPunishment = TEAMMATE_DEATH_PUNISHMENT;
-    e->teammateKillPunishment = TEAMMATE_KILL_PUNISHMENT;
-    e->deathPunishment = DEATH_PUNISHMENT;
-    e->energyEmptiedPunishment = ENERGY_EMPTY_PUNISHMENT;
-    e->weaponPickupReward = WEAPON_PICKUP_REWARD;
-    e->shieldBreakReward = SHIELD_BREAK_REWARD;
-    e->shotHitRewardCoef = SHOT_HIT_REWARD_COEF;
-    e->explosionHitRewardCoef = EXPLOSION_HIT_REWARD_COEF;
-
     e->obsSize = obsSize(e->numDrones);
     e->discreteObsSize = discreteObsSize(e->numDrones);
 
@@ -630,19 +618,17 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     return e;
 }
 
-void setRewards(iwEnv *e, float winReward, float selfKillPunishment, float enemyDeathReward, float enemyKillReward, float teammateDeathPunishment, float teammateKillPunishment, float deathPunishment, float energyEmptiedPunishment, float weaponPickupReward, float shieldBreakReward, float shotHitRewardCoef, float explosionHitRewardCoef) {
+void setRewards(iwEnv *e, float winReward, float lifeReward, float killReward, float selfKillPunishment, float teammateDeathPunishment, float teammateKillPunishment, float energyEmptiedPunishment, float weaponPickupReward, float shieldBreakReward, float hitRewardCoef) {
     e->winReward = winReward;
+    e->lifeReward = lifeReward;
+    e->killReward = killReward;
     e->selfKillPunishment = selfKillPunishment;
-    e->enemyDeathReward = enemyDeathReward;
-    e->enemyKillReward = enemyKillReward;
     e->teammateDeathPunishment = teammateDeathPunishment;
     e->teammateKillPunishment = teammateKillPunishment;
-    e->deathPunishment = deathPunishment;
     e->energyEmptiedPunishment = energyEmptiedPunishment;
     e->weaponPickupReward = weaponPickupReward;
     e->shieldBreakReward = shieldBreakReward;
-    e->shotHitRewardCoef = shotHitRewardCoef;
-    e->explosionHitRewardCoef = explosionHitRewardCoef;
+    e->hitRewardCoef = hitRewardCoef;
 }
 
 void clearEnv(iwEnv *e) {
@@ -731,11 +717,15 @@ void puf_reset(iwEnv *e) {
     setupEnv(e);
 }
 
+static inline bool droneDiedThisStep(const droneEntity *drone) {
+    return drone->dead && drone->diedThisStep;
+}
+
 float computeReward(iwEnv *e, droneEntity *drone) {
     float reward = 0.0f;
 
-    if (drone->diedThisStep) {
-        reward += e->deathPunishment;
+    if (droneDiedThisStep(drone)) {
+        reward -= e->lifeReward;
         if (drone->killedBy == drone->idx) {
             reward += e->selfKillPunishment;
         }
@@ -757,34 +747,30 @@ float computeReward(iwEnv *e, droneEntity *drone) {
         if (i == drone->idx) {
             continue;
         }
-        droneEntity *enemyDrone = safe_array_get_at(e->drones, i);
-        const bool onTeam = drone->team == enemyDrone->team;
+        droneEntity *otherDrone = safe_array_get_at(e->drones, i);
+        const bool onTeam = drone->team == otherDrone->team;
 
         // TODO: punish for hitting teammates?
-        if (drone->stepInfo.shotHit[i] != 0.0f && !onTeam) {
-            reward += drone->stepInfo.shotHit[i] * e->shotHitRewardCoef;
-        }
-        if (drone->stepInfo.explosionHit[i] != 0.0f && !onTeam) {
-            reward += drone->stepInfo.explosionHit[i] * e->explosionHitRewardCoef;
-        }
-        if (drone->stepInfo.brokeShield[i] && !onTeam) {
-            reward += e->shieldBreakReward;
-        }
+        if (!onTeam) {
+            // shot and explosion strengths are both the impulse delivered
+            // to the hit drone, so they share a coefficient
+            const float dealt = drone->stepInfo.shotHit[i] + drone->stepInfo.explosionHit[i];
+            const float taken = drone->stepInfo.shotTaken[i] + drone->stepInfo.explosionTaken[i];
+            reward += (dealt - taken) * e->hitRewardCoef;
 
-        if (e->numAgents == e->numDrones) {
-            if (drone->stepInfo.shotTaken[i] != 0) {
-                reward -= drone->stepInfo.shotTaken[i] * e->shotHitRewardCoef;
+            if (drone->stepInfo.brokeShield[i]) {
+                reward += e->shieldBreakReward;
             }
-            if (drone->stepInfo.explosionTaken[i]) {
-                reward -= drone->stepInfo.explosionTaken[i] * e->explosionHitRewardCoef;
+            if (otherDrone->stepInfo.brokeShield[drone->idx]) {
+                reward -= e->shieldBreakReward;
             }
         }
 
-        if (enemyDrone->dead && enemyDrone->diedThisStep) {
+        if (droneDiedThisStep(otherDrone)) {
             if (!onTeam) {
-                reward += e->enemyDeathReward;
+                reward += e->lifeReward;
                 if (drone->killed[i]) {
-                    reward += e->enemyKillReward;
+                    reward += e->killReward;
                 }
             } else {
                 reward += e->teammateDeathPunishment;
@@ -792,7 +778,6 @@ float computeReward(iwEnv *e, droneEntity *drone) {
                     reward += e->teammateKillPunishment;
                 }
             }
-            continue;
         }
     }
 
@@ -808,6 +793,9 @@ void computeRewards(iwEnv *e, const bool roundOver, const int8_t winner, const i
         reward = computeReward(e, drone);
         if (roundOver && (winner == i || winningTeam == drone->team)) {
             reward += e->winReward;
+        } else if (roundOver && (winner != -1 || winningTeam != -1)) {
+            // the round has a winner and it isn't this drone
+            reward -= e->winReward;
         }
         if (i < e->numAgents) {
             agentRewards(e, i)[0] += reward;
