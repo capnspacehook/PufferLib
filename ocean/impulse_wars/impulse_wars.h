@@ -18,7 +18,7 @@ typedef float obs_t;
 // #define ACT_SIZES {9, 17, 2, 2, 2}
 // #define CONTINUOUS_ACTIONS 0
 
-#define OBS_SIZE 395 // for 2 drones (players)
+#define OBS_SIZE 410 // for 2 drones (players)
 
 #ifdef __cplusplus
 // Game/Box2D/collections-c are C (void* implicit conv); pufferl.cu is C++17.
@@ -110,12 +110,13 @@ void puf_init(Env *env, Dict *kwargs) {
     );
 
     for (int i = 0; i < env->num_agents; i++) {
-        env->agents[i].policy = 0;
+        env->agents[i].policy = i;
         env->agents[i].action_mask = NULL;
     }
 }
 
 #define LOG_DRONE_STATS(log, out, idx, idxStr)                                                    \
+    dict_set(out, "policy_" idxStr "_score", log->stats[idx].score);                              \
     dict_set(out, "drone_" idxStr "_returns", log->stats[idx].returns);                           \
     dict_set(out, "drone_" idxStr "_distance_traveled", log->stats[idx].distanceTraveled);        \
     dict_set(out, "drone_" idxStr "_abs_distance_traveled", log->stats[idx].absDistanceTraveled); \
@@ -128,7 +129,6 @@ void puf_init(Env *env, Dict *kwargs) {
     dict_set(out, "drone_" idxStr "_self_kills", log->stats[idx].selfKills);                      \
     dict_set(out, "drone_" idxStr "_kills", log->stats[idx].kills);                               \
     dict_set(out, "drone_" idxStr "_unknown_kills", log->stats[idx].unknownKills);                \
-    dict_set(out, "drone_" idxStr "_wins", log->stats[idx].wins);                                 \
     dict_set(out, "drone_" idxStr "_total_shots_fired", log->stats[idx].totalShotsFired);         \
     dict_set(out, "drone_" idxStr "_total_shots_hit", log->stats[idx].totalShotsHit);             \
     dict_set(out, "drone_" idxStr "_total_shots_taken", log->stats[idx].totalShotsTaken);         \
@@ -137,10 +137,11 @@ void puf_init(Env *env, Dict *kwargs) {
     dict_set(out, "drone_" idxStr "_total_shot_distances", log->stats[idx].totalShotDistances)
 
 void puf_log(Log *log, Dict *out) {
+    dict_set(out, "perf", log->stats[0].score);
+    dict_set(out, "score", log->stats[0].score);
+    dict_set(out, "draw_rate", log->ties);
     dict_set(out, "episode_length", log->length);
-    dict_set(out, "ties", log->ties);
-    dict_set(out, "perf", log->stats[0].wins);
-    dict_set(out, "score", log->stats[0].wins);
+
     dict_set(out, "bot_cl_noise", log->botCLNoise);
     dict_set(out, "n", log->n);
 

@@ -94,8 +94,6 @@ static const float BLACK_HOLE_DISTORTION_MAX_PIXELS = 8.0f;
 static const Color BLACK_HOLE_DISTORTION_COLOR = {120, 65, 200, 255};
 // Peak opacity at the center; fades smoothly to zero at the pull area's edge.
 static const float BLACK_HOLE_DISTORTION_TINT_OPACITY = 0.15f;
-// Seconds for the visual pull field and tint to fade after projectile destruction.
-static const float BLACK_HOLE_DISTORTION_FADE_TIME = 0.3f;
 
 static inline b2Vec2 mouseToWorldPos(const iwEnv *e, const Vector2 mousePos) {
     const Ray ray = GetScreenToWorldRay(mousePos, e->client->camera->camera3D);

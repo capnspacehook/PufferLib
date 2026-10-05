@@ -255,18 +255,23 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, const uint16_t discreteO
     if (cc_array_size(e->pickups) != 0) {
         // find N nearest weapon pickups
         nearEntity nearPickups[MAX_WEAPON_PICKUPS] = {0};
+        uint8_t numActivePickups = 0;
         for (uint8_t i = 0; i < cc_array_size(e->pickups); i++) {
             weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
+            if (pickup->floatingWallsTouching > 0 || pickup->respawnWait > 0.0f) {
+                continue;
+            }
+
             const nearEntity nearEnt = {
                 .entity = pickup,
                 .distanceSquared = b2DistanceSquared(pickup->pos, drone->pos),
             };
-            nearPickups[i] = nearEnt;
+            nearPickups[numActivePickups++] = nearEnt;
         }
-        insertionSortEntities(nearPickups, cc_array_size(e->pickups));
+        insertionSortEntities(nearPickups, numActivePickups);
 
         // compute type and location of N nearest weapon pickups
-        for (uint8_t i = 0; i < cc_array_size(e->pickups); i++) {
+        for (uint8_t i = 0; i < numActivePickups; i++) {
             if (i == NUM_WEAPON_PICKUP_OBS) {
                 break;
             }
@@ -393,6 +398,13 @@ void computeObs(iwEnv *e) {
                 enemyDroneBraking = 1.0f;
             }
 
+            float enemyShieldHealth = 0.0f;
+            float enemyShieldDuration = 0.0f;
+            if (enemyDrone->shield != NULL) {
+                enemyShieldHealth = enemyDrone->shield->health;
+                enemyShieldDuration = enemyDrone->shield->duration;
+            }
+
             discreteObsOffset = discreteObsStart + ENEMY_DRONE_WEAPONS_OBS_OFFSET + processedDrones;
             obs[discreteObsOffset] = (float)(enemyDrone->weaponInfo->type + 1) / NUM_WEAPONS;
 
@@ -410,6 +422,8 @@ void computeObs(iwEnv *e) {
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->lastAim.x, 1.0f, false);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->lastAim.y, 1.0f, false);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDroneAimAngle, PI, false);
+            continuousObs[continuousObsOffset++] = scaleValue(enemyShieldHealth, DRONE_SHIELD_HEALTH, true);
+            continuousObs[continuousObsOffset++] = scaleValue(enemyShieldDuration, DRONE_SHIELD_RESPAWN_DURATION, true);
             continuousObs[continuousObsOffset++] = scaleAmmo(e, enemyDrone);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->weaponCooldown, enemyDrone->weaponInfo->coolDown, true);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->weaponCharge, enemyDrone->weaponInfo->charge, true);
@@ -421,6 +435,7 @@ void computeObs(iwEnv *e) {
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->burstCharge, DRONE_ENERGY_MAX, true);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->livesLeft, DRONE_LIVES, true);
             continuousObs[continuousObsOffset++] = !enemyDrone->dead;
+            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
 
             processedDrones++;
             ASSERTF(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + (processedDrones * ENEMY_DRONE_OBS_SIZE), "offset: %d", continuousObsOffset);
@@ -434,6 +449,13 @@ void computeObs(iwEnv *e) {
             agentDroneBraking = 1.0f;
         }
 
+        float shieldHealth = 0.0f;
+        float shieldDuration = 0.0f;
+        if (agentDrone->shield != NULL) {
+            shieldHealth = agentDrone->shield->health;
+            shieldDuration = agentDrone->shield->duration;
+        }
+
         discreteObsOffset = discreteObsStart + ENEMY_DRONE_WEAPONS_OBS_OFFSET + e->numDrones - 1;
         obs[discreteObsOffset] = (float)(agentDrone->weaponInfo->type + 1) / NUM_WEAPONS;
 
@@ -445,6 +467,8 @@ void computeObs(iwEnv *e) {
         continuousObs[continuousObsOffset++] = scaleValue(agentDroneAccel.y, MAX_ACCEL, false);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->lastAim.x, 1.0f, false);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->lastAim.y, 1.0f, false);
+        continuousObs[continuousObsOffset++] = scaleValue(shieldHealth, DRONE_SHIELD_HEALTH, true);
+        continuousObs[continuousObsOffset++] = scaleValue(shieldDuration, DRONE_SHIELD_RESPAWN_DURATION, true);
         continuousObs[continuousObsOffset++] = scaleAmmo(e, agentDrone);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->weaponCooldown, agentDrone->weaponInfo->coolDown, true);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->weaponCharge, agentDrone->weaponInfo->charge, true);
@@ -459,9 +483,11 @@ void computeObs(iwEnv *e) {
         continuousObs[continuousObsOffset++] = agentDrone->stepInfo.ownShotTaken;
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->livesLeft, DRONE_LIVES, true);
         continuousObs[continuousObsOffset++] = !agentDrone->dead;
+        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
 
         ASSERTF(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + ((e->numDrones - 1) * ENEMY_DRONE_OBS_SIZE) + DRONE_OBS_SIZE, "offset: %d", continuousObsOffset);
-        continuousObs[continuousObsOffset] = scaleValue(e->stepsLeft, e->totalSteps, true);
+        continuousObs[continuousObsOffset++] = scaleValue(e->stepsLeft, e->totalSteps, true);
+        oneHotEncode(continuousObs, continuousObsOffset, e->mapIdx, NUM_MAPS);
     }
 }
 
@@ -882,7 +908,7 @@ void addLog(iwEnv *e, Log *log) {
 
     for (uint8_t j = 0; j < e->numDrones; j++) {
         e->log.stats[j].returns += log->stats[j].returns;
-        e->log.stats[j].wins += log->stats[j].wins;
+        e->log.stats[j].score += log->stats[j].score;
 
         e->log.stats[j].distanceTraveled += log->stats[j].distanceTraveled;
         e->log.stats[j].absDistanceTraveled += log->stats[j].absDistanceTraveled;
@@ -1152,6 +1178,61 @@ void stepPhysicsFrameMinimal(iwEnv *e) {
     updateVisuals(e);
 }
 
+void endEpisode(iwEnv *e, const int8_t lastAlive, const int8_t lastAliveTeam) {
+    if (e->numDrones != e->numAgents && e->stepsLeft == 0) {
+        DEBUG_LOG("truncating episode");
+    } else {
+        DEBUG_LOG("terminating episode");
+    }
+
+    for (uint8_t i = 0; i < e->numAgents; i++) {
+        agentTerminals(e, i)[0] = 1.0f;
+    }
+    if (e->tag > 0) {
+        e->boundary_reached = 1;
+    }
+
+    Log log = {0};
+    log.length = e->episodeLength;
+    if (lastAlive != -1) {
+        e->stats[lastAlive].score = 1.0f;
+    } else if (!e->teamsEnabled || (e->teamsEnabled && lastAliveTeam == -1)) {
+        log.ties = 1.0f;
+        for (uint8_t i = 0; i < e->numDrones; i++) {
+            e->stats[i].score = 0.5f;
+        }
+    }
+    log.botCLNoise = e->botCLNoise;
+
+    // TODO: handle multiple agents/teams correctly
+    if (e->botCLNoise > 0.0f && e->stats[0].kills > 0.0f) {
+        e->botCLNoise -= e->botCLDecay;
+        e->botCLNoise = clamp(e->botCLNoise);
+    }
+
+    for (uint8_t i = 0; i < e->numDrones; i++) {
+        const droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (e->teamsEnabled && drone->team == lastAliveTeam) {
+            e->stats[i].score = 1.0f;
+        }
+        // set absolute distance traveled of agent drones
+        e->stats[i].absDistanceTraveled = b2Distance(drone->initalPos, drone->pos);
+    }
+
+    memcpy(log.stats, e->stats, sizeof(e->stats));
+    addLog(e, &log);
+
+    if (e->client != NULL) {
+        e->roundState = ROUND_STATE_ENDING;
+        e->tick_frames_left = END_WAIT_TIME * e->frameRate;
+
+        e->winner = lastAlive;
+        e->winningTeam = lastAliveTeam;
+    }
+
+    e->needsReset = true;
+}
+
 void puf_step(iwEnv *e) {
     // handle the start and end pause when rendering
     if (e->client != NULL) {
@@ -1235,6 +1316,12 @@ void puf_step(iwEnv *e) {
         roundOver = stepPhysicsFrame(e, e->cachedActions, &lastAlive, &lastAliveTeam);
         e->tick_frames_left--;
 
+        // TODO: handle rendered eval properly
+        if (e->episodeLength == TRAINING_MAX_STEPS && !roundOver) {
+            roundOver = true;
+            lastAlive = -1;
+            lastAliveTeam = -1;
+        }
         if (roundOver || e->needsReset) {
             break;
         }
@@ -1243,52 +1330,7 @@ void puf_step(iwEnv *e) {
     computeRewards(e, roundOver, lastAlive, lastAliveTeam);
 
     if (roundOver) {
-        if (e->numDrones != e->numAgents && e->stepsLeft == 0) {
-            DEBUG_LOG("truncating episode");
-        } else {
-            DEBUG_LOG("terminating episode");
-        }
-
-        for (uint8_t t = 0; t < e->numAgents; t++) {
-            agentTerminals(e, t)[0] = 1.0f;
-        }
-
-        Log log = {0};
-        log.length = e->episodeLength;
-        if (lastAlive != -1) {
-            e->stats[lastAlive].wins = 1.0f;
-        } else if (!e->teamsEnabled || (e->teamsEnabled && lastAliveTeam == -1)) {
-            log.ties = 1.0f;
-        }
-        log.botCLNoise = e->botCLNoise;
-
-        // TODO: handle multiple agents/teams correctly
-        if (e->botCLNoise > 0.0f && e->stats[0].kills > 0.0f) {
-            e->botCLNoise -= e->botCLDecay;
-            e->botCLNoise = clamp(e->botCLNoise);
-        }
-
-        for (uint8_t i = 0; i < e->numDrones; i++) {
-            const droneEntity *drone = safe_array_get_at(e->drones, i);
-            if (!drone->dead && e->teamsEnabled && drone->team == lastAliveTeam) {
-                e->stats[i].wins = 1.0f;
-            }
-            // set absolute distance traveled of agent drones
-            e->stats[i].absDistanceTraveled = b2Distance(drone->initalPos, drone->pos);
-        }
-
-        memcpy(log.stats, e->stats, sizeof(e->stats));
-        addLog(e, &log);
-
-        if (e->client != NULL) {
-            e->roundState = ROUND_STATE_ENDING;
-            e->tick_frames_left = END_WAIT_TIME * e->frameRate;
-
-            e->winner = lastAlive;
-            e->winningTeam = lastAliveTeam;
-        }
-
-        e->needsReset = true;
+        endEpisode(e, lastAlive, lastAliveTeam);
     }
 
     if (e->client == NULL && e->needsReset) {

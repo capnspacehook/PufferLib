@@ -1131,6 +1131,7 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
     b2Body_SetLinearDamping(drone->bodyID, DRONE_LINEAR_DAMPING);
 
     drone->dead = false;
+    drone->respawnWait = 0.0f;
     drone->pos = pos;
     drone->lastPos = pos;
     drone->mapCellIdx = entityPosToCellIdx(e, drone->pos);

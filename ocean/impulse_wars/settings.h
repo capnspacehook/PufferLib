@@ -11,6 +11,7 @@ static const uint8_t TWO_BIT_MASK = 0x3;
 static const uint8_t TRAINING_ACTIONS_PER_SECOND = 10;
 static const uint8_t TRAINING_FRAME_RATE = 30;
 static const uint8_t TRAINING_BOX2D_SUBSTEPS = 2;
+static const uint16_t TRAINING_MAX_STEPS = 4500;
 
 #define _EVAL_FRAME_RATE 120
 static const uint8_t EVAL_FRAME_RATE = _EVAL_FRAME_RATE;
@@ -96,11 +97,11 @@ static const uint8_t PROJECTILE_OBS_SIZE = NUM_PROJECTILE_OBS * PROJECTILE_INFO_
 static const uint16_t PROJECTILE_INFO_OBS_OFFSET = WEAPON_PICKUP_POS_OBS_OFFSET + WEAPON_PICKUP_OBS_SIZE;
 
 static const uint16_t ENEMY_DRONE_OBS_OFFSET = PROJECTILE_INFO_OBS_OFFSET + PROJECTILE_OBS_SIZE;
-static const uint8_t ENEMY_DRONE_OBS_SIZE = 24;
+static const uint8_t ENEMY_DRONE_OBS_SIZE = 27;
 
-static const uint8_t DRONE_OBS_SIZE = 22;
+static const uint8_t DRONE_OBS_SIZE = 25;
 
-static const uint8_t MISC_OBS_SIZE = 1;
+static const uint8_t MISC_OBS_SIZE = 1 + NUM_MAPS;
 
 static const uint16_t _DISCRETE_OBS_SIZE = MAP_OBS_SIZE + NUM_NEAR_WALL_OBS + NUM_FLOATING_WALL_OBS + (NUM_PROJECTILE_OBS * 2) + NUM_WEAPON_PICKUP_OBS + 1;
 static const uint16_t _CONTINUOUS_OBS_SIZE = NEAR_WALL_OBS_SIZE + FLOATING_WALL_OBS_SIZE + WEAPON_PICKUP_OBS_SIZE + PROJECTILE_OBS_SIZE + DRONE_OBS_SIZE + MISC_OBS_SIZE;
@@ -362,6 +363,8 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define BLACK_HOLE_PROXIMITY_RADIUS 10.0f
 #define BLACK_HOLE_PARENT_IGNORE_DISTANCE BLACK_HOLE_PROXIMITY_RADIUS * 1.5f
 #define BLACK_HOLE_PULL_MAGNITUDE -300.0f
+// Seconds for the visual pull field and tint to fade after projectile destruction.
+#define BLACK_HOLE_DISTORTION_FADE_TIME 0.3f
 
 #define NUKE_AMMO 1
 #define NUKE_PROJECTILES 1
