@@ -123,7 +123,7 @@ void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffs
                 }
 
                 if (entityTypeIsWall(cell->ent->type)) {
-                    agentObs(e, agentIdx)[offset] = (float)(cell->ent->type + 1) / 3.0f;
+                    agentObs(e, agentIdx)[offset] = (float)(cell->ent->type + 1);
                 }
                 // else if (cell->ent->type == WEAPON_PICKUP_ENTITY) {
                 //     e->observations[offset] |= 1 << 3;
@@ -204,7 +204,7 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
         ASSERTF(offset + NEAR_WALL_INFO_OBS_SIZE <= FLOATING_WALL_INFO_OBS_OFFSET, "offset: %d", offset);
         const b2Vec2 wallRelPos = b2Sub(wall->pos, drone->pos);
 
-        continuousObs[offset++] = (float)wall->type / 2.0f;
+        continuousObs[offset++] = (float)(wall->type + 1);
         continuousObs[offset++] = scaleValue(wallRelPos.x, MAX_X_POS, false);
         continuousObs[offset] = scaleValue(wallRelPos.y, MAX_Y_POS, false);
     }
@@ -238,7 +238,7 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
 
             offset = FLOATING_WALL_INFO_OBS_OFFSET + (i * FLOATING_WALL_INFO_OBS_SIZE);
             ASSERTF(offset + FLOATING_WALL_INFO_OBS_SIZE <= WEAPON_PICKUP_INFO_OBS_OFFSET, "offset: %d", offset);
-            continuousObs[offset++] = (float)(wall->type + 1) / 3.0f;
+            continuousObs[offset++] = (float)(wall->type + 1);
             continuousObs[offset++] = scaleValue(wallRelPos.x, MAX_X_POS, false);
             continuousObs[offset++] = scaleValue(wallRelPos.y, MAX_Y_POS, false);
             continuousObs[offset++] = scaleValue(angle, MAX_ANGLE, false);
@@ -276,7 +276,7 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
 
             offset = WEAPON_PICKUP_INFO_OBS_OFFSET + (i * WEAPON_PICKUP_INFO_OBS_SIZE);
             ASSERTF(offset + WEAPON_PICKUP_INFO_OBS_SIZE <= PROJECTILE_INFO_OBS_OFFSET, "offset: %d", offset);
-            continuousObs[offset++] = (float)(pickup->weapon + 1) / NUM_WEAPONS;
+            continuousObs[offset++] = (float)(pickup->weapon + 1);
             const b2Vec2 pickupRelPos = b2Sub(pickup->pos, drone->pos);
             continuousObs[offset++] = scaleValue(pickupRelPos.x, MAX_X_POS, false);
             continuousObs[offset] = scaleValue(pickupRelPos.y, MAX_Y_POS, false);
@@ -341,7 +341,7 @@ void computeObs(iwEnv *e) {
                 } else {
                     continuousObs[continuousObsOffset++] = 0.5f;
                 }
-                continuousObs[continuousObsOffset++] = (float)(projectile->weaponInfo->type + 1) / NUM_WEAPONS;
+                continuousObs[continuousObsOffset++] = (float)(projectile->weaponInfo->type + 1);
                 const b2Vec2 projectileRelPos = b2Sub(projectile->pos, agentDrone->pos);
                 continuousObs[continuousObsOffset++] = scaleValue(projectileRelPos.x, MAX_X_POS, false);
                 continuousObs[continuousObsOffset++] = scaleValue(projectileRelPos.y, MAX_Y_POS, false);
@@ -394,7 +394,7 @@ void computeObs(iwEnv *e) {
 
             continuousObsOffset = ENEMY_DRONE_OBS_OFFSET + (processedDrones * ENEMY_DRONE_OBS_SIZE);
             continuousObs[continuousObsOffset++] = enemyDrone->team == agentDrone->team;
-            continuousObs[continuousObsOffset++] = (float)(enemyDrone->weaponInfo->type + 1) / NUM_WEAPONS;
+            continuousObs[continuousObsOffset++] = (float)(enemyDrone->weaponInfo->type + 1);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDroneRelPos.x, MAX_X_POS, false);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDroneRelPos.y, MAX_Y_POS, false);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDroneDistance, MAX_DISTANCE, true);
@@ -442,7 +442,7 @@ void computeObs(iwEnv *e) {
             shieldDuration = agentDrone->shield->duration;
         }
 
-        continuousObs[continuousObsOffset++] = (float)(agentDrone->weaponInfo->type + 1) / NUM_WEAPONS;
+        continuousObs[continuousObsOffset++] = (float)(agentDrone->weaponInfo->type + 1);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->pos.x, MAX_X_POS, false);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->pos.y, MAX_Y_POS, false);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->velocity.x, MAX_SPEED, false);

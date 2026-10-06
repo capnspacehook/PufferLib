@@ -51,6 +51,9 @@ __device__ static const float OSRS_ITEM_OBS_TABLE_DEV
 #ifdef PUFFER_CRAFTAX
 #include "../ocean/craftax/craftax.cu"
 #endif
+#ifdef PUFFER_IMPULSE_WARS
+#include "../ocean/impulse_wars/impulse_wars.cu"
+#endif
 
 // Override encoder vtable when this env has a custom net. No-op otherwise.
 static void create_custom_encoder(Encoder* enc) {
@@ -72,6 +75,8 @@ static void create_custom_encoder(Encoder* enc) {
 #endif
 #elif defined(PUFFER_ASTEROIDS)
     create_asteroids_encoder(enc);
+#elif defined(PUFFER_IMPULSE_WARS)
+    create_impulse_wars_encoder(enc);
 #elif defined(PUFFER_OSRS_COLOSSEUM)
     create_osrs_entity_encoder<&OSRS_COLOSSEUM_ENTITY_DESCRIPTOR>(enc);
 #elif defined(PUFFER_OSRS_INFERNO)

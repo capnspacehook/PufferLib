@@ -611,7 +611,7 @@ void free_puffernet(PufferNet* net) {
 
 #include ENV_HEADER
 
-#if !defined(PUF_NMMO3_NET) && !defined(PUF_ASTEROIDS_NET) && !defined(PUF_MINIMAL_NET) && !defined(PUF_CRAFTAX_NET)
+#if !defined(PUF_NMMO3_NET) && !defined(PUF_ASTEROIDS_NET) && !defined(PUF_MINIMAL_NET) && !defined(PUF_CRAFTAX_NET) && !defined(PUF_IMPULSE_WARS_NET)
 static int puf_align8(int n) {
     return (n + 7) & ~7;
 }
@@ -758,6 +758,8 @@ int main(int argc, char** argv) {
     int need = minimal_weight_count(hidden_size, num_layers);
 #elif defined(PUF_CRAFTAX_NET)
     int need = craftax_weight_count(hidden_size, num_layers);
+#elif defined(PUF_IMPULSE_WARS_NET)
+    int need = impulse_wars_weight_count(hidden_size, num_layers);
 #else
     int need = puffernet_weight_count(OBS_SIZE, hidden_size, num_layers,
         act_sizes, num_actions);
@@ -790,7 +792,7 @@ int main(int argc, char** argv) {
     size_t n_atn = (size_t)env.num_agents * (size_t)NUM_ATNS;
     size_t n_agt = env.num_agents;
     obs_t* observations = calloc(n_obs, sizeof(obs_t));
-#if !defined(PUF_NMMO3_NET) && !defined(PUF_ASTEROIDS_NET) && !defined(PUF_MINIMAL_NET) && !defined(PUF_CRAFTAX_NET)
+#if !defined(PUF_NMMO3_NET) && !defined(PUF_ASTEROIDS_NET) && !defined(PUF_MINIMAL_NET) && !defined(PUF_CRAFTAX_NET) && !defined(PUF_IMPULSE_WARS_NET)
     float* obs_f = calloc(n_obs, sizeof(float));
 #endif
     float* actions = calloc(n_atn, sizeof(float));
@@ -835,6 +837,12 @@ int main(int argc, char** argv) {
     CraftaxNet* net = NULL;
     if (have_net) {
         net = init_craftax_net(weights, env.num_agents,
+            hidden_size, num_layers);
+    }
+#elif defined(PUF_IMPULSE_WARS_NET)
+    ImpulseWarsNet* net = NULL;
+    if (have_net) {
+        net = init_impulse_wars_net(weights, env.num_agents,
             hidden_size, num_layers);
     }
 #else
@@ -914,6 +922,8 @@ int main(int argc, char** argv) {
 #elif defined(PUF_CRAFTAX_NET)
                 forward_craftax(net, (float*)observations, terminals, actions, masks);
                 env.predicted_value = craftax_value(net, 0);
+#elif defined(PUF_IMPULSE_WARS_NET)
+                forward_impulse_wars(net, (float*)observations, terminals, actions);
 #else
                 float* fwd = (float*)observations;
                 if (sizeof(obs_t) != sizeof(float)) {

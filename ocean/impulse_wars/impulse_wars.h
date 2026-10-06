@@ -55,6 +55,8 @@ void puf_set_bot_policy(Env *env, int botPolicy);
 #define PUF_STEPS_PER_SEC _EVAL_FRAME_RATE
 #ifdef PUFFERCPU_EVAL_MAIN
 #define PUF_EVAL_SHOULD_FORWARD
+#define PUF_IMPULSE_WARS_NET 1
+#include "impulse_wars_net.h"
 #endif
 
 int b2InternalAssertFcn(const char *condition, const char *fileName, int lineNumber) {

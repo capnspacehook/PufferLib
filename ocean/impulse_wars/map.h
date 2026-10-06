@@ -609,7 +609,7 @@ void initMaps(iwEnv *e) {
 
             // precompute packed map layout
             if (cell->ent != NULL) {
-                packedLayout[i] = (float)(cell->ent->type + 1) / 3.0f;
+                packedLayout[i] = (float)(cell->ent->type + 1);
                 continue;
             } else {
                 // precompute valid cells for drones to spawn
