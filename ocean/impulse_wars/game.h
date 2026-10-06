@@ -636,10 +636,9 @@ void createWeaponPickup(iwEnv *e) {
 void destroyWeaponPickup(iwEnv *e, weaponPickupEntity *pickup) {
     destroyEntity(e, pickup->ent);
 
-    mapCell *cell = (&e->cells[pickup->mapCellIdx]);
-    cell->ent = NULL;
-
     if (!pickup->bodyDestroyed) {
+        mapCell *cell = (&e->cells[pickup->mapCellIdx]);
+        cell->ent = NULL;
         b2DestroyBody(pickup->bodyID);
     }
 
@@ -1390,7 +1389,7 @@ void createProjectileExplosion(iwEnv *e, projectileEntity *projectile, const boo
     ASSERT(res == CC_OK);
 }
 
-// ensures projectiles don't slow down when an impluse is applied to them
+// ensures projectiles don't slow down when an impulse is applied to them
 void fixProjectileSpeed(projectileEntity *projectile) {
     b2Vec2 newVel = b2Body_GetLinearVelocity(projectile->bodyID);
     float newSpeed = b2Length(newVel);
