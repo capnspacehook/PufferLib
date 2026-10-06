@@ -1405,7 +1405,7 @@ void fixProjectileSpeed(projectileEntity *projectile) {
     projectile->speed = newSpeed;
 }
 
-#define MAX_WALL_HITS 8
+#define MAX_WALL_HITS 24
 
 typedef struct wallBurstImpulse {
     float distance;
@@ -1577,16 +1577,14 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
 
     float magnitude = (ctx->def->impulsePerLength + parentSpeed) * perimeter * scale * shieldReduction;
     if (isStaticWall) {
-        // ensure this wall faces at least 85 degrees away from the
-        // closest hit wall to prevent multiple walls facing roughly
-        // the same direction greatly increasing the impulse magnitude
         if (ctx->closestWallIdx == -1) {
             ctx->closestWallIdx = 0;
         } else {
+            // ensure this wall faces at least 85 degrees away from the
+            // closest hit wall to prevent multiple walls facing roughly
+            // the same direction greatly increasing the impulse magnitude
             const float closestWallDistance = ctx->wallImpulses[ctx->closestWallIdx].distance;
             if (output.distance < closestWallDistance) {
-                ctx->closestWallIdx = ctx->wallsHit;
-
                 for (int8_t i = 0; i < ctx->wallsHit; i++) {
                     const wallBurstImpulse impulse = ctx->wallImpulses[i];
                     if (impulse.distance != output.distance && b2Dot(impulse.direction, direction) > COS_85_DEGREES) {
@@ -1600,7 +1598,26 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         // reduce the magnitude when pushing a drone away from a wall
         magnitude = log2f(magnitude) * (5.0f + (25.0f * ctx->parentDrone->burstCharge));
 
-        ctx->wallImpulses[ctx->wallsHit++] = (wallBurstImpulse){
+        uint8_t idx = ctx->wallsHit;
+        if (ctx->wallsHit == MAX_WALL_HITS) {
+            // replace the farthest wall if this one is closer
+            idx = 0;
+            for (uint8_t i = 1; i < ctx->wallsHit; i++) {
+                if (ctx->wallImpulses[idx].distance < ctx->wallImpulses[i].distance) {
+                    idx = i;
+                }
+            }
+            if (output.distance >= ctx->wallImpulses[idx].distance) {
+                return true;
+            }
+        } else {
+            ctx->wallsHit++;
+        }
+        if (output.distance < ctx->wallImpulses[ctx->closestWallIdx].distance) {
+            ctx->closestWallIdx = idx;
+        }
+
+        ctx->wallImpulses[idx] = (wallBurstImpulse){
             .distance = output.distance,
             .direction = direction,
             .magnitude = magnitude,
@@ -1714,7 +1731,7 @@ void applyDroneBurstImpulse(iwEnv *e, explosionCtx *ctx, const droneEntity *dron
             if (impulseB.distance == FLT_MAX) {
                 continue;
             }
-            const uint8_t cellIdxDiff = abs(impulseB.wallCellIdx - impulseA.wallCellIdx);
+            const uint16_t cellIdxDiff = abs(impulseB.wallCellIdx - impulseA.wallCellIdx);
             if (cellIdxDiff == e->map->columns) {
                 hitWalls[j].distance = FLT_MAX;
                 continue;
