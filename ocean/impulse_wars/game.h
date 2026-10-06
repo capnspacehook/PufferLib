@@ -260,6 +260,25 @@ bool posBehindWall(const iwEnv *e, const b2Vec2 srcPos, const b2Vec2 dstPos, con
     return ctx.hit;
 }
 
+static inline void projectileAddDroneBehindWall(projectileEntity *projectile, const uint8_t droneIdx) {
+    for (uint8_t i = 0; i < projectile->numDronesBehindWalls; i++) {
+        if (projectile->dronesBehindWalls[i] == droneIdx) {
+            return;
+        }
+    }
+    ASSERT(projectile->numDronesBehindWalls < _MAX_DRONES);
+    projectile->dronesBehindWalls[projectile->numDronesBehindWalls++] = droneIdx;
+}
+
+static inline void projectileRemoveDroneBehindWall(projectileEntity *projectile, const uint8_t droneIdx) {
+    for (uint8_t i = 0; i < projectile->numDronesBehindWalls; i++) {
+        if (projectile->dronesBehindWalls[i] == droneIdx) {
+            projectile->dronesBehindWalls[i] = projectile->dronesBehindWalls[--projectile->numDronesBehindWalls];
+            return;
+        }
+    }
+}
+
 typedef struct overlapCircleLineOfSightCtx {
     const iwEnv *e;
     const entity *ent;
@@ -285,8 +304,8 @@ bool isOverlappingCircleInLineOfSightCallback(b2ShapeId shapeID, void *context) 
         ctx->overlaps = true;
     } else if (ctx->ent->type == PROJECTILE_ENTITY) {
         projectileEntity *proj = ctx->ent->entity;
-        droneEntity *drone = overlappingEnt->entity;
-        proj->dronesBehindWalls[proj->numDronesBehindWalls++] = drone->idx;
+        const droneEntity *drone = overlappingEnt->entity;
+        projectileAddDroneBehindWall(proj, drone->idx);
     }
     return behind;
 }
@@ -3077,7 +3096,7 @@ void handleProjectileBeginTouch(iwEnv *e, const entity *sensor, entity *visitor)
         const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE};
         if (posBehindWall(e, projectile->pos, output.pointB, NULL, filter, NULL)) {
             const droneEntity *drone = visitor->entity;
-            projectile->dronesBehindWalls[projectile->numDronesBehindWalls++] = drone->idx;
+            projectileAddDroneBehindWall(projectile, drone->idx);
             return;
         }
 
@@ -3112,10 +3131,12 @@ void handleProjectileEndTouch(const entity *sensor, entity *visitor) {
     case FLAK_CANNON_WEAPON:
         break;
     case MINE_LAUNCHER_WEAPON:
-        if (projectile->numDronesBehindWalls == 0) {
+        if (visitor == NULL) {
             return;
         }
-        projectile->numDronesBehindWalls--;
+        ASSERT(visitor->type == DRONE_ENTITY);
+        const droneEntity *drone = visitor->entity;
+        projectileRemoveDroneBehindWall(projectile, drone->idx);
         break;
     case BLACK_HOLE_WEAPON:
         if (visitor == NULL) {
