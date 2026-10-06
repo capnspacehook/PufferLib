@@ -721,6 +721,10 @@ static inline bool droneDiedThisStep(const droneEntity *drone) {
     return drone->dead && drone->diedThisStep;
 }
 
+static inline float hitReward(float impulse) {
+    return fminf(impulse * DRONE_INV_MASS / HIT_DV_REF, 1.0f);
+}
+
 float computeReward(iwEnv *e, droneEntity *drone) {
     float reward = 0.0f;
 
@@ -756,7 +760,7 @@ float computeReward(iwEnv *e, droneEntity *drone) {
             // to the hit drone, so they share a coefficient
             const float dealt = drone->stepInfo.shotHit[i] + drone->stepInfo.explosionHit[i];
             const float taken = drone->stepInfo.shotTaken[i] + drone->stepInfo.explosionTaken[i];
-            reward += (dealt - taken) * e->hitRewardCoef;
+            reward += (hitReward(dealt) - hitReward(taken)) * e->hitRewardCoef;
 
             if (drone->stepInfo.brokeShield[i]) {
                 reward += e->shieldBreakReward;

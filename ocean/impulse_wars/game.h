@@ -2628,7 +2628,8 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             if (!projIsShapeA) {
                 hitImpulse = b2Neg(hitImpulse);
             }
-            applyTrackedImpulse(e, wall->bodyID, wall->physicsTracking, hitImpulse, projectile->droneIdx);
+            b2Body_ApplyLinearImpulseToCenter(wall->bodyID, hitImpulse, true);
+            trackImpulse(e, wall->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), projectile->droneIdx);
         }
 
         if (ent->type == BOUNCY_WALL_ENTITY) {
@@ -2832,7 +2833,7 @@ void handleContactEvents(iwEnv *e) {
             if (b2Contact_IsValid(event->contactId)) {
                 const b2Manifold manifold = b2Contact_GetData(event->contactId).manifold;
                 ASSERT(manifold.pointCount == 1);
-                b2Vec2 hitImpulse = b2MulSV(manifold.points[0].normalImpulse, manifold.normal);
+                b2Vec2 hitImpulse = b2MulSV(manifold.points[0].normalImpulse * (1.0f + DRONE_RESTITUTION), manifold.normal);
                 trackImpulse(e, drone2->physicsTracking, hitImpulse, drone1->idx);
                 trackImpulse(e, drone1->physicsTracking, b2Neg(hitImpulse), drone2->idx);
                 // TODO: continue here?

@@ -39,6 +39,8 @@ static const uint8_t MAX_DRONES = _MAX_DRONES;
 static const float PROJECTILE_RESTITUTION = 1.0f;
 static const float SHOT_HIT_IMPULSE_SCALE = 1.0f + PROJECTILE_RESTITUTION + 1.0f;
 
+static const float HIT_DV_REF = 75.0f;
+
 // observation constants
 
 // map layout observations
