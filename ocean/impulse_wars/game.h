@@ -1684,7 +1684,9 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
             DEBUG_LOGF("shield explosion damage: %f", damage);
             shield->health -= damage;
             if (shield->health <= 0.0f) {
-                droneAddEnergy(ctx->parentDrone, DRONE_SHIELD_BREAK_ENERGY_REFILL);
+                if (shield->drone->idx != ctx->parentDrone->idx && shield->drone->team != ctx->parentDrone->team) {
+                    droneAddEnergy(ctx->parentDrone, DRONE_SHIELD_BREAK_ENERGY_REFILL);
+                }
                 ctx->parentDrone->stepInfo.brokeShield[shield->drone->idx] = true;
                 ctx->e->stats[ctx->parentDrone->idx].shieldsBroken++;
             }
@@ -2755,7 +2757,9 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         shield->health -= damage;
         if (shield->health <= 0.0f) {
             droneEntity *parentDrone = safe_array_get_at(e->drones, projectile->droneIdx);
-            droneAddEnergy(parentDrone, DRONE_SHIELD_BREAK_ENERGY_REFILL);
+            if (shield->drone->idx != parentDrone->idx && shield->drone->team != parentDrone->team) {
+                droneAddEnergy(parentDrone, DRONE_SHIELD_BREAK_ENERGY_REFILL);
+            }
             parentDrone->stepInfo.brokeShield[shield->drone->idx] = true;
             e->stats[parentDrone->idx].shieldsBroken++;
         }
