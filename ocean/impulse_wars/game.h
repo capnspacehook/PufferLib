@@ -965,6 +965,85 @@ void droneTrackBrake(const iwEnv *e, const droneEntity *drone) {
     cc_array_add(drone->physicsTracking, physicsStep);
 }
 
+// get the physics tracking of the body that bounced off of a static wall,
+// or NULL if the contact isn't a bounce that should be tracked
+CC_Array *wallBounceTracking(const entity *ent, const entity *wallEnt) {
+    if (!entityTypeIsWall(wallEnt->type)) {
+        return NULL;
+    }
+    // reflecting assumes the wall doesn't move
+    const wallEntity *wall = wallEnt->entity;
+    if (wall->isFloating) {
+        return NULL;
+    }
+
+    switch (ent->type) {
+    case DRONE_ENTITY:
+        if (wallEnt->type == DEATH_WALL_ENTITY) {
+            return NULL;
+        }
+        return ((droneEntity *)ent->entity)->physicsTracking;
+    case SHIELD_ENTITY:
+        return ((shieldEntity *)ent->entity)->drone->physicsTracking;
+    case STANDARD_WALL_ENTITY:
+    case BOUNCY_WALL_ENTITY:
+    case DEATH_WALL_ENTITY: {
+        wallEntity *bouncingWall = ent->entity;
+        if (bouncingWall->isFloating) {
+            return bouncingWall->physicsTracking;
+        }
+        return NULL;
+    }
+    default:
+        return NULL;
+    }
+}
+
+// track a body bouncing off of a static wall so findBiggestContributor
+// can reflect the pushes that moved the body into the wall
+void trackWallBounce(const iwEnv *e, const entity *e1, const entity *e2, const b2ContactId contactID) {
+    bool wallIsShapeA = false;
+    CC_Array *physicsTracking = wallBounceTracking(e1, e2);
+    if (physicsTracking == NULL) {
+        physicsTracking = wallBounceTracking(e2, e1);
+        wallIsShapeA = true;
+    }
+    if (physicsTracking == NULL || !b2Contact_IsValid(contactID)) {
+        return;
+    }
+    const b2ContactData contactData = b2Contact_GetData(contactID);
+    const b2Manifold manifold = contactData.manifold;
+    if (manifold.pointCount == 0) {
+        return;
+    }
+
+    // the manifold normal points from shape A to shape B, make it
+    // point out of the wall
+    b2Vec2 normal = manifold.normal;
+    if (!wallIsShapeA) {
+        normal = b2Neg(normal);
+    }
+
+    // match box2d: restitution is the max of both shapes' restitution,
+    // and is only applied if the shapes are approaching faster than
+    // the restitution threshold
+    float approachSpeed = 0.0f;
+    for (uint8_t i = 0; i < manifold.pointCount; i++) {
+        approachSpeed = fmaxf(approachSpeed, -manifold.points[i].normalVelocity);
+    }
+    float restitution = 0.0f;
+    if (approachSpeed > b2World_GetRestitutionThreshold(e->worldID)) {
+        restitution = fmaxf(b2Shape_GetRestitution(contactData.shapeIdA), b2Shape_GetRestitution(contactData.shapeIdB));
+    }
+
+    physicsStepInfo *physicsStep = fastCalloc(1, sizeof(physicsStepInfo));
+    physicsStep->bounce = true;
+    physicsStep->normal = normal;
+    physicsStep->restitution = restitution;
+    physicsStep->step = e->episodeLength;
+    cc_array_add(physicsTracking, physicsStep);
+}
+
 void droneChangeWeapon(const iwEnv *e, droneEntity *drone, const enum weaponType newWeapon) {
     // top up ammo but change nothing else if the weapon is the same
     if (drone->weaponInfo->type != newWeapon || drone->dead) {
@@ -1011,6 +1090,17 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
             } else {
                 damping = defaultDamping;
             }
+        }
+        // reflect pushes into the wall the same way box2d reflects the
+        // body's velocity; pushes away from the wall are left alone
+        if (physicsStep->bounce) {
+            for (uint8_t k = 0; k < e->numDrones; k++) {
+                const float intoWall = b2Dot(contrib[k], physicsStep->normal);
+                if (intoWall < 0.0f) {
+                    contrib[k] = b2MulSub(contrib[k], (1.0f + physicsStep->restitution) * intoWall, physicsStep->normal);
+                }
+            }
+            continue;
         }
 
         const b2Vec2 invForce = b2MulSV(DRONE_INV_MASS, physicsStep->force);
@@ -2840,6 +2930,12 @@ void handleContactEvents(iwEnv *e) {
             }
         }
 
+        // track bounces off of walls before shields touching death walls
+        // are destroyed below
+        if (e1 != NULL && e2 != NULL) {
+            trackWallBounce(e, e1, e2, event->contactId);
+        }
+
         // TODO: drone on drone collisions should reduce shield health
 
         if (e1 != NULL) {
@@ -2850,7 +2946,6 @@ void handleContactEvents(iwEnv *e) {
                 } else if (numDestroyed == 1) {
                     e1 = NULL;
                 }
-
             } else if (entityTypeIsWall(e1->type) && e2 != NULL) {
                 if (e1->type == DEATH_WALL_ENTITY) {
                     if (e2->type == DRONE_ENTITY) {

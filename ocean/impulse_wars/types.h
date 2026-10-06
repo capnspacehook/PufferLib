@@ -268,6 +268,11 @@ typedef struct physicsStepInfo {
     b2Vec2 impulse;
     b2Vec2 force;
     bool brakeToggled;
+    // set when the body bounced off of a static wall; normal points out
+    // of the wall and restitution is what box2d used for the bounce
+    bool bounce;
+    b2Vec2 normal;
+    float restitution;
     uint16_t step;
 } physicsStepInfo;
 
