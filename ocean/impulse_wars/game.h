@@ -92,7 +92,7 @@ bool overlapAABBCallback(b2ShapeId shapeID, void *context) {
 
     overlapAABBCtx *ctx = context;
     ctx->overlaps = true;
-    return true;
+    return false;
 }
 
 // returns true if the given position overlaps with shapes in a bounding
@@ -103,6 +103,7 @@ bool isOverlappingAABB(const iwEnv *e, const b2Vec2 pos, const float distance, c
         .upperBound = {.x = pos.x + distance, .y = pos.y + distance},
     };
     overlapAABBCtx ctx = {.overlaps = false};
+
     b2World_OverlapAABB(e->worldID, bounds, filter, overlapAABBCallback, &ctx);
     return ctx.overlaps;
 }
@@ -259,20 +260,20 @@ bool posBehindWall(const iwEnv *e, const b2Vec2 srcPos, const b2Vec2 dstPos, con
     return ctx.hit;
 }
 
-typedef struct overlapCircleCtx {
+typedef struct overlapCircleLineOfSightCtx {
     const iwEnv *e;
     const entity *ent;
     const enum entityType *targetType;
     const b2QueryFilter filter;
     bool overlaps;
-} overlapCircleCtx;
+} overlapCircleLineOfSightCtx;
 
-bool isOverlappingCircleCallback(b2ShapeId shapeID, void *context) {
+bool isOverlappingCircleInLineOfSightCallback(b2ShapeId shapeID, void *context) {
     if (!b2Shape_IsValid(shapeID)) {
         return true;
     }
 
-    overlapCircleCtx *ctx = context;
+    overlapCircleLineOfSightCtx *ctx = context;
     const entity *overlappingEnt = b2Shape_GetUserData(shapeID);
     if (ctx->targetType != NULL && overlappingEnt->type != *ctx->targetType) {
         return true;
@@ -292,7 +293,7 @@ bool isOverlappingCircleCallback(b2ShapeId shapeID, void *context) {
 
 bool isOverlappingCircleInLineOfSight(const iwEnv *e, const entity *ent, const b2Vec2 startPos, const float radius, const b2QueryFilter filter, const enum entityType *targetType) {
     const b2ShapeProxy cirProxy = b2MakeProxy(&startPos, 1, radius);
-    overlapCircleCtx ctx = {
+    overlapCircleLineOfSightCtx ctx = {
         .e = e,
         .ent = ent,
         .targetType = targetType,
@@ -302,7 +303,7 @@ bool isOverlappingCircleInLineOfSight(const iwEnv *e, const entity *ent, const b
         },
         .overlaps = false,
     };
-    b2World_OverlapShape(e->worldID, &cirProxy, filter, isOverlappingCircleCallback, &ctx);
+    b2World_OverlapShape(e->worldID, &cirProxy, filter, isOverlappingCircleInLineOfSightCallback, &ctx);
     return ctx.overlaps;
 }
 
@@ -1595,7 +1596,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         }
 
         // reduce the magnitude when pushing a drone away from a wall
-        magnitude = log2f(magnitude) * (5.0f + (25.0f * ctx->parentDrone->burstCharge));
+        magnitude = log2f(fmaxf(magnitude, 1.0f)) * (5.0f + (25.0f * ctx->parentDrone->burstCharge));
 
         uint8_t idx = ctx->wallsHit;
         if (ctx->wallsHit == MAX_WALL_HITS) {
@@ -1904,6 +1905,36 @@ void createSuddenDeathWalls(iwEnv *e, const b2Vec2 startPos, const b2Vec2 size) 
     }
 }
 
+typedef struct overlapCircleCtx {
+    const enum entityType *targetType;
+    bool overlaps;
+} overlapCircleCtx;
+
+bool isOverlappingCircleCallback(b2ShapeId shapeID, void *context) {
+    if (!b2Shape_IsValid(shapeID)) {
+        return true;
+    }
+
+    overlapCircleCtx *ctx = context;
+    const entity *overlappingEnt = b2Shape_GetUserData(shapeID);
+    if (ctx->targetType != NULL && overlappingEnt->type != *ctx->targetType) {
+        return true;
+    }
+
+    ctx->overlaps = true;
+    return false;
+}
+
+bool isOverlappingCircle(const iwEnv *e, const b2Vec2 startPos, const float radius, const b2QueryFilter filter, const enum entityType *targetType) {
+    const b2ShapeProxy cirProxy = b2MakeProxy(&startPos, 1, radius);
+    overlapCircleCtx ctx = {
+        .targetType = targetType,
+        .overlaps = false,
+    };
+    b2World_OverlapShape(e->worldID, &cirProxy, filter, isOverlappingCircleCallback, &ctx);
+    return ctx.overlaps;
+}
+
 void handleSuddenDeath(iwEnv *e) {
     ASSERT(e->suddenDeathSteps == 0);
     if (e->suddenDeathWallCounter >= e->map->maxSuddenDeathWalls) {
@@ -1968,13 +1999,14 @@ void handleSuddenDeath(iwEnv *e) {
     );
 
     // mark drones as dead if they touch a newly placed wall
+    const enum entityType deathWallType = DEATH_WALL_ENTITY;
     for (uint8_t i = 0; i < e->numDrones; i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
         const b2QueryFilter filter = {
             .categoryBits = DRONE_SHAPE,
             .maskBits = WALL_SHAPE,
         };
-        if (isOverlappingAABB(e, drone->pos, DRONE_RADIUS, filter)) {
+        if (isOverlappingCircle(e, drone->pos, DRONE_RADIUS, filter, &deathWallType)) {
             killDrone(e, drone, NULL);
         }
     }
