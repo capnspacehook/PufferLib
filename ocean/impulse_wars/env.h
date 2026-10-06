@@ -544,7 +544,7 @@ void setEnvFrameRate(iwEnv *e) {
     e->totalSuddenDeathSteps = SUDDEN_DEATH_STEPS * frameRate;
 }
 
-iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, uint64_t seed, bool enableTeams, bool isTraining, bool continuousActions, float botCLNoise, float botCLDecay) {
+iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, uint64_t seed, bool enableTeams, bool isTraining, bool continuousActions, uint8_t botPolicy, float botCLNoise, float botCLDecay) {
     DEBUG_LOGF("seed: %lu", seed);
 
     e->numDrones = numDrones;
@@ -556,6 +556,7 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
         e->numTeams = 2;
     }
     e->isTraining = isTraining;
+    e->botPolicy = botPolicy;
     e->botCLNoise = botCLNoise;
     e->botCLDecay = botCLDecay;
 

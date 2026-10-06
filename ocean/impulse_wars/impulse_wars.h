@@ -70,6 +70,7 @@ void puf_init(Env *env, Dict *kwargs) {
     int8_t map_idx = dict_get(kwargs, "map_idx");
     bool enable_teams = dict_get(kwargs, "enable_teams");
     bool is_training = dict_get(kwargs, "is_training");
+    uint8_t bot_policy = dict_get(kwargs, "bot_policy");
     float bot_cl_noise = dict_get(kwargs, "bot_cl_noise");
     float bot_cl_decay = dict_get(kwargs, "bot_cl_decay");
     initEnv(
@@ -81,6 +82,7 @@ void puf_init(Env *env, Dict *kwargs) {
         enable_teams,
         is_training,
         (bool)CONTINUOUS_ACTIONS,
+        bot_policy,
         bot_cl_noise,
         bot_cl_decay
     );
