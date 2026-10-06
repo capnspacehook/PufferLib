@@ -481,7 +481,6 @@ struct Env {
     float hitRewardCoef;
 
     uint16_t obsSize;
-    uint16_t discreteObsSize;
     bool continuousActions;
 
     uint8_t frameRate;
