@@ -743,13 +743,18 @@ float computeReward(iwEnv *e, droneEntity *drone) {
             // to the hit drone, so they share a coefficient
             const float dealt = drone->stepInfo.shotHit[i] + drone->stepInfo.explosionHit[i];
             const float taken = drone->stepInfo.shotTaken[i] + drone->stepInfo.explosionTaken[i];
-            reward += (hitReward(dealt) - hitReward(taken)) * e->hitRewardCoef;
 
+            // make hit and shield break rewards symmetric in self play
+            if (e->numAgents == e->numDrones) {
+                reward += (hitReward(dealt) - hitReward(taken)) * e->hitRewardCoef;
+                if (otherDrone->stepInfo.brokeShield[drone->idx]) {
+                    reward -= e->shieldBreakReward;
+                }
+            } else {
+                reward += hitReward(dealt) * e->hitRewardCoef;
+            }
             if (drone->stepInfo.brokeShield[i]) {
                 reward += e->shieldBreakReward;
-            }
-            if (otherDrone->stepInfo.brokeShield[drone->idx]) {
-                reward -= e->shieldBreakReward;
             }
         }
 
@@ -783,7 +788,11 @@ void computeRewards(iwEnv *e, const bool roundOver, const int8_t winner, const i
         } else if (roundOver && (winner != -1 || winningTeam != -1)) {
             // the round has a winner and it isn't this drone
             reward -= e->winReward;
+        } else if (roundOver && (winner == -1 && winningTeam == -1)) {
+            // punish ties like loses to discourage passivity
+            reward -= e->winReward;
         }
+
         if (i < e->numAgents) {
             agentRewards(e, i)[0] += reward;
         }
@@ -1301,7 +1310,10 @@ void puf_step(iwEnv *e) {
         }
     }
 
-    computeRewards(e, roundOver, lastAlive, lastAliveTeam);
+    // avoid computing and logging rewards every frame for interactive evals
+    if (e->client == NULL || e->tick_frames_left == 0 || roundOver) {
+        computeRewards(e, roundOver, lastAlive, lastAliveTeam);
+    }
 
     if (roundOver) {
         endEpisode(e, lastAlive, lastAliveTeam);
