@@ -4,9 +4,9 @@ typedef float obs_t;
 #endif
 
 // uncomment to use continuous actions
-#define NUM_ATNS 7
-#define ACT_SIZES {1, 1, 1, 1, 1, 1, 1}
-#define CONTINUOUS_ACTIONS 1
+// #define NUM_ATNS 7
+// #define ACT_SIZES {1, 1, 1, 1, 1, 1, 1}
+// #define CONTINUOUS_ACTIONS 1
 
 // actions:
 // 9: move, noop + 8 directions
@@ -14,9 +14,9 @@ typedef float obs_t;
 // 2: shoot or not
 // 2: brake or not
 // 2: burst or not
-// #define NUM_ATNS 5
-// #define ACT_SIZES {9, 17, 2, 2, 2}
-// #define CONTINUOUS_ACTIONS 0
+#define NUM_ATNS 5
+#define ACT_SIZES {9, 17, 2, 2, 2}
+#define CONTINUOUS_ACTIONS 0
 
 #define OBS_SIZE 410 // for 2 drones (players)
 
