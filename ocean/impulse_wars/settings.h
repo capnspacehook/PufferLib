@@ -98,17 +98,20 @@ static const float MAX_ANGLE = PI;
 
 // action constants
 static const uint8_t CONTINUOUS_ACTION_SIZE = 7;
-static const uint8_t DISCRETE_ACTION_SIZE = 5;
+static const uint8_t DISCRETE_ACTION_SIZE = 6;
 static const float ACTION_NOOP_MAGNITUDE = 0.1f;
 
 static const float discMoveToContMoveMap[2][8] = {
     {1.0f, 0.707107f, 0.0f, -0.707107f, -1.0f, -0.707107f, 0.0f, 0.707107f},
     {0.0f, 0.707107f, 1.0f, 0.707107f, 0.0f, -0.707107f, -1.0f, -0.707107f},
 };
-static const float discAimToContAimMap[2][16] = {
-    {1.0f, 0.92388f, 0.707107f, 0.382683f, 0.0f, -0.382683f, -0.707107f, -0.92388f, -1.0f, -0.92388f, -0.707107f, -0.382683f, 0.0f, 0.382683f, 0.707107f, 0.92388f},
-    {0.0f, 0.382683f, 0.707107f, 0.92388f, 1.0f, 0.92388f, 0.707107f, 0.382683f, 0.0f, -0.382683f, -0.707107f, -0.92388f, -1.0f, -0.92388f, -0.707107f, -0.382683f},
-};
+
+// discrete aim is split into a coarse sector and a fine offset within
+// it, giving AIM_COARSE_SECTORS * AIM_FINE_STEPS evenly spaced directions
+// while only needing AIM_COARSE_SECTORS + AIM_FINE_STEPS logits
+#define AIM_COARSE_SECTORS 16
+#define AIM_FINE_STEPS 8
+static const float AIM_FINE_STEP_ANGLE = 2.0f * PI / (AIM_COARSE_SECTORS * AIM_FINE_STEPS);
 
 static const float MIN_SPAWN_DISTANCE = 6.0f;
 static const float MIN_SD_SPAWN_DISTANCE = 3.0f;

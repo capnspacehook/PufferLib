@@ -825,17 +825,23 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
                 actions.move.x = discMoveToContMoveMap[0][move];
                 actions.move.y = discMoveToContMoveMap[1][move];
             }
-            uint8_t aim = envActions[1];
-            ASSERT(aim <= 16);
-            if (aim != 0) {
-                aim--;
-                actions.aim.x = discAimToContAimMap[0][aim];
-                actions.aim.y = discAimToContAimMap[1][aim];
+            uint8_t aimCoarse = envActions[1];
+            uint8_t aimFine = envActions[2];
+            ASSERT(aimCoarse <= AIM_COARSE_SECTORS);
+            ASSERT(aimFine < AIM_FINE_STEPS);
+            if (aimCoarse != 0) {
+                aimCoarse--;
+                // the fine offset is centered on the sector, so the middle
+                // fine step aims exactly at the sector's center
+                const int8_t fineOffset = (int8_t)aimFine - AIM_FINE_STEPS / 2;
+                const float angle = (aimCoarse * AIM_FINE_STEPS + fineOffset) * AIM_FINE_STEP_ANGLE;
+                actions.aim.x = cosf(angle);
+                actions.aim.y = sinf(angle);
             }
 
-            actions.chargingWeapon = envActions[2] > 0.0f;
-            actions.brake = envActions[3] > 0.0f;
-            actions.chargingBurst = envActions[4] > 0.0f;
+            actions.chargingWeapon = envActions[3] > 0.0f;
+            actions.brake = envActions[4] > 0.0f;
+            actions.chargingBurst = envActions[5] > 0.0f;
         }
 
         actions.shoot = actions.chargingWeapon;
