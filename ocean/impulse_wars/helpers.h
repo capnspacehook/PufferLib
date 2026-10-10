@@ -191,6 +191,12 @@ static inline float scaleValue(const float v, const float maxVal, const bool min
     }
 }
 
+// signed angle in radians to rotate from a to b, in [-PI, PI];
+// a and b don't need to be normalized
+static inline float signedAngle(const b2Vec2 a, const b2Vec2 b) {
+    return atan2f(b2Cross(a, b), b2Dot(a, b));
+}
+
 static inline void oneHotEncode(float *obs, const uint16_t offset, const uint8_t val, const uint8_t max) {
     ASSERTF(val < max, "val: %d, max: %d", val, max);
     memset(obs + offset, 0x0, max * sizeof(float));

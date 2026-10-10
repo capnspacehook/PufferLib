@@ -276,7 +276,8 @@ void wallBurst(iwEnv *e, const droneEntity *drone, const float distance, agentAc
 
 agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
     agentActions actions = {0};
-    if (e->botPolicy == BOT_SITTING_DUCK) {
+    // easy curriculum episodes always face a sitting duck
+    if (e->botPolicy == BOT_SITTING_DUCK || e->easyEp) {
         return actions;
     }
 

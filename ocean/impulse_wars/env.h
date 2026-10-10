@@ -421,6 +421,8 @@ void computeObs(iwEnv *e) {
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->livesLeft, DRONE_LIVES, true);
             continuousObs[continuousObsOffset++] = !enemyDrone->dead;
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
+            // signed angle to turn our aim by to point at this enemy
+            continuousObs[continuousObsOffset++] = scaleValue(signedAngle(agentDrone->lastAim, enemyDroneRelNormPos), PI, false);
 
             processedDrones++;
             ASSERTF(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + (processedDrones * ENEMY_DRONE_OBS_SIZE), "offset: %d", continuousObsOffset);
@@ -433,6 +435,12 @@ void computeObs(iwEnv *e) {
         float agentDroneBraking = 0.0f;
         if (agentDrone->braking) {
             agentDroneBraking = 1.0f;
+        }
+
+        // signed angle from our aim to our velocity, 0 when barely moving
+        float aimVelAngle = 0.0f;
+        if (b2Length(agentDrone->velocity) > 0.1f) {
+            aimVelAngle = signedAngle(agentDrone->lastAim, agentDrone->velocity);
         }
 
         float shieldHealth = 0.0f;
@@ -468,6 +476,8 @@ void computeObs(iwEnv *e) {
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->livesLeft, DRONE_LIVES, true);
         continuousObs[continuousObsOffset++] = !agentDrone->dead;
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
+        continuousObs[continuousObsOffset++] = scaleValue(aimVelAngle, PI, false);
+        continuousObs[continuousObsOffset++] = (float)!e->easyEp;
 
         ASSERTF(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + ((e->numDrones - 1) * ENEMY_DRONE_OBS_SIZE) + DRONE_OBS_SIZE, "offset: %d", continuousObsOffset);
         continuousObs[continuousObsOffset++] = scaleValue(e->stepsLeft, e->totalSteps, true);
@@ -484,8 +494,12 @@ void setupEnv(iwEnv *e) {
 
     e->lastSpawnQuad = -1;
 
+    e->easyEp = e->easyEpProb > 0.0f && randFloat(&e->rng, 0.0f, 1.0f) < e->easyEpProb;
+
     int8_t mapIdx = e->pinnedMapIdx;
-    if (e->pinnedMapIdx == -1) {
+    if (e->easyEp) {
+        mapIdx = EASY_EP_MAP_IDX;
+    } else if (e->pinnedMapIdx == -1) {
         uint8_t firstMap = 0;
         // don't evaluate on the boring empty map
         if (!e->isTraining) {
@@ -722,6 +736,10 @@ float computeReward(iwEnv *e, droneEntity *drone) {
         reward += e->energyEmptiedPunishment;
     }
 
+    // debugging aid: dense reward for pointing shots at the enemy, turns
+    // aiming into a contextual bandit to sanity check the learning pipeline
+    reward += drone->stepInfo.aimAlignment * e->aimDrillReward;
+
     // only reward picking up a weapon if the standard weapon was
     // previously held; every weapon is better than the standard
     // weapon, but other weapons are situational better so don't
@@ -825,23 +843,15 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
                 actions.move.x = discMoveToContMoveMap[0][move];
                 actions.move.y = discMoveToContMoveMap[1][move];
             }
-            uint8_t aimCoarse = envActions[1];
-            uint8_t aimFine = envActions[2];
-            ASSERT(aimCoarse <= AIM_COARSE_SECTORS);
-            ASSERT(aimFine < AIM_FINE_STEPS);
-            if (aimCoarse != 0) {
-                aimCoarse--;
-                // the fine offset is centered on the sector, so the middle
-                // fine step aims exactly at the sector's center
-                const int8_t fineOffset = (int8_t)aimFine - AIM_FINE_STEPS / 2;
-                const float angle = (aimCoarse * AIM_FINE_STEPS + fineOffset) * AIM_FINE_STEP_ANGLE;
-                actions.aim.x = cosf(angle);
-                actions.aim.y = sinf(angle);
-            }
+            const uint16_t aim = envActions[1];
+            ASSERT(aim < AIM_DIRECTIONS);
+            const float angle = aim * AIM_STEP_ANGLE;
+            actions.aim.x = cosf(angle);
+            actions.aim.y = sinf(angle);
 
-            actions.chargingWeapon = envActions[3] > 0.0f;
-            actions.brake = envActions[4] > 0.0f;
-            actions.chargingBurst = envActions[5] > 0.0f;
+            actions.chargingWeapon = envActions[2] > 0.0f;
+            actions.brake = envActions[3] > 0.0f;
+            actions.chargingBurst = envActions[4] > 0.0f;
         }
 
         actions.shoot = actions.chargingWeapon;
@@ -894,6 +904,10 @@ void addLog(iwEnv *e, Log *log) {
     e->log.length += log->length;
     e->log.ties += log->ties;
     e->log.botCLNoise += log->botCLNoise;
+    e->log.easyEpProb += log->easyEpProb;
+    e->log.easyEp += log->easyEp;
+    e->log.normalShotsFired += log->normalShotsFired;
+    e->log.normalShotsAimed10 += log->normalShotsAimed10;
 
     for (uint8_t j = 0; j < e->numDrones; j++) {
         e->log.stats[j].returns += log->stats[j].returns;
@@ -926,6 +940,10 @@ void addLog(iwEnv *e, Log *log) {
         e->log.stats[j].totalOwnShotsTaken += log->stats[j].totalOwnShotsTaken;
         e->log.stats[j].totalWeaponsPickedUp += log->stats[j].totalWeaponsPickedUp;
         e->log.stats[j].totalShotDistances += log->stats[j].totalShotDistances;
+        e->log.stats[j].shotsAimed10 += log->stats[j].shotsAimed10;
+        e->log.stats[j].shotsAimed30 += log->stats[j].shotsAimed30;
+        e->log.stats[j].totalAimError += log->stats[j].totalAimError;
+        e->log.stats[j].shotsAimedAway += log->stats[j].shotsAimedAway;
     }
 
     e->log.n += 1.0f;
@@ -1036,7 +1054,7 @@ bool stepPhysicsFrame(iwEnv *e, const agentActions stepActions[], int8_t *winner
         if (actions.shoot) {
             droneShoot(e, drone, actions.aim, actions.chargingWeapon);
         }
-        if (actions.chargingBurst) {
+        if (actions.chargingBurst && !e->easyEp) {
             droneChargeBurst(e, drone);
         } else if (drone->chargingBurst) {
             droneBurst(e, drone);
@@ -1192,9 +1210,22 @@ void endEpisode(iwEnv *e, const int8_t lastAlive, const int8_t lastAliveTeam) {
         }
     }
     log.botCLNoise = e->botCLNoise;
+    log.easyEpProb = e->easyEpProb;
+    log.easyEp = e->easyEp;
+    if (!e->easyEp) {
+        log.normalShotsFired = e->stats[0].totalShotsFired;
+        log.normalShotsAimed10 = e->stats[0].shotsAimed10;
+    }
+
+    const float shotsFired = e->stats[0].totalShotsFired;
+    if (e->easyEp && shotsFired >= EASY_EP_MIN_SHOTS && e->stats[0].totalShotsHit / shotsFired >= e->easyEpHitRate) {
+        e->easyEpProb -= e->easyEpDecay;
+        e->easyEpProb = clamp(e->easyEpProb);
+    }
 
     // TODO: handle multiple agents/teams correctly
-    if (e->numAgents != e->numDrones && e->botCLNoise > 0.0f && e->stats[0].kills > 0.0f) {
+    // kills in easy episodes are against a sitting duck, so don't count them
+    if (e->numAgents != e->numDrones && !e->easyEp && e->botCLNoise > 0.0f && e->stats[0].kills > 0.0f) {
         e->botCLNoise -= e->botCLDecay;
         e->botCLNoise = clamp(e->botCLNoise);
     }

@@ -10,16 +10,15 @@ typedef float obs_t;
 
 // actions:
 // 9: move, noop + 8 directions
-// 17: coarse aim, noop + 16 sectors
-// 8: fine aim, offset within the coarse aim sector
+// AIM_DIRECTIONS: aim, evenly spaced directions
 // 2: shoot or not
 // 2: brake or not
 // 2: burst or not
-#define NUM_ATNS 6
-#define ACT_SIZES {9, 17, 8, 2, 2, 2}
+#define NUM_ATNS 5
+#define ACT_SIZES {9, AIM_DIRECTIONS, 2, 2, 2}
 #define CONTINUOUS_ACTIONS 0
 
-#define OBS_SIZE 410 // for 2 drones (players)
+#define OBS_SIZE 413 // for 2 drones (players)
 
 #ifdef __cplusplus
 // Game/Box2D/collections-c are C (void* implicit conv); pufferl.cu is C++17.
@@ -110,6 +109,10 @@ void puf_init(Env *env, Dict *kwargs) {
         dict_get(kwargs, "reward_shield_break"),
         dict_get(kwargs, "reward_hit_coef")
     );
+    env->aimDrillReward = dict_get(kwargs, "reward_aim_drill");
+    env->easyEpProb = dict_get(kwargs, "easy_ep_prob");
+    env->easyEpDecay = dict_get(kwargs, "easy_ep_decay");
+    env->easyEpHitRate = dict_get(kwargs, "easy_ep_hit_rate");
 
     for (int i = 0; i < env->num_agents; i++) {
         env->agents[i].policy = i;
@@ -144,15 +147,23 @@ void puf_set_bot_policy(iwEnv *e, int botPolicy) {
     dict_set(out, "drone_" idxStr "_total_shots_taken", log->stats[idx].totalShotsTaken);         \
     dict_set(out, "drone_" idxStr "_total_own_shots_taken", log->stats[idx].totalOwnShotsTaken);  \
     dict_set(out, "drone_" idxStr "_total_picked_up", log->stats[idx].totalWeaponsPickedUp);      \
-    dict_set(out, "drone_" idxStr "_total_shot_distances", log->stats[idx].totalShotDistances)
+    dict_set(out, "drone_" idxStr "_total_shot_distances", log->stats[idx].totalShotDistances);   \
+    dict_set(out, "drone_" idxStr "_shots_aimed_10", log->stats[idx].shotsAimed10);               \
+    dict_set(out, "drone_" idxStr "_shots_aimed_30", log->stats[idx].shotsAimed30);               \
+    dict_set(out, "drone_" idxStr "_total_aim_error", log->stats[idx].totalAimError);             \
+    dict_set(out, "drone_" idxStr "_shots_aimed_away", log->stats[idx].shotsAimedAway)
 
 void puf_log(Log *log, Dict *out) {
     dict_set(out, "perf", log->stats[0].score);
-    dict_set(out, "score", log->stats[0].score);
+    dict_set(out, "score", log->stats[0].totalShotsHit);
     dict_set(out, "draw_rate", log->ties);
     dict_set(out, "episode_length", log->length);
 
     dict_set(out, "bot_cl_noise", log->botCLNoise);
+    dict_set(out, "easy_ep_prob", log->easyEpProb);
+    dict_set(out, "easy_ep_rate", log->easyEp);
+    dict_set(out, "normal_shots_fired", log->normalShotsFired);
+    dict_set(out, "normal_shots_aimed_10", log->normalShotsAimed10);
     dict_set(out, "n", log->n);
 
     LOG_DRONE_STATS(log, out, 0, "0");

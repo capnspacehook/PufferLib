@@ -2084,6 +2084,33 @@ void droneMove(const iwEnv *e, droneEntity *drone, b2Vec2 direction) {
     applyTrackedForce(e, drone->bodyID, drone->physicsTracking, force, drone->idx);
 }
 
+// records how far the aim is from the bearing to the nearest live enemy
+static void recordAimError(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
+    float bestDist = FLT_MAX;
+    b2Vec2 bearing = b2Vec2_zero;
+    for (uint8_t i = 0; i < e->numDrones; i++) {
+        const droneEntity *other = safe_array_get_at(e->drones, i);
+        if (other->idx == drone->idx || other->dead || other->team == drone->team) {
+            continue;
+        }
+        const float dist = b2DistanceSquared(drone->pos, other->pos);
+        if (dist < bestDist) {
+            bestDist = dist;
+            bearing = b2Sub(other->pos, drone->pos);
+        }
+    }
+    if (bestDist == FLT_MAX) {
+        return;
+    }
+    const float err = fabsf(signedAngle(normAim, bearing));
+    drone->stepInfo.aimAlignment += cosf(err);
+    droneStats *stats = &e->stats[drone->idx];
+    stats->totalAimError += err;
+    stats->shotsAimed10 += err < 10.0f * PI / 180.0f;
+    stats->shotsAimed30 += err < 30.0f * PI / 180.0f;
+    stats->shotsAimedAway += err > 150.0f * PI / 180.0f;
+}
+
 void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool chargingWeapon) {
     ASSERT(drone->ammo != 0);
 
@@ -2119,6 +2146,7 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
         normAim = b2Normalize(aim);
     }
     ASSERT_VEC_NORMALIZED(normAim);
+    recordAimError(e, drone, normAim);
     b2Vec2 recoil = b2MulSV(-drone->weaponInfo->recoilMagnitude, normAim);
     applyTrackedImpulse(e, drone->bodyID, drone->physicsTracking, recoil, drone->idx);
 

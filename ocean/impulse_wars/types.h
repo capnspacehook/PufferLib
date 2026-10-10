@@ -13,6 +13,10 @@
 
 #define _MAX_DRONES 4
 
+// number of evenly spaced directions the discrete aim action can pick
+// from; lives here so the ACT_SIZES in impulse_wars.h can use it
+#define AIM_DIRECTIONS 128
+
 static const uint8_t NUM_WALL_TYPES = 3;
 
 #define MAX_TRAIL_POINTS 20
@@ -233,6 +237,8 @@ typedef struct droneStepInfo {
     float explosionTaken[_MAX_DRONES];
     bool brokeShield[_MAX_DRONES];
     bool ownShotTaken;
+    // summed cos of the aim error of shots fired this step
+    float aimAlignment;
 } droneStepInfo;
 
 typedef struct shieldEntity {
@@ -352,12 +358,23 @@ typedef struct droneStats {
     float totalOwnShotsTaken;
     float totalWeaponsPickedUp;
     float totalShotDistances;
+    // aim error vs the bearing to the nearest enemy, sampled when firing
+    float shotsAimed10;
+    float shotsAimed30;
+    float totalAimError;
+    float shotsAimedAway;
 } droneStats;
 
 struct Log {
     float length;
     float ties;
     float botCLNoise;
+    float easyEpProb;
+    float easyEp;
+    // agent shots in normal (non easy) episodes, to see if aiming
+    // carries over once bursts are enabled
+    float normalShotsFired;
+    float normalShotsAimed10;
     droneStats stats[_MAX_DRONES];
 
     float n;
@@ -469,6 +486,15 @@ struct Env {
     float botCLNoise;
     float botCLDecay;
 
+    // easy episode curriculum: with probability easyEpProb an episode is
+    // played on the empty map against a sitting duck with bursts disabled;
+    // the probability decays
+    // each easy episode the agent shoots accurately enough
+    float easyEpProb;
+    float easyEpDecay;
+    float easyEpHitRate;
+    bool easyEp;
+
     float winReward;
     float lifeReward;
     float killReward;
@@ -479,6 +505,7 @@ struct Env {
     float weaponPickupReward;
     float shieldBreakReward;
     float hitRewardCoef;
+    float aimDrillReward;
 
     uint16_t obsSize;
     bool continuousActions;

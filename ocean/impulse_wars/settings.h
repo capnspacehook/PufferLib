@@ -18,6 +18,10 @@ static const uint8_t EVAL_FRAME_RATE = _EVAL_FRAME_RATE;
 static const uint8_t EVAL_BOX2D_SUBSTEPS = 4;
 
 static const uint8_t NUM_MAPS = 9;
+// map used for easy curriculum episodes, the empty one
+static const uint8_t EASY_EP_MAP_IDX = 0;
+// shots an agent must fire in an easy episode for its hit rate to count
+static const uint8_t EASY_EP_MIN_SHOTS = 10;
 #define _MAX_MAP_COLUMNS 25
 #define _MAX_MAP_ROWS 25
 #define MAX_CELLS _MAX_MAP_COLUMNS *_MAX_MAP_ROWS + 1
@@ -72,9 +76,9 @@ static const uint8_t PROJECTILE_OBS_SIZE = NUM_PROJECTILE_OBS * PROJECTILE_INFO_
 static const uint16_t PROJECTILE_INFO_OBS_OFFSET = WEAPON_PICKUP_INFO_OBS_OFFSET + WEAPON_PICKUP_OBS_SIZE;
 
 static const uint16_t ENEMY_DRONE_OBS_OFFSET = PROJECTILE_INFO_OBS_OFFSET + PROJECTILE_OBS_SIZE;
-static const uint8_t ENEMY_DRONE_OBS_SIZE = 28;
+static const uint8_t ENEMY_DRONE_OBS_SIZE = 29;
 
-static const uint8_t DRONE_OBS_SIZE = 26;
+static const uint8_t DRONE_OBS_SIZE = 28;
 
 static const uint8_t MISC_OBS_SIZE = 1 + NUM_MAPS;
 
@@ -98,7 +102,7 @@ static const float MAX_ANGLE = PI;
 
 // action constants
 static const uint8_t CONTINUOUS_ACTION_SIZE = 7;
-static const uint8_t DISCRETE_ACTION_SIZE = 6;
+static const uint8_t DISCRETE_ACTION_SIZE = 5;
 static const float ACTION_NOOP_MAGNITUDE = 0.1f;
 
 static const float discMoveToContMoveMap[2][8] = {
@@ -106,12 +110,7 @@ static const float discMoveToContMoveMap[2][8] = {
     {0.0f, 0.707107f, 1.0f, 0.707107f, 0.0f, -0.707107f, -1.0f, -0.707107f},
 };
 
-// discrete aim is split into a coarse sector and a fine offset within
-// it, giving AIM_COARSE_SECTORS * AIM_FINE_STEPS evenly spaced directions
-// while only needing AIM_COARSE_SECTORS + AIM_FINE_STEPS logits
-#define AIM_COARSE_SECTORS 16
-#define AIM_FINE_STEPS 8
-static const float AIM_FINE_STEP_ANGLE = 2.0f * PI / (AIM_COARSE_SECTORS * AIM_FINE_STEPS);
+static const float AIM_STEP_ANGLE = 2.0f * PI / AIM_DIRECTIONS;
 
 static const float MIN_SPAWN_DISTANCE = 6.0f;
 static const float MIN_SD_SPAWN_DISTANCE = 3.0f;
