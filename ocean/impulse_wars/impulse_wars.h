@@ -155,7 +155,7 @@ void puf_set_bot_policy(iwEnv *e, int botPolicy) {
 
 void puf_log(Log *log, Dict *out) {
     dict_set(out, "perf", log->stats[0].score);
-    dict_set(out, "score", log->stats[0].totalShotsHit);
+    dict_set(out, "score", log->stats[0].score);
     dict_set(out, "draw_rate", log->ties);
     dict_set(out, "episode_length", log->length);
 
