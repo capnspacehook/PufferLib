@@ -3003,12 +3003,13 @@ TrainResult run_train(Ini* ini, TrainContext* ctx) {
             (int)puf_ini_get(ini, "policy", "num_layers"));
         puf_ini_put(ini, "vec.hist_policy_hidden_size", hb);
         puf_ini_put(ini, "vec.hist_policy_num_layers", lb);
-        double ladder[SELFPLAY_MAX_LADDER];
-        assert((puf_ini_get(ini, "selfplay", "eval_bot_games") <= 0
-            || puf_ini_get_list(ini, "selfplay", "eval_bots", ladder,
-                SELFPLAY_MAX_LADDER) > 0)
-            && "selfplay.eval_bot_games requires selfplay.eval_bots");
     }
+    // Bot ladder runs with or without selfplay; its keys live in [selfplay].
+    double ladder_check[SELFPLAY_MAX_LADDER];
+    assert((puf_ini_get(ini, "selfplay", "eval_bot_games") <= 0
+        || puf_ini_get_list(ini, "selfplay", "eval_bots", ladder_check,
+            SELFPLAY_MAX_LADDER) > 0)
+        && "selfplay.eval_bot_games requires selfplay.eval_bots");
 
     char run_id[64];
     snprintf(run_id, sizeof(run_id), "%s", puf_ini_get_str(ini, "base", "run_id"));
@@ -3237,10 +3238,10 @@ TrainResult run_train(Ini* ini, TrainContext* ctx) {
         result.step_points[points - 1] = result.steps;
     }
 
-    long bot_games = use_selfplay ? puf_ini_get(ini, "selfplay", "eval_bot_games") : 0;
+    long bot_games = puf_ini_get(ini, "selfplay", "eval_bot_games");
     int max_opp = use_selfplay ? puf_ini_get(ini, "selfplay", "eval_pool_size") : 0;
     long pool_games = use_selfplay ? puf_ini_get(ini, "selfplay", "eval_games") : 0;
-    int bot_ladder = use_selfplay && bot_games > 0 && final_checkpoint[0];
+    int bot_ladder = bot_games > 0 && final_checkpoint[0];
     int pool_eval = !bot_ladder && use_selfplay && max_opp > 0
         && pool_games > 0 && final_checkpoint[0];
     long eval_episodes = puf_ini_get(ini, "base", "eval_episodes");
@@ -3372,7 +3373,10 @@ TrainResult run_train(Ini* ini, TrainContext* ctx) {
 
         // Last snapshot keys (train + selfplay eval overlays).
         if (log_history.size > 0) {
-            int metric_points = points;
+            // Match the Protein point count: evals that override the score
+            // (bot ladder, pool) set result.points = 1 and add keys that
+            // exist only in the final snapshot.
+            int metric_points = result.points;
             double* out = (double*)calloc(metric_points, sizeof(double));
             Dict* key_src = &log_history.items[log_history.size - 1];
             for (int k = 0; k < key_src->size; k++) {
