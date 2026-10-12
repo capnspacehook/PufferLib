@@ -75,10 +75,29 @@ static const uint8_t PROJECTILE_INFO_OBS_SIZE = 6;
 static const uint8_t PROJECTILE_OBS_SIZE = NUM_PROJECTILE_OBS * PROJECTILE_INFO_OBS_SIZE;
 static const uint16_t PROJECTILE_INFO_OBS_OFFSET = WEAPON_PICKUP_INFO_OBS_OFFSET + WEAPON_PICKUP_OBS_SIZE;
 
-static const uint16_t ENEMY_DRONE_OBS_OFFSET = PROJECTILE_INFO_OBS_OFFSET + PROJECTILE_OBS_SIZE;
-static const uint8_t ENEMY_DRONE_OBS_SIZE = 29;
+// ray cast observations are a hit type followed by a scaled distance or
+// time; hit types are RAY_HIT_NONE, wall type + RAY_HIT_WALL,
+// floating wall type + RAY_HIT_FLOATING_WALL or RAY_HIT_DRONE
+#define RAY_HIT_NONE 0
+#define RAY_HIT_WALL 1
+#define RAY_HIT_FLOATING_WALL 4
+#define RAY_HIT_DRONE 7
+#define NUM_RAY_HIT_TYPES 8
+static const uint8_t RAY_OBS_SIZE = 2;
+// aim, velocity and post recoil velocity
+static const uint8_t NUM_DRONE_RAY_OBS = 3;
+// velocity casts follow the damped path the drone would travel in this
+// many seconds
+static const float RAY_TIME_HORIZON = 2.0f;
 
-static const uint8_t DRONE_OBS_SIZE = 28;
+static const uint16_t ENEMY_DRONE_OBS_OFFSET = PROJECTILE_INFO_OBS_OFFSET + PROJECTILE_OBS_SIZE;
+// the ray to the enemy is last
+static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 29;
+static const uint8_t ENEMY_DRONE_OBS_SIZE = ENEMY_DRONE_RAY_OBS_IDX + RAY_OBS_SIZE;
+
+// the rays are last
+static const uint8_t DRONE_RAY_OBS_IDX = 28;
+static const uint8_t DRONE_OBS_SIZE = DRONE_RAY_OBS_IDX + (NUM_DRONE_RAY_OBS * RAY_OBS_SIZE);
 
 static const uint8_t MISC_OBS_SIZE = 1 + NUM_MAPS;
 

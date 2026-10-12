@@ -1,7 +1,8 @@
 // CPU Impulse Wars encoder: wall/weapon type embeddings + projection, then
 // MinGRU + decoder. Weight order matches CUDA create_impulse_wars_encoder +
 // algo decoder/mingru:
-//   wall embed (4 x 4), weapon embed (11 x 8), proj (hidden x IW_CONCAT),
+//   wall embed (4 x 4), weapon embed (11 x 8), ray embed (8 x 4),
+//   proj (hidden x IW_CONCAT),
 //   decoder ((atn_sum+1) x hidden), decoder logstd (NUM_ATNS) if continuous,
 //   mingru layers (3*hidden x hidden each).
 // CONTINUOUS_ACTIONS in impulse_wars.h selects gaussian mean or multidiscrete
@@ -14,6 +15,7 @@ typedef struct ImpulseWarsNet {
     int num_agents;
     float *wall_emb;
     float *weapon_emb;
+    float *ray_emb;
     int scalar_idx[IW_NUM_SCALARS];
     float *concat;
     Linear *proj;
@@ -40,6 +42,7 @@ static inline int impulse_wars_weight_count(int hidden, int layers) {
     int n = 0;
     n = puf_iw_align8(n + IW_WALL_EMB_N);
     n = puf_iw_align8(n + IW_WEAPON_EMB_N);
+    n = puf_iw_align8(n + IW_RAY_EMB_N);
     n = puf_iw_align8(n + hidden * IW_CONCAT);
     n = puf_iw_align8(n + (impulse_wars_atn_sum() + 1) * hidden);
 #if CONTINUOUS_ACTIONS
@@ -60,6 +63,12 @@ static inline ImpulseWarsNet *init_impulse_wars_net(Weights *weights, int num_ag
     assert(IW_PROJECTILE_OFFSET == DISCRETE_OBS_SIZE + PROJECTILE_INFO_OBS_OFFSET);
     assert(IW_ENEMY_DRONE_OFFSET == DISCRETE_OBS_SIZE + ENEMY_DRONE_OBS_OFFSET);
     assert(IW_ENEMY_DRONE_SIZE == ENEMY_DRONE_OBS_SIZE);
+    assert(IW_ENEMY_RAY_IDX == ENEMY_DRONE_RAY_OBS_IDX);
+    assert(IW_DRONE_SIZE == DRONE_OBS_SIZE);
+    assert(IW_DRONE_RAY_IDX == DRONE_RAY_OBS_IDX);
+    assert(IW_NUM_DRONE_RAYS == NUM_DRONE_RAY_OBS);
+    assert(IW_RAY_SIZE == RAY_OBS_SIZE);
+    assert(IW_RAY_VOCAB == NUM_RAY_HIT_TYPES);
     assert(IW_BASE_OBS_SIZE == DISCRETE_OBS_SIZE + _CONTINUOUS_OBS_SIZE);
     assert(IW_WEAPON_VOCAB == NUM_WEAPONS + 1);
 
@@ -67,6 +76,7 @@ static inline ImpulseWarsNet *init_impulse_wars_net(Weights *weights, int num_ag
     net->num_agents = num_agents;
     net->wall_emb = get_weights_aligned(weights, IW_WALL_EMB_N);
     net->weapon_emb = get_weights_aligned(weights, IW_WEAPON_EMB_N);
+    net->ray_emb = get_weights_aligned(weights, IW_RAY_EMB_N);
     net->concat = (float *)calloc((size_t)num_agents * IW_CONCAT, sizeof(float));
     net->proj = make_linear(weights, num_agents, IW_CONCAT, hidden);
     net->decoder = make_linear(weights, num_agents, hidden, impulse_wars_atn_sum() + 1);
@@ -103,6 +113,11 @@ static inline void impulse_wars_encode(ImpulseWarsNet *net, const float *observa
             memcpy(concat + j * IW_WEAPON_DIM, net->weapon_emb + row * IW_WEAPON_DIM, IW_WEAPON_DIM * sizeof(float));
         }
         concat += IW_WEAPON_COLS;
+        for (int j = 0; j < IW_NUM_RAY_SLOTS; j++) {
+            int row = iw_type_idx(obs[iw_ray_slot_idx(j)], IW_RAY_VOCAB);
+            memcpy(concat + j * IW_RAY_DIM, net->ray_emb + row * IW_RAY_DIM, IW_RAY_DIM * sizeof(float));
+        }
+        concat += IW_RAY_COLS;
         for (int j = 0; j < IW_NUM_SCALARS; j++) {
             concat[j] = obs[net->scalar_idx[j]];
         }

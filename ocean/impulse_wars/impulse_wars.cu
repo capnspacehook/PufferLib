@@ -1,7 +1,9 @@
-// Impulse Wars CUDA encoder: wall type and weapon type embeddings, concat with
-// the continuous obs, projection. Wall types in the map grid, near walls and
-// floating walls share one table; weapon types of pickups, projectiles, enemy
-// drones and the agent's drone share another. Included by src/ocean.cu.
+// Impulse Wars CUDA encoder: wall type, weapon type and ray hit type
+// embeddings, concat with the continuous obs, projection. Wall types in the
+// map grid, near walls and floating walls share one table; weapon types of
+// pickups, projectiles, enemy drones and the agent's drone share another;
+// hit types of the enemy and agent rays share a third. Included by
+// src/ocean.cu.
 
 #include "impulse_wars_obs.h"
 
@@ -39,13 +41,33 @@ __device__ __forceinline__ int iw_emb_entry(const precision_t *obs, int c) {
         return row * IW_WALL_DIM + d;
     }
     c -= IW_WALL_COLS;
-    int slot = c / IW_WEAPON_DIM, d = c % IW_WEAPON_DIM;
-    int row = iw_type_idx(to_float(obs[iw_weapon_slot_idx(slot)]), IW_WEAPON_VOCAB);
-    return IW_WALL_EMB_N + row * IW_WEAPON_DIM + d;
+    if (c < IW_WEAPON_COLS) {
+        int slot = c / IW_WEAPON_DIM, d = c % IW_WEAPON_DIM;
+        int row = iw_type_idx(to_float(obs[iw_weapon_slot_idx(slot)]), IW_WEAPON_VOCAB);
+        return IW_WALL_EMB_N + row * IW_WEAPON_DIM + d;
+    }
+    c -= IW_WEAPON_COLS;
+    int slot = c / IW_RAY_DIM, d = c % IW_RAY_DIM;
+    int row = iw_type_idx(to_float(obs[iw_ray_slot_idx(slot)]), IW_RAY_VOCAB);
+    return IW_WALL_EMB_N + IW_WEAPON_EMB_N + row * IW_RAY_DIM + d;
+}
+
+// reads embedding table entry e from the table it belongs to
+__device__ __forceinline__ precision_t iw_emb_value(
+    const precision_t *wall_emb, const precision_t *weapon_emb, const precision_t *ray_emb, int e
+) {
+    if (e < IW_WALL_EMB_N) {
+        return wall_emb[e];
+    }
+    e -= IW_WALL_EMB_N;
+    if (e < IW_WEAPON_EMB_N) {
+        return weapon_emb[e];
+    }
+    return ray_emb[e - IW_WEAPON_EMB_N];
 }
 
 __global__ void iw_concat_kernel(
-    precision_t *__restrict__ concat, const precision_t *__restrict__ obs, const precision_t *__restrict__ wall_emb, const precision_t *__restrict__ weapon_emb, int B, int obs_size
+    precision_t *__restrict__ concat, const precision_t *__restrict__ obs, const precision_t *__restrict__ wall_emb, const precision_t *__restrict__ weapon_emb, const precision_t *__restrict__ ray_emb, int B, int obs_size
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= B * IW_CONCAT) {
@@ -57,7 +79,7 @@ __global__ void iw_concat_kernel(
     precision_t v;
     if (c < IW_EMB_COLS) {
         int e = iw_emb_entry(o, c);
-        v = e < IW_WALL_EMB_N ? wall_emb[e] : weapon_emb[e - IW_WALL_EMB_N];
+        v = iw_emb_value(wall_emb, weapon_emb, ray_emb, e);
     } else {
         v = o[IW_SCALAR_IDX.idx[c - IW_EMB_COLS]];
     }
@@ -65,7 +87,7 @@ __global__ void iw_concat_kernel(
 }
 
 __global__ void iw_fxp_to_precision_kernel(
-    precision_t *__restrict__ wall_dst, precision_t *__restrict__ weapon_dst, const long long *__restrict__ src
+    precision_t *__restrict__ wall_dst, precision_t *__restrict__ weapon_dst, precision_t *__restrict__ ray_dst, const long long *__restrict__ src
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= IW_EMB_N) {
@@ -74,12 +96,14 @@ __global__ void iw_fxp_to_precision_kernel(
     precision_t v = from_float((float)((double)src[idx] * (1.0 / (double)IW_FXP)));
     if (idx < IW_WALL_EMB_N) {
         wall_dst[idx] = v;
-    } else {
+    } else if (idx < IW_WALL_EMB_N + IW_WEAPON_EMB_N) {
         weapon_dst[idx - IW_WALL_EMB_N] = v;
+    } else {
+        ray_dst[idx - IW_WALL_EMB_N - IW_WEAPON_EMB_N] = v;
     }
 }
 
-// Per-block int64 histogram over both tables, then one global integer atomic
+// Per-block int64 histogram over all tables, then one global integer atomic
 // per table entry. Integer add is associative so scatter order does not
 // change bits.
 __global__ void iw_embed_backward_kernel(
@@ -115,13 +139,13 @@ __global__ void iw_embed_backward_kernel(
 }
 
 struct IwEncoderWeights {
-    Prec wall_emb, weapon_emb, proj_w;
+    Prec wall_emb, weapon_emb, ray_emb, proj_w;
     int obs_size, hidden;
 };
 
 struct IwEncoderActivations {
     Prec concat, out, saved_obs;
-    Prec wall_emb_wgrad, weapon_emb_wgrad, proj_wgrad;
+    Prec wall_emb_wgrad, weapon_emb_wgrad, ray_emb_wgrad, proj_wgrad;
     Long emb_wgrad_i;
 };
 
@@ -136,7 +160,7 @@ static Prec iw_encoder_forward(
     }
 
     iw_concat_kernel<<<grid_size(B * IW_CONCAT), BLOCK_SIZE, 0, stream>>>(
-        a->concat.data, input.data, ew->wall_emb.data, ew->weapon_emb.data, B, ew->obs_size
+        a->concat.data, input.data, ew->wall_emb.data, ew->weapon_emb.data, ew->ray_emb.data, B, ew->obs_size
     );
 
     puf_mm(&a->concat, &ew->proj_w, &a->out, stream);
@@ -166,7 +190,7 @@ static void iw_encoder_backward(
         (long long *)a->emb_wgrad_i.data, grad_concat.data, a->saved_obs.data, B, ew->obs_size
     );
     iw_fxp_to_precision_kernel<<<grid_size(IW_EMB_N), BLOCK_SIZE, 0, stream>>>(
-        a->wall_emb_wgrad.data, a->weapon_emb_wgrad.data, (long long *)a->emb_wgrad_i.data
+        a->wall_emb_wgrad.data, a->weapon_emb_wgrad.data, a->ray_emb_wgrad.data, (long long *)a->emb_wgrad_i.data
     );
 }
 
@@ -174,6 +198,7 @@ static void iw_encoder_init_weights(void *w, ulong *seed, cudaStream_t stream) {
     IwEncoderWeights *ew = (IwEncoderWeights *)w;
     puf_normal_init(&ew->wall_emb, 1.0f, (*seed)++, stream);
     puf_normal_init(&ew->weapon_emb, 1.0f, (*seed)++, stream);
+    puf_normal_init(&ew->ray_emb, 1.0f, (*seed)++, stream);
     Prec pw = {.data = ew->proj_w.data, .shape = {ew->hidden, IW_CONCAT}};
     puf_kaiming_init(&pw, 1.0f, (*seed)++, stream);
 }
@@ -182,9 +207,11 @@ static void iw_encoder_reg_params(void *w, Allocator *alloc) {
     IwEncoderWeights *ew = (IwEncoderWeights *)w;
     ew->wall_emb = {.shape = {IW_WALL_VOCAB, IW_WALL_DIM}};
     ew->weapon_emb = {.shape = {IW_WEAPON_VOCAB, IW_WEAPON_DIM}};
+    ew->ray_emb = {.shape = {IW_RAY_VOCAB, IW_RAY_DIM}};
     ew->proj_w = {.shape = {ew->hidden, IW_CONCAT}};
     alloc_register(alloc, &ew->wall_emb);
     alloc_register(alloc, &ew->weapon_emb);
+    alloc_register(alloc, &ew->ray_emb);
     alloc_register(alloc, &ew->proj_w);
 }
 
@@ -202,10 +229,12 @@ static void iw_encoder_reg_train(
     alloc_register(acts, &a->saved_obs);
     a->wall_emb_wgrad = {.shape = {IW_WALL_VOCAB, IW_WALL_DIM}};
     a->weapon_emb_wgrad = {.shape = {IW_WEAPON_VOCAB, IW_WEAPON_DIM}};
+    a->ray_emb_wgrad = {.shape = {IW_RAY_VOCAB, IW_RAY_DIM}};
     a->proj_wgrad = {.shape = {ew->hidden, IW_CONCAT}};
     a->emb_wgrad_i = {.shape = {IW_EMB_N}};
     alloc_register(grads, &a->wall_emb_wgrad);
     alloc_register(grads, &a->weapon_emb_wgrad);
+    alloc_register(grads, &a->ray_emb_wgrad);
     alloc_register(grads, &a->proj_wgrad);
     alloc_register(acts, &a->emb_wgrad_i);
 }

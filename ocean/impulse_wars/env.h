@@ -284,6 +284,147 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
     }
 }
 
+static inline float rayHitType(const entity *ent) {
+    if (entityTypeIsWall(ent->type)) {
+        const wallEntity *wall = ent->entity;
+        if (wall->isFloating) {
+            return (float)(RAY_HIT_FLOATING_WALL + wall->type);
+        }
+        return (float)(RAY_HIT_WALL + wall->type);
+    }
+    if (ent->type == DRONE_ENTITY || ent->type == SHIELD_ENTITY) {
+        return (float)RAY_HIT_DRONE;
+    }
+    return (float)RAY_HIT_NONE;
+}
+
+typedef struct rayObsContext {
+    const droneEntity *drone;
+    // optional drone the ray is cast at, ignored like the casting drone
+    const droneEntity *target;
+    const entity *hitEnt;
+    float fraction;
+} rayObsContext;
+
+static inline bool entIsDroneOrShield(const entity *ent, const droneEntity *drone) {
+    return drone != NULL && (ent == drone->ent || (drone->shield != NULL && ent == drone->shield->ent));
+}
+
+// records the closest hit that isn't the casting or target drone or
+// their shields
+float rayObsCallback(b2ShapeId shapeID, b2Vec2 point, b2Vec2 normal, float fraction, void *context) {
+    // these are unused but required by the b2CastResultFcn callback prototype
+    MAYBE_UNUSED(point);
+    MAYBE_UNUSED(normal);
+
+    rayObsContext *ctx = context;
+    const entity *ent = b2Shape_GetUserData(shapeID);
+    if (ent == NULL || entIsDroneOrShield(ent, ctx->drone) || entIsDroneOrShield(ent, ctx->target)) {
+        return -1.0f;
+    }
+    if (fraction < ctx->fraction) {
+        ctx->fraction = fraction;
+        ctx->hitEnt = ent;
+    }
+    return fraction;
+}
+
+// casts a circle of radius from the drone along translation, returns the
+// hit type and sets fraction to the fraction of translation traveled
+// before the hit, or 1 if nothing was hit
+static float castDroneCircle(const iwEnv *e, const droneEntity *drone, const float radius, const b2Vec2 translation, const b2QueryFilter filter, float *fraction) {
+    const b2ShapeProxy proxy = b2MakeProxy(&drone->pos, 1, radius);
+    rayObsContext ctx = {.drone = drone, .target = NULL, .hitEnt = NULL, .fraction = 1.0f};
+    b2World_CastShape(e->worldID, &proxy, translation, filter, rayObsCallback, &ctx);
+    *fraction = ctx.fraction;
+    if (ctx.hitEnt == NULL) {
+        return (float)RAY_HIT_NONE;
+    }
+    return rayHitType(ctx.hitEnt);
+}
+
+// casts the drone's wall colliding shape along the damped path it would
+// travel in RAY_TIME_HORIZON seconds at velocity, and writes the hit
+// type and time until the hit scaled by RAY_TIME_HORIZON
+static void computeVelocityRayObs(const iwEnv *e, const droneEntity *drone, const b2Vec2 velocity, float *obs) {
+    obs[0] = (float)RAY_HIT_NONE;
+    obs[1] = 1.0f;
+    const float speed = b2Length(velocity);
+    if (speed < 0.1f) {
+        return;
+    }
+
+    const float damping = b2Body_GetLinearDamping(drone->bodyID);
+    // with linear damping k, distance travelled after t seconds is
+    // speed * (1 - e^(-kt)) / k
+    float pathScale = RAY_TIME_HORIZON;
+    if (damping > 0.0f) {
+        pathScale = (1.0f - expf(-damping * RAY_TIME_HORIZON)) / damping;
+    }
+    const b2Vec2 translation = b2MulSV(pathScale, velocity);
+
+    float radius = DRONE_RADIUS;
+    if (drone->shield != NULL) {
+        radius = DRONE_SHIELD_RADIUS;
+    }
+    const b2QueryFilter filter = {.categoryBits = DRONE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE};
+    float fraction;
+    obs[0] = castDroneCircle(e, drone, radius, translation, filter, &fraction);
+    if (obs[0] == (float)RAY_HIT_NONE) {
+        return;
+    }
+
+    // invert the damped distance to get the time of the hit
+    float hitTime = fraction * RAY_TIME_HORIZON;
+    if (damping > 0.0f) {
+        hitTime = -logf(fmaxf(1.0f - (fraction * damping * pathScale), FLT_MIN)) / damping;
+    }
+    obs[1] = scaleValue(fminf(hitTime, RAY_TIME_HORIZON), RAY_TIME_HORIZON, true);
+}
+
+// writes ray observations for what the drone's shot, movement and recoil
+// would hit
+static void computeDroneRayObs(const iwEnv *e, const droneEntity *drone, float *obs) {
+    // what a shot fired now would hit first, walls or drones
+    const b2Vec2 aimTranslation = b2MulSV(MAX_DISTANCE, drone->lastAim);
+    const b2QueryFilter aimFilter = {
+        .categoryBits = PROJECTILE_SHAPE,
+        .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | DRONE_SHAPE | SHIELD_SHAPE,
+    };
+    float fraction;
+    obs[0] = castDroneCircle(e, drone, drone->weaponInfo->radius, aimTranslation, aimFilter, &fraction);
+    obs[1] = fraction;
+
+    // where the drone is drifting to
+    computeVelocityRayObs(e, drone, drone->velocity, obs + RAY_OBS_SIZE);
+
+    // where the drone would drift to if it fired now
+    const b2Vec2 recoilVelocity = b2MulSV(-drone->weaponInfo->recoilMagnitude / b2Body_GetMass(drone->bodyID), drone->lastAim);
+    computeVelocityRayObs(e, drone, b2Add(drone->velocity, recoilVelocity), obs + (2 * RAY_OBS_SIZE));
+}
+
+// writes the type of the first wall or other drone between the drone and
+// the enemy and the distance to it; the ray ends at the enemy's center, so
+// if nothing is hit the enemy is in line of sight and RAY_HIT_DRONE and the
+// distance to the enemy are written
+static void computeEnemyRayObs(const iwEnv *e, const droneEntity *drone, const droneEntity *enemyDrone, float *obs) {
+    const b2Vec2 translation = b2Sub(enemyDrone->pos, drone->pos);
+    const float distance = b2Length(translation);
+    const b2QueryFilter filter = {
+        .categoryBits = PROJECTILE_SHAPE,
+        .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | DRONE_SHAPE | SHIELD_SHAPE,
+    };
+    rayObsContext ctx = {.drone = drone, .target = enemyDrone, .hitEnt = NULL, .fraction = 1.0f};
+    b2World_CastRay(e->worldID, drone->pos, translation, filter, rayObsCallback, &ctx);
+    if (ctx.hitEnt == NULL) {
+        obs[0] = (float)RAY_HIT_DRONE;
+        obs[1] = scaleValue(distance, MAX_DISTANCE, true);
+        return;
+    }
+    obs[0] = rayHitType(ctx.hitEnt);
+    obs[1] = scaleValue(ctx.fraction * distance, MAX_DISTANCE, true);
+}
+
 void computeObs(iwEnv *e) {
     for (uint8_t agentIdx = 0; agentIdx < e->numAgents; agentIdx++) {
         droneEntity *agentDrone = safe_array_get_at(e->drones, agentIdx);
@@ -423,6 +564,11 @@ void computeObs(iwEnv *e) {
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
             // signed angle to turn our aim by to point at this enemy
             continuousObs[continuousObsOffset++] = scaleValue(signedAngle(agentDrone->lastAim, enemyDroneRelNormPos), PI, false);
+            ASSERT(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + (processedDrones * ENEMY_DRONE_OBS_SIZE) + ENEMY_DRONE_RAY_OBS_IDX);
+            if (!agentDrone->dead && !enemyDrone->dead) {
+                computeEnemyRayObs(e, agentDrone, enemyDrone, continuousObs + continuousObsOffset);
+            }
+            continuousObsOffset += RAY_OBS_SIZE;
 
             processedDrones++;
             ASSERTF(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + (processedDrones * ENEMY_DRONE_OBS_SIZE), "offset: %d", continuousObsOffset);
@@ -478,6 +624,11 @@ void computeObs(iwEnv *e) {
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
         continuousObs[continuousObsOffset++] = scaleValue(aimVelAngle, PI, false);
         continuousObs[continuousObsOffset++] = (float)!e->easyEp;
+        ASSERT(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + ((e->numDrones - 1) * ENEMY_DRONE_OBS_SIZE) + DRONE_RAY_OBS_IDX);
+        if (!agentDrone->dead) {
+            computeDroneRayObs(e, agentDrone, continuousObs + continuousObsOffset);
+        }
+        continuousObsOffset += NUM_DRONE_RAY_OBS * RAY_OBS_SIZE;
 
         ASSERTF(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + ((e->numDrones - 1) * ENEMY_DRONE_OBS_SIZE) + DRONE_OBS_SIZE, "offset: %d", continuousObsOffset);
         continuousObs[continuousObsOffset++] = scaleValue(e->stepsLeft, e->totalSteps, true);
