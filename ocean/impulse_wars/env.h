@@ -1054,22 +1054,27 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
             actions.chargingBurst = envActions[6] > 0.0f;
         } else {
             uint8_t move = envActions[0];
-            // 0 is no-op for both move and aim
+            // 0 is no-op for move
             ASSERT(move <= 8);
             if (move != 0) {
                 move--;
                 actions.move.x = discMoveToContMoveMap[0][move];
                 actions.move.y = discMoveToContMoveMap[1][move];
             }
-            const uint16_t aim = envActions[1];
-            ASSERT(aim < AIM_DIRECTIONS);
-            const float angle = aim * AIM_STEP_ANGLE;
+            const uint8_t aimCoarse = envActions[1];
+            const uint8_t aimFine = envActions[2];
+            ASSERT(aimCoarse < AIM_COARSE_SECTORS);
+            ASSERT(aimFine < AIM_FINE_STEPS);
+            // the fine offset is centered on the sector, so the middle
+            // fine step aims exactly at the sector's center
+            const int8_t fineOffset = (int8_t)aimFine - AIM_FINE_STEPS / 2;
+            const float angle = (aimCoarse * AIM_FINE_STEPS + fineOffset) * AIM_FINE_STEP_ANGLE;
             actions.aim.x = cosf(angle);
             actions.aim.y = sinf(angle);
 
-            actions.chargingWeapon = envActions[2] > 0.0f;
-            actions.brake = envActions[3] > 0.0f;
-            actions.chargingBurst = envActions[4] > 0.0f;
+            actions.chargingWeapon = envActions[3] > 0.0f;
+            actions.brake = envActions[4] > 0.0f;
+            actions.chargingBurst = envActions[5] > 0.0f;
         }
 
         actions.shoot = actions.chargingWeapon;

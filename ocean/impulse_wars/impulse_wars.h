@@ -10,12 +10,13 @@ typedef float obs_t;
 
 // actions:
 // 9: move, noop + 8 directions
-// AIM_DIRECTIONS: aim, evenly spaced directions
+// AIM_COARSE_SECTORS: coarse aim sector
+// AIM_FINE_STEPS: fine aim, offset within the coarse aim sector
 // 2: shoot or not
 // 2: brake or not
 // 2: burst or not
-#define NUM_ATNS 5
-#define ACT_SIZES {9, AIM_DIRECTIONS, 2, 2, 2}
+#define NUM_ATNS 6
+#define ACT_SIZES {9, AIM_COARSE_SECTORS, AIM_FINE_STEPS, 2, 2, 2}
 #define CONTINUOUS_ACTIONS 0
 
 #define OBS_SIZE 445 // for 2 drones (players)

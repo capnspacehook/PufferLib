@@ -13,9 +13,12 @@
 
 #define _MAX_DRONES 4
 
-// number of evenly spaced directions the discrete aim action can pick
-// from; lives here so the ACT_SIZES in impulse_wars.h can use it
-#define AIM_DIRECTIONS 128
+// discrete aim is split into a coarse sector and a fine offset within
+// it, giving AIM_COARSE_SECTORS * AIM_FINE_STEPS evenly spaced directions
+// while only needing AIM_COARSE_SECTORS + AIM_FINE_STEPS logits; lives
+// here so the ACT_SIZES in impulse_wars.h can use it
+#define AIM_COARSE_SECTORS 16
+#define AIM_FINE_STEPS 8
 
 static const uint8_t NUM_WALL_TYPES = 3;
 

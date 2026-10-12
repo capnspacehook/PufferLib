@@ -133,7 +133,7 @@ static const float MAX_ANGLE = PI;
 
 // action constants
 static const uint8_t CONTINUOUS_ACTION_SIZE = 7;
-static const uint8_t DISCRETE_ACTION_SIZE = 5;
+static const uint8_t DISCRETE_ACTION_SIZE = 6;
 static const float ACTION_NOOP_MAGNITUDE = 0.1f;
 
 static const float discMoveToContMoveMap[2][8] = {
@@ -141,7 +141,7 @@ static const float discMoveToContMoveMap[2][8] = {
     {0.0f, 0.707107f, 1.0f, 0.707107f, 0.0f, -0.707107f, -1.0f, -0.707107f},
 };
 
-static const float AIM_STEP_ANGLE = 2.0f * PI / AIM_DIRECTIONS;
+static const float AIM_FINE_STEP_ANGLE = 2.0f * PI / (AIM_COARSE_SECTORS * AIM_FINE_STEPS);
 
 static const float MIN_SPAWN_DISTANCE = 6.0f;
 static const float MIN_SD_SPAWN_DISTANCE = 3.0f;
