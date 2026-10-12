@@ -56,137 +56,204 @@ static inline float scaleAmmo(const iwEnv *e, const droneEntity *drone) {
     return scaledAmmo;
 }
 
-// fills a small 2D grid centered around the agent with discretized
-// walls, floating walls, weapon pickups, and drone positions
-void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffset) {
-    droneEntity *drone = safe_array_get_at(e->drones, agentIdx);
-    const uint8_t droneCellCol = drone->mapCellIdx % e->map->columns;
-    const uint8_t droneCellRow = drone->mapCellIdx / e->map->columns;
+// the map grid window around a drone: the map column and row of its top
+// left cell and the world position of that cell's top left corner
+typedef struct gridWindow {
+    int16_t startCol;
+    int16_t startRow;
+    b2Vec2 origin;
+} gridWindow;
 
-    const int8_t obsStartCol = droneCellCol - (MAP_OBS_COLUMNS / 2);
-    const int8_t startCol = max(obsStartCol, 0);
-    const int8_t obsStartRow = droneCellRow - (MAP_OBS_ROWS / 2);
-    const int8_t startRow = max(obsStartRow, 0);
+static inline b2AABB gridCellBox(const gridWindow *w, const uint8_t col, const uint8_t row) {
+    const b2Vec2 lower = {
+        .x = w->origin.x + (col * WALL_THICKNESS) + GRID_OVERLAP_MARGIN,
+        .y = w->origin.y + (row * WALL_THICKNESS) + GRID_OVERLAP_MARGIN,
+    };
+    const float size = WALL_THICKNESS - (2.0f * GRID_OVERLAP_MARGIN);
+    return (b2AABB){.lowerBound = lower, .upperBound = {.x = lower.x + size, .y = lower.y + size}};
+}
 
-    const int8_t obsEndCol = droneCellCol + (MAP_OBS_COLUMNS / 2);
-    const int8_t endCol = min(obsEndCol, e->map->columns - 1);
-    const int8_t endRow = min(droneCellRow + (MAP_OBS_ROWS / 2), e->map->rows - 1);
-
-    const int8_t obsColOffset = startCol - obsStartCol;
-    const int8_t obsRowOffset = startRow - obsStartRow;
-    uint16_t startOffset = obsStartOffset;
-    if (obsColOffset == 0 && obsRowOffset != 0) {
-        startOffset += obsRowOffset * MAP_OBS_COLUMNS;
-    } else if (obsColOffset != 0 && obsRowOffset == 0) {
-        startOffset += obsColOffset;
-    } else if (obsColOffset != 0 && obsRowOffset != 0) {
-        startOffset += obsColOffset + (obsRowOffset * MAP_OBS_COLUMNS);
+// clamps the grid cells overlapped by aabb to the window, returns false if
+// none are in it
+static bool gridCellRange(const gridWindow *w, const b2AABB aabb, uint8_t *minCol, uint8_t *maxCol, uint8_t *minRow, uint8_t *maxRow) {
+    const int16_t c0 = (int16_t)floorf((aabb.lowerBound.x - w->origin.x) / WALL_THICKNESS);
+    const int16_t c1 = (int16_t)floorf((aabb.upperBound.x - w->origin.x) / WALL_THICKNESS);
+    const int16_t r0 = (int16_t)floorf((aabb.lowerBound.y - w->origin.y) / WALL_THICKNESS);
+    const int16_t r1 = (int16_t)floorf((aabb.upperBound.y - w->origin.y) / WALL_THICKNESS);
+    if (c1 < 0 || r1 < 0 || c0 >= MAP_OBS_COLUMNS || r0 >= MAP_OBS_ROWS) {
+        return false;
     }
-    uint16_t offset = startOffset;
+    *minCol = (uint8_t)max(c0, 0);
+    *maxCol = (uint8_t)min(c1, MAP_OBS_COLUMNS - 1);
+    *minRow = (uint8_t)max(r0, 0);
+    *maxRow = (uint8_t)min(r1, MAP_OBS_ROWS - 1);
+    return true;
+}
 
-    // compute map layout, and discretized positions of weapon pickups
-    if (!e->suddenDeathWallsPlaced) {
-        // copy precomputed map layout if sudden death walls haven't been placed
-        const int8_t numCols = endCol - startCol + 1;
-        for (int8_t row = startRow; row <= endRow; row++) {
-            const int16_t cellIdx = cellIndex(e, startCol, row);
-            memcpy(agentObs(e, agentIdx) + offset, e->map->packedLayout + cellIdx, numCols * sizeof(float));
-            offset += MAP_OBS_COLUMNS;
+// separating axis test between a convex polygon and an axis aligned box
+static bool polygonOverlapsBox(const b2Vec2 *verts, const uint8_t count, const b2AABB box) {
+    b2AABB polyBox = {.lowerBound = verts[0], .upperBound = verts[0]};
+    for (uint8_t i = 1; i < count; i++) {
+        polyBox.lowerBound = b2Min(polyBox.lowerBound, verts[i]);
+        polyBox.upperBound = b2Max(polyBox.upperBound, verts[i]);
+    }
+    if (polyBox.upperBound.x <= box.lowerBound.x || polyBox.lowerBound.x >= box.upperBound.x || polyBox.upperBound.y <= box.lowerBound.y || polyBox.lowerBound.y >= box.upperBound.y) {
+        return false;
+    }
+
+    const b2Vec2 corners[4] = {
+        box.lowerBound,
+        {.x = box.upperBound.x, .y = box.lowerBound.y},
+        box.upperBound,
+        {.x = box.lowerBound.x, .y = box.upperBound.y},
+    };
+    for (uint8_t i = 0; i < count; i++) {
+        const b2Vec2 edge = b2Sub(verts[(i + 1) % count], verts[i]);
+        const b2Vec2 axis = {.x = -edge.y, .y = edge.x};
+        float polyMin = FLT_MAX, polyMax = -FLT_MAX, boxMin = FLT_MAX, boxMax = -FLT_MAX;
+        for (uint8_t j = 0; j < count; j++) {
+            const float p = b2Dot(axis, verts[j]);
+            polyMin = fminf(polyMin, p);
+            polyMax = fmaxf(polyMax, p);
         }
+        for (uint8_t j = 0; j < 4; j++) {
+            const float p = b2Dot(axis, corners[j]);
+            boxMin = fminf(boxMin, p);
+            boxMax = fmaxf(boxMax, p);
+        }
+        if (polyMax <= boxMin || boxMax <= polyMin) {
+            return false;
+        }
+    }
+    return true;
+}
 
-        // // compute discretized location of weapon pickups on grid
-        // for (size_t i = 0; i < cc_array_size(e->pickups); i++) {
-        //     const weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
-        //     const uint8_t cellCol = pickup->mapCellIdx % e->map->columns;
-        //     if (cellCol < startCol || cellCol > endCol) {
-        //         continue;
-        //     }
-        //     const uint8_t cellRow = pickup->mapCellIdx / e->map->columns;
-        //     if (cellRow < startRow || cellRow > endRow) {
-        //         continue;
-        //     }
+static void markFloatingWall(const gridWindow *w, const wallEntity *wall, uint8_t *codes) {
+    uint8_t minCol, maxCol, minRow, maxRow;
+    if (!gridCellRange(w, b2Shape_GetAABB(wall->shapeID), &minCol, &maxCol, &minRow, &maxRow)) {
+        return;
+    }
 
-        //     offset = startOffset + ((cellCol - startCol) + ((cellRow - startRow) * MAP_OBS_COLUMNS));
-        //     ASSERTF(offset <= startOffset + MAP_OBS_SIZE, "offset: %d", offset);
-        //     e->observations[offset] |= 1 << 3;
-        // }
-    } else {
-        // sudden death walls have been placed so compute may layout manually
-        const int8_t colPadding = obsColOffset + (obsEndCol - endCol);
-        for (int8_t row = startRow; row <= endRow; row++) {
-            for (int8_t col = startCol; col <= endCol; col++) {
-                const int16_t cellIdx = cellIndex(e, col, row);
-                const mapCell *cell = (&e->cells[cellIdx]);
-                if (cell->ent == NULL) {
-                    offset++;
-                    continue;
-                }
+    const b2Polygon poly = b2Shape_GetPolygon(wall->shapeID);
+    const b2Transform xf = b2Body_GetTransform(wall->bodyID);
+    b2Vec2 verts[B2_MAX_POLYGON_VERTICES];
+    for (int i = 0; i < poly.count; i++) {
+        verts[i] = b2TransformPoint(xf, poly.vertices[i]);
+    }
 
-                if (entityTypeIsWall(cell->ent->type)) {
-                    agentObs(e, agentIdx)[offset] = (float)(cell->ent->type + 1);
-                }
-                // else if (cell->ent->type == WEAPON_PICKUP_ENTITY) {
-                //     e->observations[offset] |= 1 << 3;
-                // }
-
-                offset++;
+    // death > bouncy > standard if floating walls of different types share a cell
+    const uint8_t type = (uint8_t)(wall->type + 1);
+    for (uint8_t row = minRow; row <= maxRow; row++) {
+        for (uint8_t col = minCol; col <= maxCol; col++) {
+            if (!polygonOverlapsBox(verts, (uint8_t)poly.count, gridCellBox(w, col, row))) {
+                continue;
             }
-            offset += colPadding;
+            uint8_t *code = &codes[col + (row * MAP_OBS_COLUMNS)];
+            const uint8_t curType = (*code >> GRID_FLOATING_WALL_SHIFT) & 0x3;
+            if (type > curType) {
+                *code = (uint8_t)((*code & ~(0x3 << GRID_FLOATING_WALL_SHIFT)) | (type << GRID_FLOATING_WALL_SHIFT));
+            }
         }
-        ASSERTF(offset <= startOffset + MAP_OBS_SIZE, "offset %u startOffset %u", offset, startOffset);
+    }
+}
+
+static void markDrone(const gridWindow *w, const droneEntity *drone, uint8_t *codes) {
+    float radius = DRONE_RADIUS;
+    if (drone->shield != NULL) {
+        radius = DRONE_SHIELD_RADIUS;
+    }
+    const b2AABB aabb = {
+        .lowerBound = {.x = drone->pos.x - radius, .y = drone->pos.y - radius},
+        .upperBound = {.x = drone->pos.x + radius, .y = drone->pos.y + radius},
+    };
+    uint8_t minCol, maxCol, minRow, maxRow;
+    if (!gridCellRange(w, aabb, &minCol, &maxCol, &minRow, &maxRow)) {
+        return;
     }
 
-    // // compute discretized locations of floating walls on grid
-    // for (size_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
-    //     const wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
-    //     const uint8_t cellCol = wall->mapCellIdx % e->map->columns;
-    //     if (cellCol < startCol || cellCol > endCol) {
-    //         continue;
-    //     }
-    //     const uint8_t cellRow = wall->mapCellIdx / e->map->columns;
-    //     if (cellRow < startRow || cellRow > endRow) {
-    //         continue;
-    //     }
+    for (uint8_t row = minRow; row <= maxRow; row++) {
+        for (uint8_t col = minCol; col <= maxCol; col++) {
+            const b2AABB box = gridCellBox(w, col, row);
+            const b2Vec2 closest = b2Clamp(drone->pos, box.lowerBound, box.upperBound);
+            if (b2DistanceSquared(closest, drone->pos) < radius * radius) {
+                codes[col + (row * MAP_OBS_COLUMNS)] |= GRID_ENEMY_BIT;
+            }
+        }
+    }
+}
 
-    //     offset = startOffset + ((cellCol - startCol) + ((cellRow - startRow) * MAP_OBS_COLUMNS));
-    //     ASSERTF(offset <= startOffset + MAP_OBS_SIZE, "offset: %d", offset);
-    //     e->observations[offset] = ((wall->type + 1) & TWO_BIT_MASK) << 5;
-    //     e->observations[offset] |= 1 << 4;
-    // }
+// fills a grid centered on the agent's cell with packed cell codes of
+// static walls, floating walls, available weapon pickups and enemy drones,
+// see GRID_* in settings.h
+void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffset) {
+    const droneEntity *drone = safe_array_get_at(e->drones, agentIdx);
+    const int16_t droneCellCol = drone->mapCellIdx % e->map->columns;
+    const int16_t droneCellRow = drone->mapCellIdx / e->map->columns;
+    gridWindow w = {
+        .startCol = droneCellCol - (MAP_OBS_COLUMNS / 2),
+        .startRow = droneCellRow - (MAP_OBS_ROWS / 2),
+    };
+    w.origin = (b2Vec2){
+        .x = (w.startCol * WALL_THICKNESS) - ((e->map->columns * WALL_THICKNESS) / 2.0f),
+        .y = (w.startRow * WALL_THICKNESS) - ((e->map->rows * WALL_THICKNESS) / 2.0f),
+    };
 
-    // // compute discretized location and index of drones on grid
-    // uint8_t newDroneIdx = 1;
-    // uint16_t droneCells[e->numDrones];
-    // memset(droneCells, 0x0, sizeof(droneCells));
-    // for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
-    //     if (i == agentIdx) {
-    //         continue;
-    //     }
+    // static walls
+    uint8_t codes[MAP_OBS_SIZE];
+    for (uint8_t row = 0; row < MAP_OBS_ROWS; row++) {
+        for (uint8_t col = 0; col < MAP_OBS_COLUMNS; col++) {
+            uint8_t *code = &codes[col + (row * MAP_OBS_COLUMNS)];
+            const int16_t mapCol = w.startCol + col;
+            const int16_t mapRow = w.startRow + row;
+            if (mapCol < 0 || mapCol >= e->map->columns || mapRow < 0 || mapRow >= e->map->rows) {
+                *code = GRID_OUT_OF_BOUNDS;
+                continue;
+            }
 
-    //     // ensure drones do not share cells in the observation
-    //     droneEntity *otherDrone = safe_array_get_at(e->drones, i);
-    //     if (i != 0) {
-    //         for (uint8_t j = 0; j < i; j++) {
-    //             if (droneCells[j] == otherDrone->mapCellIdx) {
-    //                 otherDrone->mapCellIdx = findNearestCell(e, otherDrone->pos, otherDrone->mapCellIdx);
-    //                 break;
-    //             }
-    //         }
-    //     }
-    //     const uint8_t cellCol = otherDrone->mapCellIdx % e->map->columns;
-    //     if (cellCol < startCol || cellCol > endCol) {
-    //         continue;
-    //     }
-    //     const uint8_t cellRow = otherDrone->mapCellIdx / e->map->columns;
-    //     if (cellRow < startRow || cellRow > endRow) {
-    //         continue;
-    //     }
-    //     droneCells[i] = otherDrone->mapCellIdx;
+            const int16_t cellIdx = cellIndex(e, mapCol, mapRow);
+            if (!e->suddenDeathWallsPlaced) {
+                // precomputed map layout if sudden death walls haven't been placed
+                *code = (uint8_t)e->map->packedLayout[cellIdx];
+                continue;
+            }
+            const mapCell *cell = &e->cells[cellIdx];
+            *code = 0;
+            if (cell->ent != NULL && entityTypeIsWall(cell->ent->type)) {
+                *code = (uint8_t)(cell->ent->type + 1);
+            }
+        }
+    }
 
-    //     offset = startOffset + ((cellCol - startCol) + ((cellRow - startRow) * MAP_OBS_COLUMNS));
-    //     ASSERTF(offset <= startOffset + MAP_OBS_SIZE, "offset: %d", offset);
-    //     e->observations[offset] |= (newDroneIdx++ & THREE_BIT_MASK);
-    // }
+    for (size_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
+        const wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
+        markFloatingWall(&w, wall, codes);
+    }
+
+    for (size_t i = 0; i < cc_array_size(e->pickups); i++) {
+        const weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
+        if (pickup->floatingWallsTouching > 0 || pickup->respawnWait > 0.0f) {
+            continue;
+        }
+        const int16_t col = (pickup->mapCellIdx % e->map->columns) - w.startCol;
+        const int16_t row = (pickup->mapCellIdx / e->map->columns) - w.startRow;
+        if (col < 0 || col >= MAP_OBS_COLUMNS || row < 0 || row >= MAP_OBS_ROWS) {
+            continue;
+        }
+        codes[col + (row * MAP_OBS_COLUMNS)] |= GRID_PICKUP_BIT;
+    }
+
+    for (uint8_t i = 0; i < e->numDrones; i++) {
+        const droneEntity *otherDrone = safe_array_get_at(e->drones, i);
+        if (i == agentIdx || otherDrone->dead || otherDrone->team == drone->team) {
+            continue;
+        }
+        markDrone(&w, otherDrone, codes);
+    }
+
+    float *obs = agentObs(e, agentIdx) + obsStartOffset;
+    for (uint16_t i = 0; i < MAP_OBS_SIZE; i++) {
+        obs[i] = (float)codes[i];
+    }
 }
 
 // computes observations for N nearest walls, floating walls, and weapon pickups

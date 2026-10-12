@@ -1,12 +1,14 @@
-// Impulse Wars observation layout for the embedding encoder, shared by the
-// CUDA encoder (impulse_wars.cu) and the CPU net (impulse_wars_net.h).
-// Mirrors the obs offsets in settings.h, which the CUDA build can't include
-// (it pulls in box2d). impulse_wars_net.h static asserts the two agree.
+// Impulse Wars observation layout for the encoder, shared by the CUDA
+// encoder (impulse_wars.cu) and the CPU net (impulse_wars_net.h). Mirrors
+// the obs offsets in settings.h, which the CUDA build can't include (it
+// pulls in box2d). impulse_wars_net.h asserts the two agree.
 //
-// Wall type slots hold 0 (empty) or wall type + 1, weapon type slots hold
-// 0 (no entity) or weapon type + 1, ray hit type slots hold a RAY_HIT_*
-// value. Every other obs value is a continuous scalar that is passed
-// through to the projection unchanged.
+// The map grid holds packed cell codes (see GRID_* in settings.h) that are
+// unpacked into one-hot channels and fed to a 3 layer CNN. Wall type slots
+// hold 0 (empty) or wall type + 1, weapon type slots hold 0 (no entity) or
+// weapon type + 1, ray hit type slots hold a RAY_HIT_* value. Every other
+// obs value is a continuous scalar that is passed through to the
+// projection unchanged.
 #ifndef IMPULSE_WARS_OBS_H
 #define IMPULSE_WARS_OBS_H
 
@@ -19,7 +21,7 @@
 #define IW_MAP_CELLS 121
 #define IW_NUM_NEAR_WALLS 4
 #define IW_NEAR_WALL_SIZE 3
-#define IW_NUM_FLOATING_WALLS 4
+#define IW_NUM_FLOATING_WALLS 8
 #define IW_FLOATING_WALL_SIZE 6
 #define IW_NUM_PICKUPS 3
 #define IW_PICKUP_SIZE 3
@@ -40,7 +42,7 @@
 #define IW_PROJECTILE_OFFSET (IW_PICKUP_OFFSET + IW_NUM_PICKUPS * IW_PICKUP_SIZE)
 #define IW_ENEMY_DRONE_OFFSET (IW_PROJECTILE_OFFSET + IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE)
 // obs size with zero enemy drones; each enemy adds IW_ENEMY_DRONE_SIZE
-#define IW_BASE_OBS_SIZE 390
+#define IW_BASE_OBS_SIZE 414
 #define IW_NUM_ENEMIES ((OBS_SIZE - IW_BASE_OBS_SIZE) / IW_ENEMY_DRONE_SIZE)
 #define IW_DRONE_OFFSET (IW_ENEMY_DRONE_OFFSET + IW_NUM_ENEMIES * IW_ENEMY_DRONE_SIZE)
 
@@ -55,19 +57,71 @@
 #define IW_WEAPON_DIM 8
 #define IW_RAY_DIM 4
 
-#define IW_NUM_WALL_SLOTS (IW_MAP_CELLS + IW_NUM_NEAR_WALLS + IW_NUM_FLOATING_WALLS)
+// map grid CNN: cell codes are unpacked into IW_GRID_CHANNELS one-hot
+// planes padded by 1 cell, then 3 unpadded convs with ReLU:
+// 10x13x13 -> 3x3 s1 -> 32x11x11 -> 3x3 s2 -> 64x5x5 -> 3x3 s1 -> 64x3x3
+#define IW_GRID_SIZE 11
+#define IW_GRID_PAD 1
+// static wall id bits, floating wall type bits, pickup and enemy bits
+#define IW_GRID_STATIC_MASK 0x7
+#define IW_GRID_FLOATING_SHIFT 3
+#define IW_GRID_PICKUP_BIT (1 << 5)
+#define IW_GRID_ENEMY_BIT (1 << 6)
+#define IW_GRID_CODE_MAX 127
+// channels: static empty, standard, bouncy, death, out of bounds, floating
+// standard, bouncy, death, pickup, enemy; the empty channel stands in for
+// a conv bias
+#define IW_GRID_STATIC_IDS 5
+#define IW_GRID_CHANNELS 10
+
+#define IW_C1_IN (IW_GRID_SIZE + 2 * IW_GRID_PAD)
+#define IW_C1_IC IW_GRID_CHANNELS
+#define IW_C1_OC 32
+#define IW_C1_K 3
+#define IW_C1_S 1
+#define IW_C1_OUT ((IW_C1_IN - IW_C1_K) / IW_C1_S + 1)
+
+#define IW_C2_IN IW_C1_OUT
+#define IW_C2_IC IW_C1_OC
+#define IW_C2_OC 64
+#define IW_C2_K 3
+#define IW_C2_S 2
+#define IW_C2_OUT ((IW_C2_IN - IW_C2_K) / IW_C2_S + 1)
+
+#define IW_C3_IN IW_C2_OUT
+#define IW_C3_IC IW_C2_OC
+#define IW_C3_OC 64
+#define IW_C3_K 3
+#define IW_C3_S 1
+#define IW_C3_OUT ((IW_C3_IN - IW_C3_K) / IW_C3_S + 1)
+
+// im2col widths and output positions per sample
+#define IW_C1_COL_W (IW_C1_IC * IW_C1_K * IW_C1_K)
+#define IW_C2_COL_W (IW_C2_IC * IW_C2_K * IW_C2_K)
+#define IW_C3_COL_W (IW_C3_IC * IW_C3_K * IW_C3_K)
+#define IW_C1_SPATIAL (IW_C1_OUT * IW_C1_OUT)
+#define IW_C2_SPATIAL (IW_C2_OUT * IW_C2_OUT)
+#define IW_C3_SPATIAL (IW_C3_OUT * IW_C3_OUT)
+// conv weights are (OC, IC * K * K)
+#define IW_C1_W_N (IW_C1_OC * IW_C1_COL_W)
+#define IW_C2_W_N (IW_C2_OC * IW_C2_COL_W)
+#define IW_C3_W_N (IW_C3_OC * IW_C3_COL_W)
+#define IW_CONV_FLAT (IW_C3_OC * IW_C3_SPATIAL)
+
+// near walls and floating walls; the map grid goes to the CNN
+#define IW_NUM_WALL_SLOTS (IW_NUM_NEAR_WALLS + IW_NUM_FLOATING_WALLS)
 // pickups, projectiles, enemy drones, own drone
 #define IW_NUM_WEAPON_SLOTS (IW_NUM_PICKUPS + IW_NUM_PROJECTILES + IW_NUM_ENEMIES + 1)
 // enemy drone rays, own drone rays
 #define IW_NUM_RAY_SLOTS (IW_NUM_ENEMIES + IW_NUM_DRONE_RAYS)
-#define IW_NUM_SCALARS (OBS_SIZE - IW_NUM_WALL_SLOTS - IW_NUM_WEAPON_SLOTS - IW_NUM_RAY_SLOTS)
+#define IW_NUM_SCALARS (OBS_SIZE - IW_MAP_CELLS - IW_NUM_WALL_SLOTS - IW_NUM_WEAPON_SLOTS - IW_NUM_RAY_SLOTS)
 
-// concat layout: [wall slot embeds | weapon slot embeds | ray slot embeds | scalars]
+// concat layout: [CNN | wall slot embeds | weapon slot embeds | ray slot embeds | scalars]
 #define IW_WALL_COLS (IW_NUM_WALL_SLOTS * IW_WALL_DIM)
 #define IW_WEAPON_COLS (IW_NUM_WEAPON_SLOTS * IW_WEAPON_DIM)
 #define IW_RAY_COLS (IW_NUM_RAY_SLOTS * IW_RAY_DIM)
 #define IW_EMB_COLS (IW_WALL_COLS + IW_WEAPON_COLS + IW_RAY_COLS)
-#define IW_CONCAT (IW_EMB_COLS + IW_NUM_SCALARS)
+#define IW_CONCAT (IW_CONV_FLAT + IW_EMB_COLS + IW_NUM_SCALARS)
 
 #define IW_WALL_EMB_N (IW_WALL_VOCAB * IW_WALL_DIM)
 #define IW_WEAPON_EMB_N (IW_WEAPON_VOCAB * IW_WEAPON_DIM)
@@ -76,10 +130,6 @@
 
 // obs index of wall type slot j
 IW_FN int iw_wall_slot_idx(int j) {
-    if (j < IW_MAP_CELLS) {
-        return j;
-    }
-    j -= IW_MAP_CELLS;
     if (j < IW_NUM_NEAR_WALLS) {
         return IW_NEAR_WALL_OFFSET + j * IW_NEAR_WALL_SIZE;
     }
@@ -114,7 +164,8 @@ IW_FN int iw_ray_slot_idx(int j) {
     return IW_DRONE_OFFSET + IW_DRONE_RAY_IDX + j * IW_RAY_SIZE;
 }
 
-// whether obs index i is a wall, weapon or ray hit type slot
+// whether obs index i is a map grid cell or a wall, weapon or ray hit type
+// slot, rather than a scalar
 IW_FN int iw_is_type_slot(int i) {
     if (i < IW_MAP_CELLS) {
         return 1;
@@ -140,6 +191,55 @@ IW_FN int iw_is_type_slot(int i) {
         return (k - IW_DRONE_RAY_IDX) % IW_RAY_SIZE == 0;
     }
     return k == 0;
+}
+
+// value of one-hot channel ch of a map grid cell code read from the obs
+IW_FN float iw_grid_channel(float v, int ch) {
+    int code = (int)(v + 0.5f);
+    if (code < 0 || code > IW_GRID_CODE_MAX) {
+        code = 0;
+    }
+    if (ch < IW_GRID_STATIC_IDS) {
+        return (code & IW_GRID_STATIC_MASK) == ch ? 1.0f : 0.0f;
+    }
+    if (ch < IW_GRID_STATIC_IDS + 3) {
+        return ((code >> IW_GRID_FLOATING_SHIFT) & 0x3) == ch - IW_GRID_STATIC_IDS + 1 ? 1.0f : 0.0f;
+    }
+    if (ch == IW_GRID_STATIC_IDS + 3) {
+        return (code & IW_GRID_PICKUP_BIT) != 0 ? 1.0f : 0.0f;
+    }
+    return (code & IW_GRID_ENEMY_BIT) != 0 ? 1.0f : 0.0f;
+}
+
+// map grid cell read by conv1 output position s at im2col column c, or -1
+// for padding
+IW_FN int iw_c1_cell(int s, int c) {
+    const int kk = c % (IW_C1_K * IW_C1_K);
+    const int row = (s / IW_C1_OUT) * IW_C1_S + kk / IW_C1_K - IW_GRID_PAD;
+    const int col = (s % IW_C1_OUT) * IW_C1_S + kk % IW_C1_K - IW_GRID_PAD;
+    if (row < 0 || row >= IW_GRID_SIZE || col < 0 || col >= IW_GRID_SIZE) {
+        return -1;
+    }
+    return row * IW_GRID_SIZE + col;
+}
+
+// conv1 im2col value at column c, given the grid cell iw_c1_cell returned
+// for it and that cell's obs value
+IW_FN float iw_c1_col_value(float cellValue, int cell, int c) {
+    if (cell < 0) {
+        return 0.0f;
+    }
+    return iw_grid_channel(cellValue, c / (IW_C1_K * IW_C1_K));
+}
+
+// index into one sample's (C, in, in) input of an unpadded square conv
+// for output position s and im2col column c
+IW_FN int iw_im2col_src(int s, int c, int in, int out, int k, int stride) {
+    const int ic = c / (k * k);
+    const int kk = c % (k * k);
+    const int ih = (s / out) * stride + kk / k;
+    const int iw = (s % out) * stride + kk % k;
+    return (ic * in + ih) * in + iw;
 }
 
 // clamps a type value read from the obs to [0, vocab)

@@ -52,13 +52,25 @@ static const uint8_t MAP_OBS_ROWS = 11;
 static const uint8_t MAP_OBS_COLUMNS = 11;
 static const uint16_t MAP_OBS_SIZE = MAP_OBS_ROWS * MAP_OBS_COLUMNS;
 
+// each map grid cell is a packed code: bits 0-2 hold the static wall id
+// (0 for empty, wall type + 1, or GRID_OUT_OF_BOUNDS), bits 3-4 hold the
+// overlapping floating wall type + 1, bit 5 is set if an available weapon
+// pickup is in the cell and bit 6 if an enemy drone overlaps it; codes
+// stay below 256 so they're exact in bf16
+#define GRID_OUT_OF_BOUNDS 4
+#define GRID_FLOATING_WALL_SHIFT 3
+#define GRID_PICKUP_BIT (1 << 5)
+#define GRID_ENEMY_BIT (1 << 6)
+// cells only touching an entity on their border aren't marked
+static const float GRID_OVERLAP_MARGIN = 0.05f;
+
 #define _NUM_NEAR_WALL_OBS 4
 static const uint8_t NUM_NEAR_WALL_OBS = _NUM_NEAR_WALL_OBS;
 static const uint8_t NEAR_WALL_INFO_OBS_SIZE = 3;
 static const uint8_t NEAR_WALL_OBS_SIZE = NUM_NEAR_WALL_OBS * NEAR_WALL_INFO_OBS_SIZE;
 static const uint16_t NEAR_WALL_INFO_OBS_OFFSET = 0;
 
-#define _NUM_FLOATING_WALL_OBS 4
+#define _NUM_FLOATING_WALL_OBS 8
 static const uint8_t NUM_FLOATING_WALL_OBS = _NUM_FLOATING_WALL_OBS;
 static const uint8_t FLOATING_WALL_INFO_OBS_SIZE = 6;
 static const uint8_t FLOATING_WALL_OBS_SIZE = NUM_FLOATING_WALL_OBS * FLOATING_WALL_INFO_OBS_SIZE;
