@@ -1088,8 +1088,10 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
     uint16_t step = 0;
     bool braking = false;
     float defaultDamping = DRONE_LINEAR_DAMPING;
+    float invMass = DRONE_INV_MASS;
     if (type != DRONE_ENTITY) {
         defaultDamping = FLOATING_WALL_DAMPING;
+        invMass = FLOATING_WALL_INV_MASS;
     }
     float damping = defaultDamping;
 
@@ -1122,9 +1124,9 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
             continue;
         }
 
-        const b2Vec2 invForce = b2MulSV(DRONE_INV_MASS, physicsStep->force);
+        const b2Vec2 invForce = b2MulSV(invMass, physicsStep->force);
         contrib[physicsStep->srcIdx] = b2MulAdd(contrib[physicsStep->srcIdx], e->deltaTime, invForce);
-        contrib[physicsStep->srcIdx] = b2MulAdd(contrib[physicsStep->srcIdx], DRONE_INV_MASS, physicsStep->impulse);
+        contrib[physicsStep->srcIdx] = b2MulAdd(contrib[physicsStep->srcIdx], invMass, physicsStep->impulse);
 
         // DEBUG_LOGF("# step %d drone %d contrib %f (%f, %f)", physicsStep->step, physicsStep->srcIdx, b2Length(contrib[physicsStep->srcIdx]), contrib[physicsStep->srcIdx].x, contrib[physicsStep->srcIdx].y);
     }

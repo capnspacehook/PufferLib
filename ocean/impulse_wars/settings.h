@@ -160,6 +160,7 @@ static const float STANDARD_WALL_RESTITUTION = 0.01f;
 static const float STANDARD_WALL_FRICTION = 0.3f;
 static const float BOUNCY_WALL_RESTITUTION = 1.0f;
 static const float WALL_DENSITY = 4.0f;
+#define FLOATING_WALL_INV_MASS INV_MASS(WALL_DENSITY * FLOATING_WALL_THICKNESS * FLOATING_WALL_THICKNESS)
 
 // weapon pickup settings
 static const float PICKUP_THICKNESS = 3.0f;

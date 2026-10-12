@@ -1554,8 +1554,7 @@ void puf_step(iwEnv *e) {
         roundOver = stepPhysicsFrame(e, e->cachedActions, &lastAlive, &lastAliveTeam);
         e->tick_frames_left--;
 
-        // TODO: handle rendered eval properly
-        if (e->episodeLength == TRAINING_MAX_STEPS && !roundOver) {
+        if (e->client == NULL && e->episodeLength == TRAINING_MAX_STEPS && !roundOver) {
             roundOver = true;
             lastAlive = -1;
             lastAliveTeam = -1;
