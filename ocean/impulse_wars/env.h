@@ -568,10 +568,10 @@ void computeObs(iwEnv *e) {
                 continue;
             }
 
-            if (agentDrone->stepInfo.shotHit[i] != 0.0f) {
+            if (agentDrone->stepInfo.shotHit[i] != 0.0f || agentDrone->stepInfo.explosionHit[i] != 0.0f) {
                 hitShot = true;
             }
-            if (agentDrone->stepInfo.shotTaken[i] != 0.0f) {
+            if (agentDrone->stepInfo.shotTaken[i] != 0.0f || agentDrone->stepInfo.explosionTaken[i] != 0.0f) {
                 tookShot = true;
             }
 
@@ -588,10 +588,6 @@ void computeObs(iwEnv *e) {
             const b2Vec2 enemyDroneAccel = b2MulSV(1.0f / e->deltaTime, b2Sub(enemyDrone->velocity, enemyDrone->lastVelocity));
             const b2Vec2 enemyDroneRelNormPos = b2Normalize(b2Sub(enemyDrone->pos, agentDrone->pos));
             const float enemyDroneAimAngle = atan2f(enemyDrone->lastAim.y, enemyDrone->lastAim.x);
-            float enemyDroneBraking = 0.0f;
-            if (enemyDrone->braking) {
-                enemyDroneBraking = 1.0f;
-            }
 
             float enemyShieldHealth = 0.0f;
             float enemyShieldDuration = 0.0f;
@@ -622,7 +618,7 @@ void computeObs(iwEnv *e) {
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->weaponCharge, enemyDrone->weaponInfo->charge, true);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->energyLeft, DRONE_ENERGY_MAX, true);
             continuousObs[continuousObsOffset++] = (float)enemyDrone->energyFullyDepleted;
-            continuousObs[continuousObsOffset++] = enemyDroneBraking;
+            continuousObs[continuousObsOffset++] = (float)enemyDrone->braking;
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->burstCooldown, DRONE_BURST_COOLDOWN, true);
             continuousObs[continuousObsOffset++] = (float)enemyDrone->chargingBurst;
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->burstCharge, DRONE_ENERGY_MAX, true);
@@ -645,10 +641,6 @@ void computeObs(iwEnv *e) {
         continuousObsOffset = ENEMY_DRONE_OBS_OFFSET + ((e->numDrones - 1) * ENEMY_DRONE_OBS_SIZE);
         // multiple by delta time to make acceleration consistent between training and interactive eval
         const b2Vec2 agentDroneAccel = b2MulSV(1.0f / e->deltaTime, b2Sub(agentDrone->velocity, agentDrone->lastVelocity));
-        float agentDroneBraking = 0.0f;
-        if (agentDrone->braking) {
-            agentDroneBraking = 1.0f;
-        }
 
         // signed angle from our aim to our velocity, 0 when barely moving
         float aimVelAngle = 0.0f;
@@ -679,7 +671,7 @@ void computeObs(iwEnv *e) {
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->weaponCharge, agentDrone->weaponInfo->charge, true);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->energyLeft, DRONE_ENERGY_MAX, true);
         continuousObs[continuousObsOffset++] = (float)agentDrone->energyFullyDepleted;
-        continuousObs[continuousObsOffset++] = agentDroneBraking;
+        continuousObs[continuousObsOffset++] = (float)agentDrone->braking;
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->burstCooldown, DRONE_BURST_COOLDOWN, true);
         continuousObs[continuousObsOffset++] = (float)agentDrone->chargingBurst;
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->burstCharge, DRONE_ENERGY_MAX, true);
