@@ -1832,11 +1832,12 @@ void renderEnv(iwEnv *e) {
     // TODO: fix for maps with different rows and columns
     // draw a thicker grid below
     float y = (-3.0f * WALL_THICKNESS) - 1.0f;
+    const float h = WALL_THICKNESS * e->map->rows;
+    const float w = WALL_THICKNESS * e->map->columns;
     Color color = (Color){.r = 94, .g = 59, .b = 136, .a = 128};
-    for (int i = 0; i < e->map->columns; i++) {
-        const float d = WALL_THICKNESS * e->map->columns;
-        const Vector2 start = {.x = -d / 2.0f, .y = WALL_THICKNESS * i - d / 2.0f};
-        const Vector2 end = {.x = d / 2.0f, .y = WALL_THICKNESS * i - d / 2.0f};
+    for (int i = 0; i < e->map->rows; i++) {
+        const Vector2 start = {.x = -w / 2.0f, .y = WALL_THICKNESS * i - h / 2.0f};
+        const Vector2 end = {.x = w / 2.0f, .y = WALL_THICKNESS * i - h / 2.0f};
         const Vector3 pos = {.x = start.x, .y = y, .z = start.y};
 
         rlPushMatrix();
@@ -1847,10 +1848,9 @@ void renderEnv(iwEnv *e) {
 
         rlPopMatrix();
     }
-    for (int i = 0; i < e->map->rows; i++) {
-        const float d = WALL_THICKNESS * e->map->rows;
-        const Vector2 start = {.x = WALL_THICKNESS * i - d / 2.0f, .y = -d / 2.0f};
-        const Vector2 end = {.x = WALL_THICKNESS * i - d / 2.0f, .y = d / 2.0f};
+    for (int i = 0; i < e->map->columns; i++) {
+        const Vector2 start = {.x = WALL_THICKNESS * i - w / 2.0f, .y = -h / 2.0f};
+        const Vector2 end = {.x = WALL_THICKNESS * i - w / 2.0f, .y = h / 2.0f};
         const Vector3 pos = {.x = start.x, .y = y, .z = start.y};
 
         rlPushMatrix();
@@ -1867,17 +1867,15 @@ void renderEnv(iwEnv *e) {
     BeginShaderMode(e->client->gridShader);
     y = -1.0f;
     color = PUFF_BACKGROUND;
-    for (int i = 0; i < 2 * e->map->columns; i++) {
-        const float d = WALL_THICKNESS * e->map->columns;
-        const Vector3 start = {.x = -d / 2.0f, .y = y, .z = WALL_THICKNESS / 2.0f * i - d / 2.0f};
-        const Vector3 end = {.x = (d - WALL_THICKNESS / 2.0f) / 2.0f, .y = y, .z = WALL_THICKNESS / 2.0f * i - d / 2.0f};
+    for (int i = 0; i < 2 * e->map->rows; i++) {
+        const Vector3 start = {.x = -w / 2.0f, .y = y, .z = WALL_THICKNESS / 2.0f * i - h / 2.0f};
+        const Vector3 end = {.x = (w - WALL_THICKNESS / 2.0f) / 2.0f, .y = y, .z = WALL_THICKNESS / 2.0f * i - h / 2.0f};
 
         DrawLine3D(start, end, color);
     }
-    for (int i = 0; i < 2 * e->map->rows; i++) {
-        float d = WALL_THICKNESS * e->map->rows;
-        const Vector3 start = {.x = WALL_THICKNESS * i / 2.0f - d / 2.0f, .y = y, .z = -d / 2.0f};
-        const Vector3 end = {.x = WALL_THICKNESS * i / 2.0f - d / 2.0f, .y = y, .z = (d - WALL_THICKNESS / 2.0f) / 2.0f};
+    for (int i = 0; i < 2 * e->map->columns; i++) {
+        const Vector3 start = {.x = WALL_THICKNESS * i / 2.0f - w / 2.0f, .y = y, .z = -h / 2.0f};
+        const Vector3 end = {.x = WALL_THICKNESS * i / 2.0f - w / 2.0f, .y = y, .z = (h - WALL_THICKNESS / 2.0f) / 2.0f};
 
         DrawLine3D(start, end, color);
     }
