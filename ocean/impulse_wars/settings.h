@@ -17,7 +17,7 @@ static const uint16_t TRAINING_MAX_STEPS = 4500;
 static const uint8_t EVAL_FRAME_RATE = _EVAL_FRAME_RATE;
 static const uint8_t EVAL_BOX2D_SUBSTEPS = 4;
 
-static const uint8_t NUM_MAPS = 9;
+static const uint8_t NUM_MAPS = 15;
 // map used for easy curriculum episodes, the empty one
 static const uint8_t EASY_EP_MAP_IDX = 0;
 // shots an agent must fire in an easy episode for its hit rate to count
