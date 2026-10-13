@@ -242,7 +242,7 @@ else
 fi
 
 if [ "$ENV" = "impulse_wars" ] && [ "$MODE" = "cpu" ] && [ -z "$DEBUG" ]; then
-    CLANG_OPT+=(-flto -fno-math-errno)
+    CLANG_OPT+=(-flto -fno-math-errno -fno-trapping-math)
 fi
 
 # Dashboard / cache / trailer: compile SRC_FILE only (not puffercpu / CUDA / obs_t).
