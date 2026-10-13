@@ -1034,8 +1034,46 @@ void renderUI(const iwEnv *e, const bool starting) {
         if (drone->killedBy != -1) {
             y += textSize.y + e->client->scale;
             const char *killedBy = TextFormat("Killed by Player %d", drone->killedBy + 1);
-
             DrawText(killedBy, x, y, fontSize, getDroneColor(drone->killedBy));
+
+            char *killDetails1 = NULL;
+            char *killDetails2 = NULL;
+            switch (drone->killSource.type) {
+            case MOVEMENT_PHYSICS:
+                break;
+            case RECOIL_PHYSICS:
+                killDetails1 = "from recoil of";
+                killDetails2 = getWeaponName(drone->killSource.weapon);
+                break;
+            case BURST_PHYSICS:
+                killDetails1 = "from a burst";
+                break;
+            case EXPLOSION_PHYSICS:
+                if (drone->killSource.weapon != IMPLODER_WEAPON) {
+                    killDetails1 = "with an explosion";
+                    killDetails2 = TextFormat("from %s", getWeaponName(drone->killSource.weapon));
+                    break;
+                }
+            case PROJECTILE_PHYSICS:
+                killDetails1 = TextFormat("with %s", getWeaponName(drone->killSource.weapon));
+                break;
+            case DRONE_PHYSICS:
+                killDetails1 = "via a collision";
+                break;
+            default:
+                DEBUG_LOGF("invalid kill source type %d", drone->killSource.type);
+                break;
+            }
+
+            if (killDetails1 != NULL) {
+                y += textSize.y + e->client->scale;
+                DrawText(killDetails1, x, y, fontSize, getDroneColor(drone->killedBy));
+
+                if (killDetails2 != NULL) {
+                    y += textSize.y + e->client->scale;
+                    DrawText(killDetails2, x, y, fontSize, getDroneColor(drone->killedBy));
+                }
+            }
         }
     }
 

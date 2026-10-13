@@ -958,27 +958,29 @@ void destroyDrone(iwEnv *e, droneEntity *drone) {
     fastFree(drone);
 }
 
-void applyTrackedForce(const iwEnv *e, const b2BodyId bodyID, CC_Array *physicsTracking, const b2Vec2 force, const uint8_t srcIdx) {
+void applyTrackedForce(const iwEnv *e, const b2BodyId bodyID, CC_Array *physicsTracking, const b2Vec2 force, const uint8_t srcIdx, const physicsSource source) {
     b2Body_ApplyForceToCenter(bodyID, force, true);
 
     physicsStepInfo *physicsStep = fastCalloc(1, sizeof(physicsStepInfo));
     physicsStep->srcIdx = srcIdx;
     physicsStep->force = force;
+    physicsStep->source = source;
     physicsStep->step = e->episodeLength;
     cc_array_add(physicsTracking, physicsStep);
 }
 
-void trackImpulse(const iwEnv *e, CC_Array *physicsTracking, const b2Vec2 impulse, const uint8_t srcIdx) {
+void trackImpulse(const iwEnv *e, CC_Array *physicsTracking, const b2Vec2 impulse, const uint8_t srcIdx, const physicsSource source) {
     physicsStepInfo *physicsStep = fastCalloc(1, sizeof(physicsStepInfo));
     physicsStep->srcIdx = srcIdx;
     physicsStep->impulse = impulse;
+    physicsStep->source = source;
     physicsStep->step = e->episodeLength;
     cc_array_add(physicsTracking, physicsStep);
 }
 
-void applyTrackedImpulse(const iwEnv *e, const b2BodyId bodyID, CC_Array *physicsTracking, const b2Vec2 impulse, const uint8_t srcIdx) {
+void applyTrackedImpulse(const iwEnv *e, const b2BodyId bodyID, CC_Array *physicsTracking, const b2Vec2 impulse, const uint8_t srcIdx, const physicsSource source) {
     b2Body_ApplyLinearImpulseToCenter(bodyID, impulse, true);
-    trackImpulse(e, physicsTracking, impulse, srcIdx);
+    trackImpulse(e, physicsTracking, impulse, srcIdx, source);
 }
 
 void droneTrackBrake(const iwEnv *e, const droneEntity *drone) {
@@ -1078,17 +1080,44 @@ void droneChangeWeapon(const iwEnv *e, droneEntity *drone, const enum weaponType
     drone->ammo = weaponAmmo(e->defaultWeapon->type, drone->weaponInfo->type);
 }
 
-void applyContribDamping(const iwEnv *e, const uint16_t stepDiff, const float damping, b2Vec2 *contrib) {
+// contribution of a single drone from a single physics source; kept
+// separately so the source of a kill can be determined the same way
+// the killer is
+typedef struct sourceContrib {
+    b2Vec2 contrib;
+    physicsSource source;
+    uint8_t srcIdx;
+} sourceContrib;
+
+void applyContribDamping(const iwEnv *e, const uint16_t stepDiff, const float damping, b2Vec2 *contrib, sourceContrib *sources, const uint16_t numSources) {
     const float perStepDamping = 1.0f / (1.0f + damping * e->deltaTime);
     const float damp = powf(perStepDamping, stepDiff);
     for (uint8_t k = 0; k < e->numDrones; k++) {
         contrib[k] = b2MulSV(damp, contrib[k]);
     }
+    for (uint16_t k = 0; k < numSources; k++) {
+        sources[k].contrib = b2MulSV(damp, sources[k].contrib);
+    }
 }
 
-int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const CC_Array *physicsTracking, const b2Vec2 lastVelocity, float *maxMoveContrib) {
+// reflect pushes into the wall the same way box2d reflects the
+// body's velocity; pushes away from the wall are left alone
+b2Vec2 reflectContrib(const b2Vec2 contrib, const physicsStepInfo *physicsStep) {
+    const float intoWall = b2Dot(contrib, physicsStep->normal);
+    if (intoWall < 0.0f) {
+        return b2MulSub(contrib, (1.0f + physicsStep->restitution) * intoWall, physicsStep->normal);
+    }
+    return contrib;
+}
+
+int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const CC_Array *physicsTracking, const b2Vec2 lastVelocity, float *maxMoveContrib, physicsSource *source) {
     b2Vec2 contrib[e->numDrones];
     memset(contrib, 0x0, e->numDrones * sizeof(b2Vec2));
+    const uint16_t maxSources = e->numDrones * NUM_PHYSICS_TYPES * _NUM_WEAPONS;
+    sourceContrib sources[maxSources];
+    int16_t sourceSlots[maxSources];
+    memset(sourceSlots, 0xff, maxSources * sizeof(int16_t));
+    uint16_t numSources = 0;
     uint16_t step = 0;
     bool braking = false;
     float defaultDamping = DRONE_LINEAR_DAMPING;
@@ -1104,7 +1133,7 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
         physicsStepInfo *physicsStep = safe_array_get_at(physicsTracking, i);
         // if the step has changed, apply damping to contributions
         if (physicsStep->step != step) {
-            applyContribDamping(e, physicsStep->step - step, damping, contrib);
+            applyContribDamping(e, physicsStep->step - step, damping, contrib, sources, numSources);
             step = physicsStep->step;
         }
 
@@ -1116,25 +1145,38 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
                 damping = defaultDamping;
             }
         }
-        // reflect pushes into the wall the same way box2d reflects the
-        // body's velocity; pushes away from the wall are left alone
         if (physicsStep->bounce) {
             for (uint8_t k = 0; k < e->numDrones; k++) {
-                const float intoWall = b2Dot(contrib[k], physicsStep->normal);
-                if (intoWall < 0.0f) {
-                    contrib[k] = b2MulSub(contrib[k], (1.0f + physicsStep->restitution) * intoWall, physicsStep->normal);
-                }
+                contrib[k] = reflectContrib(contrib[k], physicsStep);
+            }
+            for (uint16_t k = 0; k < numSources; k++) {
+                sources[k].contrib = reflectContrib(sources[k].contrib, physicsStep);
             }
             continue;
         }
 
+        const uint8_t srcIdx = physicsStep->srcIdx;
         const b2Vec2 invForce = b2MulSV(invMass, physicsStep->force);
-        contrib[physicsStep->srcIdx] = b2MulAdd(contrib[physicsStep->srcIdx], e->deltaTime, invForce);
-        contrib[physicsStep->srcIdx] = b2MulAdd(contrib[physicsStep->srcIdx], invMass, physicsStep->impulse);
+        const b2Vec2 stepContrib = b2MulAdd(b2MulSV(invMass, physicsStep->impulse), e->deltaTime, invForce);
+        if (b2VecEqual(stepContrib, b2Vec2_zero)) {
+            continue;
+        }
+        contrib[srcIdx] = b2Add(contrib[srcIdx], stepContrib);
+
+        const physicsSource stepSource = physicsStep->source;
+        const uint16_t slotIdx = (srcIdx * NUM_PHYSICS_TYPES + stepSource.type) * _NUM_WEAPONS + stepSource.weapon;
+        ASSERT(slotIdx < maxSources);
+        if (sourceSlots[slotIdx] == -1) {
+            sourceSlots[slotIdx] = numSources;
+            sources[numSources] = (sourceContrib){.contrib = b2Vec2_zero, .source = stepSource, .srcIdx = srcIdx};
+            numSources++;
+        }
+        sourceContrib *src = &sources[sourceSlots[slotIdx]];
+        src->contrib = b2Add(src->contrib, stepContrib);
 
         // DEBUG_LOGF("# step %d drone %d contrib %f (%f, %f)", physicsStep->step, physicsStep->srcIdx, b2Length(contrib[physicsStep->srcIdx]), contrib[physicsStep->srcIdx].x, contrib[physicsStep->srcIdx].y);
     }
-    applyContribDamping(e, e->episodeLength - step, damping, contrib);
+    applyContribDamping(e, e->episodeLength - step, damping, contrib, sources, numSources);
 
     // determine the killer by finding the drone that pushed the dead
     // drone towards the wall that killed it the most
@@ -1159,23 +1201,43 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
             killer = i;
         }
     }
-    if (killer != -1) {
-        *maxMoveContrib = maxContrib;
+    if (killer == -1) {
+        return killer;
     }
+    *maxMoveContrib = maxContrib;
+
+    // the source of the kill is whichever of the killer's sources
+    // pushed the dead drone towards the wall the most
+    float maxSourceContrib = -FLT_MAX;
+    for (uint16_t i = 0; i < numSources; i++) {
+        if (sources[i].srcIdx != killer) {
+            continue;
+        }
+        const float projected = b2Dot(sources[i].contrib, deathNormal);
+        DEBUG_LOGF("> killer source type %d weapon %d contrib %f", sources[i].source.type, sources[i].source.weapon, projected);
+        if (projected > maxSourceContrib) {
+            maxSourceContrib = projected;
+            *source = sources[i].source;
+        }
+    }
+
     return killer;
 }
 
 void findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     float maxMoveContrib = -FLT_MAX;
+    physicsSource source = {0};
     DEBUG_LOG("finding drone killer");
-    int8_t killer = findBiggestContributor(e, DRONE_ENTITY, drone->physicsTracking, drone->lastVelocity, &maxMoveContrib);
+    int8_t killer = findBiggestContributor(e, DRONE_ENTITY, drone->physicsTracking, drone->lastVelocity, &maxMoveContrib, &source);
     if (killWall != NULL && killWall->isFloating) {
         float wallContrib = -FLT_MAX;
+        physicsSource wallSource = {0};
         DEBUG_LOG("finding mover of floating death wall");
-        const int8_t wallMover = findBiggestContributor(e, DEATH_WALL_ENTITY, killWall->physicsTracking, killWall->velocity, &wallContrib);
+        const int8_t wallMover = findBiggestContributor(e, DEATH_WALL_ENTITY, killWall->physicsTracking, killWall->velocity, &wallContrib, &wallSource);
         if (wallContrib > maxMoveContrib) {
             DEBUG_LOGF(">>> drone %d killed by drone %d pushing floating death wall", drone->idx, wallMover);
             killer = wallMover;
+            source = wallSource;
         }
     }
 
@@ -1193,6 +1255,7 @@ void findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
         e->stats[killer].kills++;
     }
     drone->killedBy = killer;
+    drone->killSource = source;
     droneEntity *killerDrone = safe_array_get_at(e->drones, killer);
     killerDrone->killed[drone->idx] = true;
 }
@@ -1653,12 +1716,20 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     const b2Vec2 impulse = b2MulSV(magnitude, direction);
     ASSERT(b2IsValidVec2(impulse));
 
+    physicsSource source = {0};
+    if (ctx->isBurst) {
+        source.type = BURST_PHYSICS;
+    } else {
+        source.type = EXPLOSION_PHYSICS;
+        source.weapon = ctx->projectile->weaponInfo->type;
+    }
+
     switch (entity->type) {
     case STANDARD_WALL_ENTITY:
     case BOUNCY_WALL_ENTITY:
     case DEATH_WALL_ENTITY:
         if (wall->isFloating) {
-            applyTrackedImpulse(ctx->e, wall->bodyID, wall->physicsTracking, impulse, ctx->parentDrone->idx);
+            applyTrackedImpulse(ctx->e, wall->bodyID, wall->physicsTracking, impulse, ctx->parentDrone->idx, source);
         } else {
             b2Body_ApplyLinearImpulse(bodyID, impulse, output.pointA, true);
         }
@@ -1693,7 +1764,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
             DEBUG_LOGF("drone %d hit by explosion from weapon %d from drone %d", drone->idx, ctx->projectile->weaponInfo->type, ctx->parentDrone->idx);
         }
 
-        applyTrackedImpulse(ctx->e, drone->bodyID, drone->physicsTracking, impulse, ctx->parentDrone->idx);
+        applyTrackedImpulse(ctx->e, drone->bodyID, drone->physicsTracking, impulse, ctx->parentDrone->idx, source);
         drone->lastVelocity = drone->velocity;
         drone->velocity = b2Body_GetLinearVelocity(drone->bodyID);
 
@@ -1731,6 +1802,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
 void applyDroneBurstImpulse(iwEnv *e, explosionCtx *ctx, const droneEntity *drone) {
     wallBurstImpulse *hitWalls = ctx->wallImpulses;
     uint8_t wallsHit = ctx->wallsHit;
+    const physicsSource source = {.type = BURST_PHYSICS};
 
     // sort by distance
     for (int8_t i = 1; i < wallsHit; i++) {
@@ -1794,7 +1866,7 @@ void applyDroneBurstImpulse(iwEnv *e, explosionCtx *ctx, const droneEntity *dron
     DEBUG_LOGF("walls used: %d magnitude: %f final: %f", wallsUsed, magnitude, magnitude / (float)wallsUsed);
     const b2Vec2 finalImpulse = b2MulSV(magnitude / (float)wallsUsed, b2Normalize(direction));
     ASSERT(b2IsValidVec2(finalImpulse));
-    applyTrackedImpulse(e, drone->bodyID, drone->physicsTracking, finalImpulse, drone->idx);
+    applyTrackedImpulse(e, drone->bodyID, drone->physicsTracking, finalImpulse, drone->idx, source);
 }
 
 void createExplosion(iwEnv *e, droneEntity *drone, const projectileEntity *projectile, const b2ExplosionDef *def) {
@@ -2087,7 +2159,8 @@ void droneMove(const iwEnv *e, droneEntity *drone, b2Vec2 direction) {
         drone->lastMove = direction;
     }
     const b2Vec2 force = b2MulSV(DRONE_MOVE_MAGNITUDE, direction);
-    applyTrackedForce(e, drone->bodyID, drone->physicsTracking, force, drone->idx);
+    const physicsSource source = {.type = MOVEMENT_PHYSICS};
+    applyTrackedForce(e, drone->bodyID, drone->physicsTracking, force, drone->idx, source);
 }
 
 // records how far the aim is from the bearing to the nearest live enemy
@@ -2153,8 +2226,9 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
     }
     ASSERT_VEC_NORMALIZED(normAim);
     recordAimError(e, drone, normAim);
-    b2Vec2 recoil = b2MulSV(-drone->weaponInfo->recoilMagnitude, normAim);
-    applyTrackedImpulse(e, drone->bodyID, drone->physicsTracking, recoil, drone->idx);
+    const b2Vec2 recoil = b2MulSV(-drone->weaponInfo->recoilMagnitude, normAim);
+    const physicsSource source = {.type = RECOIL_PHYSICS, .weapon = drone->weaponInfo->type};
+    applyTrackedImpulse(e, drone->bodyID, drone->physicsTracking, recoil, drone->idx, source);
 
     for (int i = 0; i < drone->weaponInfo->numProjectiles; i++) {
         createProjectile(e, drone, normAim);
@@ -2441,17 +2515,18 @@ void handleBlackHolePull(iwEnv *e, projectileEntity *projectile) {
             magnitude *= DRONE_SHIELD_EXPLOSION_REDUCTION;
         }
         const b2Vec2 force = b2MulSV(magnitude, direction);
+        const physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = BLACK_HOLE_WEAPON};
 
         if (entityTypeIsWall(ent->type)) {
             wallEntity *wall = ent->entity;
             if (wall->isFloating) {
-                applyTrackedForce(e, wall->bodyID, wall->physicsTracking, force, projectile->droneIdx);
+                applyTrackedForce(e, wall->bodyID, wall->physicsTracking, force, projectile->droneIdx, source);
             } else {
                 b2Body_ApplyForce(wall->bodyID, force, output.pointB, true);
             }
         } else if (ent->type == DRONE_ENTITY) {
             droneEntity *drone = ent->entity;
-            applyTrackedForce(e, drone->bodyID, drone->physicsTracking, force, projectile->droneIdx);
+            applyTrackedForce(e, drone->bodyID, drone->physicsTracking, force, projectile->droneIdx, source);
         } else {
             b2Body_ApplyForceToCenter(bodyID, force, true);
         }
@@ -2792,6 +2867,8 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
     projectileEntity *projectile = proj->entity;
     projectile->contacts++;
 
+    const physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = projectile->weaponInfo->type};
+
     // e (shape B in the collision) will be NULL if it's another
     // projectile that was just destroyed
     if (ent == NULL || ent->type == PROJECTILE_ENTITY) {
@@ -2822,7 +2899,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
                 hitImpulse = b2Neg(hitImpulse);
             }
             b2Body_ApplyLinearImpulseToCenter(wall->bodyID, hitImpulse, true);
-            trackImpulse(e, wall->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), projectile->droneIdx);
+            trackImpulse(e, wall->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), projectile->droneIdx, source);
         }
 
         if (ent->type == BOUNCY_WALL_ENTITY) {
@@ -2866,7 +2943,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             }
 
             b2Body_ApplyLinearImpulseToCenter(hitDrone->bodyID, hitImpulse, true);
-            trackImpulse(e, hitDrone->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), projectile->droneIdx);
+            trackImpulse(e, hitDrone->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), projectile->droneIdx, source);
             hitStrength = b2AbsFloat(b2Length(hitImpulse));
         }
 
@@ -3029,8 +3106,9 @@ void handleContactEvents(iwEnv *e) {
                 const b2Manifold manifold = b2Contact_GetData(event->contactId).manifold;
                 ASSERT(manifold.pointCount == 1);
                 b2Vec2 hitImpulse = b2MulSV(manifold.points[0].normalImpulse * (1.0f + DRONE_RESTITUTION), manifold.normal);
-                trackImpulse(e, drone2->physicsTracking, hitImpulse, drone1->idx);
-                trackImpulse(e, drone1->physicsTracking, b2Neg(hitImpulse), drone2->idx);
+                const physicsSource source = {.type = DRONE_PHYSICS};
+                trackImpulse(e, drone2->physicsTracking, hitImpulse, drone1->idx, source);
+                trackImpulse(e, drone1->physicsTracking, b2Neg(hitImpulse), drone2->idx, source);
                 // TODO: continue here?
             }
         }

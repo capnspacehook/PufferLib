@@ -272,6 +272,22 @@ typedef struct dronePieceEntity {
     uint16_t lifetime;
 } dronePieceEntity;
 
+enum physicsType {
+    INVALID_PHYSICS,
+    MOVEMENT_PHYSICS,
+    RECOIL_PHYSICS,
+    BURST_PHYSICS,
+    PROJECTILE_PHYSICS,
+    EXPLOSION_PHYSICS,
+    DRONE_PHYSICS,
+};
+#define NUM_PHYSICS_TYPES (DRONE_PHYSICS + 1)
+
+typedef struct physicsSource {
+    enum physicsType type;
+    enum weaponType weapon;
+} physicsSource;
+
 typedef struct physicsStepInfo {
     uint8_t srcIdx;
     b2Vec2 impulse;
@@ -282,6 +298,7 @@ typedef struct physicsStepInfo {
     bool bounce;
     b2Vec2 normal;
     float restitution;
+    physicsSource source;
     uint16_t step;
 } physicsStepInfo;
 
@@ -322,6 +339,7 @@ typedef struct droneEntity {
 
     CC_Array *physicsTracking;
     int8_t killedBy;
+    physicsSource killSource;
     bool killed[_MAX_DRONES];
 
     shieldEntity *shield;
