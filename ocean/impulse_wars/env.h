@@ -707,7 +707,7 @@ void setupEnv(iwEnv *e) {
     e->easyEp = e->easyEpProb > 0.0f && randFloat(&e->rng, 0.0f, 1.0f) < e->easyEpProb;
 
     int8_t mapIdx = e->pinnedMapIdx;
-    if (e->easyEp) {
+    if (e->easyEp && e->numAgents != e->numDrones) {
         mapIdx = EASY_EP_MAP_IDX;
     } else if (e->pinnedMapIdx == -1) {
         uint8_t firstMap = 0;
