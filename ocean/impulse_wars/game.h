@@ -344,10 +344,14 @@ uint8_t cellOffsets[8][2] = {
 // will be returned
 bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos, int8_t quad) {
     uint8_t checkedCells[BITNSLOTS(MAX_CELLS)] = {0};
-    const size_t nCells = e->numCells - 1;
     uint16_t attempts = 0;
     bool laxDroneDistanceChecks = false;
     float minSpawnDistance = MIN_SPAWN_DISTANCE;
+
+    size_t nCells = e->numCells - 1;
+    if (quad != -1) {
+        nCells = nCells / 4;
+    }
 
     while (true) {
         if (attempts == nCells) {
