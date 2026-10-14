@@ -789,7 +789,7 @@ static void weaponExplosion(const enum weaponType type, b2ExplosionDef *explosio
         explosionDef->radius = 7.5f;
         // will typically be closer to 45 with projectile velocity
         // factored in
-        explosionDef->impulsePerLength = 10.0f;
+        explosionDef->impulsePerLength = 15.0f;
         return;
     case MINE_LAUNCHER_WEAPON:
         explosionDef->radius = 15.0f;
@@ -797,7 +797,7 @@ static void weaponExplosion(const enum weaponType type, b2ExplosionDef *explosio
         return;
     case NUKE_WEAPON:
         explosionDef->radius = 35.0f;
-        explosionDef->impulsePerLength = 300.0f;
+        explosionDef->impulsePerLength = 350.0f;
         return;
     default:
         ERRORF("unknown weapon type %d for projectile explosion", type);

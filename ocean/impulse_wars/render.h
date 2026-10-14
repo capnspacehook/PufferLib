@@ -1510,7 +1510,7 @@ void renderDroneAimGuide(const iwEnv *e, const droneEntity *drone) {
 
 void renderDroneGuides(iwEnv *e, const droneEntity *drone, const bool ending) {
     // render thruster move guide
-    if (!b2VecEqual(drone->lastMove, b2Vec2_zero) && !ending) {
+    if (!b2Equal(drone->lastMove, b2Vec2_zero) && !ending) {
         const float moveMagnitude = b2Length(drone->lastMove);
         const float thrusterAngle = RAD2DEG * b2Atan2(-drone->lastMove.y, -drone->lastMove.x);
         const float flickerWidth = randFloat(&e->rng, -0.05f, 0.05f);

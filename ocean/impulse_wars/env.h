@@ -1108,7 +1108,7 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
 agentActions computeActions(iwEnv *e, droneEntity *drone, const agentActions *manualActions) {
     const agentActions actions = _computeActions(e, drone, manualActions);
     drone->lastMove = actions.move;
-    if (!b2VecEqual(actions.aim, b2Vec2_zero)) {
+    if (!b2Equal(actions.aim, b2Vec2_zero)) {
         drone->lastAim = actions.aim;
     }
     return actions;
@@ -1280,7 +1280,7 @@ bool stepPhysicsFrame(iwEnv *e, const agentActions stepActions[], int8_t *winner
         } else if (drone->chargingBurst) {
             droneBurst(e, drone);
         }
-        if (!b2VecEqual(actions.move, b2Vec2_zero)) {
+        if (!b2Equal(actions.move, b2Vec2_zero)) {
             droneMove(e, drone, actions.move);
         }
         droneBrake(e, drone, actions.brake);

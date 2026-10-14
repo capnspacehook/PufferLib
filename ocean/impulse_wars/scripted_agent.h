@@ -55,7 +55,7 @@ float castCircleCallback(b2ShapeId shapeId, b2Vec2 point, b2Vec2 normal, float f
     // these parameters are required by the callback signature
     MAYBE_UNUSED(point);
     MAYBE_UNUSED(normal);
-    if (!b2Shape_IsValid(shapeId) || (fraction == 0.0f && b2VecEqual(normal, b2Vec2_zero))) {
+    if (!b2Shape_IsValid(shapeId) || (fraction == 0.0f && b2Equal(normal, b2Vec2_zero))) {
         // skip this shape if it isn't valid or this is an initial overlap
         return -1.0f;
     }
@@ -112,7 +112,7 @@ bool safeToFireMoving(iwEnv *e, const droneEntity *drone, const b2Vec2 direction
     const float recoilSpeed = -drone->weaponInfo->recoilMagnitude * DRONE_INV_MASS;
     const b2Vec2 recoil = b2MulSV(recoilSpeed, direction);
     b2Vec2 recoilPos = positionWithDamping(e, drone, recoil, DRONE_LINEAR_DAMPING, shotWait);
-    if (!b2VecEqual(move, b2Vec2_zero)) {
+    if (!b2Equal(move, b2Vec2_zero)) {
         const float moveDistance = forcedDistance(DRONE_MOVE_MAGNITUDE * DRONE_INV_MASS, DRONE_LINEAR_DAMPING, shotWait * e->deltaTime);
         recoilPos = b2MulAdd(recoilPos, moveDistance, move);
     }
@@ -460,7 +460,7 @@ b2Vec2 predictDronePos(const droneEntity *drone, const b2Vec2 move, const b2Vec2
     const float damping = droneDamping(drone);
     const b2Vec2 vel = b2Add(drone->velocity, deltaVel);
     b2Vec2 pos = b2MulAdd(drone->pos, dampedTime(damping, time), vel);
-    if (!b2VecEqual(move, b2Vec2_zero)) {
+    if (!b2Equal(move, b2Vec2_zero)) {
         pos = b2MulAdd(pos, forcedDistance(DRONE_MOVE_MAGNITUDE * DRONE_INV_MASS, damping, time), move);
     }
     return pos;
@@ -845,7 +845,7 @@ void moveTo(botCtx *c, agentActions *actions, const b2Vec2 dstPos) {
             botEvent(c, BOT_EVENT_DYNAMIC_PATH_FAILED);
         }
     }
-    if (b2VecEqual(moveDir, b2Vec2_zero)) {
+    if (b2Equal(moveDir, b2Vec2_zero)) {
         return;
     }
     actions->move = b2Normalize(b2Add(actions->move, moveDir));
@@ -987,7 +987,7 @@ void handleWallProximityVelocity(botCtx *c, const b2DistanceOutput *output, agen
     const droneEntity *drone = c->drone;
     const float distance = output->distance;
     b2Vec2 wallDirection = output->normal;
-    if (distance == 0.0f || b2VecEqual(wallDirection, b2Vec2_zero)) {
+    if (distance == 0.0f || b2Equal(wallDirection, b2Vec2_zero)) {
         wallDirection = b2Normalize(b2Sub(output->pointB, drone->pos));
     }
     const float approachSpeed = max(b2Dot(drone->velocity, wallDirection), 0.0f);
@@ -1019,7 +1019,7 @@ void steerForClearance(botCtx *c, agentActions *actions) {
     if (c->numHazards == 0) {
         return;
     }
-    const b2Vec2 move = b2VecEqual(actions->move, b2Vec2_zero) ? b2Vec2_zero : b2Normalize(actions->move);
+    const b2Vec2 move = b2Equal(actions->move, b2Vec2_zero) ? b2Vec2_zero : b2Normalize(actions->move);
     const float current = hazardClearance(c, predictDronePos(c->drone, move, b2Vec2_zero, HAZARD_PREDICT_TIME));
     if (current >= HAZARD_SAFE_CLEARANCE) {
         return;
@@ -1034,7 +1034,7 @@ void steerForClearance(botCtx *c, agentActions *actions) {
             bestMove = dir;
         }
     }
-    if (!b2VecEqual(bestMove, move)) {
+    if (!b2Equal(bestMove, move)) {
         botEvent(c, BOT_EVENT_CLEARANCE_STEER);
     }
     actions->move = bestMove;
@@ -1526,10 +1526,10 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
                 }
 
                 const b2Vec2 droneDirection = b2Normalize(drone->velocity);
-                if (b2VecEqual(actions.move, b2Vec2_zero)) {
+                if (b2Equal(actions.move, b2Vec2_zero)) {
                     actions.move = b2MulSV(-1.0f, droneDirection);
                 }
-                if (b2VecEqual(actions.aim, b2Vec2_zero) && weaponSafeForMovement(drone)) {
+                if (b2Equal(actions.aim, b2Vec2_zero) && weaponSafeForMovement(drone)) {
                     actions.aim = droneDirection;
                     scriptedAgentShoot(drone, &actions);
                 }
@@ -1540,7 +1540,7 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
 
     // if we're close enough to a wall to need to shoot at it, don't
     // worry about enemies
-    if (!b2VecEqual(actions.aim, b2Vec2_zero)) {
+    if (!b2Equal(actions.aim, b2Vec2_zero)) {
         return actions;
     }
 
@@ -1588,7 +1588,7 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
 
     if (enemyDrone == NULL) {
         // fight recoil if we're not otherwise moving
-        if (b2VecEqual(actions.move, b2Vec2_zero) && droneSpeed >= STABILIZE_MOVE_SPEED) {
+        if (b2Equal(actions.move, b2Vec2_zero) && droneSpeed >= STABILIZE_MOVE_SPEED) {
             actions.move = b2MulSV(-1.0f, b2Normalize(drone->velocity));
         }
         return actions;
@@ -1654,12 +1654,12 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
         }
     }
 
-    if (velocityWalls && !b2VecEqual(actions.move, b2Vec2_zero)) {
+    if (velocityWalls && !b2Equal(actions.move, b2Vec2_zero)) {
         steerForClearance(&c, &actions);
     }
 
     // fight recoil if we're not otherwise moving
-    if (b2VecEqual(actions.move, b2Vec2_zero) && droneSpeed >= STABILIZE_MOVE_SPEED) {
+    if (b2Equal(actions.move, b2Vec2_zero) && droneSpeed >= STABILIZE_MOVE_SPEED) {
         actions.move = b2MulSV(-1.0f, b2Normalize(drone->velocity));
     }
 

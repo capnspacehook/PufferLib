@@ -116,6 +116,7 @@ typedef struct mapEntry {
 
     mapBounds bounds;
     mapBounds spawnQuads[4];
+    uint16_t quadCells;
     bool *droneSpawns;
     float *packedLayout;
     nearWall *nearestWalls;

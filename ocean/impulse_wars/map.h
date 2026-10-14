@@ -351,9 +351,9 @@ static mapEntry siegeMap = {
 
 static const char pinballLayout[] = {
     'B','B','B','B','B','B','B','B','D','D','D','D','D','B','B','B','B','B','B','B','B',
-    'B','D','D','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','D','D','B',
+    'B','D','D','D','O','O','O','O','O','O','O','O','O','O','O','O','O','D','D','D','B',
     'B','D','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','D','B',
-    'B','O','O','O','O','O','O','O','B','O','O','O','B','O','O','O','O','O','O','O','B',
+    'B','D','O','O','O','O','O','O','B','O','O','O','B','O','O','O','O','O','O','D','B',
     'B','O','O','O','B','O','O','O','O','O','B','O','O','O','O','O','B','O','O','O','B',
     'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
     'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
@@ -367,9 +367,9 @@ static const char pinballLayout[] = {
     'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
     'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
     'B','O','O','O','B','O','O','O','O','O','B','O','O','O','O','O','B','O','O','O','B',
-    'B','O','O','O','O','O','O','O','B','O','O','O','B','O','O','O','O','O','O','O','B',
+    'B','D','O','O','O','O','O','O','B','O','O','O','B','O','O','O','O','O','O','D','B',
     'B','D','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','D','B',
-    'B','D','D','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','D','D','B',
+    'B','D','D','D','O','O','O','O','O','O','O','O','O','O','O','O','O','D','D','D','B',
     'B','B','B','B','B','B','B','B','D','D','D','D','D','B','B','B','B','B','B','B','B',
 };
 
@@ -387,7 +387,7 @@ static mapEntry pinballMap = {
 };
 
 static const char moatLayout[] = {
-    'W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W',
+    'W','W','W','W','W','W','W','W','W','W','D','D','D','W','W','W','W','W','W','W','W','W','W',
     'W','B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B','W',
     'W','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','W',
     'W','O','O','O','O','D','D','D','D','B','O','O','O','B','D','D','D','D','O','O','O','O','W',
@@ -395,9 +395,9 @@ static const char moatLayout[] = {
     'W','O','O','O','O','D','O','O','O','O','O','O','O','O','O','O','O','D','O','O','O','O','W',
     'W','O','O','O','O','D','O','O','w','O','O','O','O','O','w','O','O','D','O','O','O','O','W',
     'W','O','O','O','O','B','O','O','O','O','O','O','O','O','O','O','O','B','O','O','O','O','W',
-    'W','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','W',
-    'W','O','O','O','O','O','O','O','O','O','O','W','O','O','O','O','O','O','O','O','O','O','W',
-    'W','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','W',
+    'D','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','D',
+    'D','O','O','O','O','O','O','O','O','O','O','W','O','O','O','O','O','O','O','O','O','O','D',
+    'D','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','D',
     'W','O','O','O','O','B','O','O','O','O','O','O','O','O','O','O','O','B','O','O','O','O','W',
     'W','O','O','O','O','D','O','O','w','O','O','O','O','O','w','O','O','D','O','O','O','O','W',
     'W','O','O','O','O','D','O','O','O','O','O','O','O','O','O','O','O','D','O','O','O','O','W',
@@ -405,7 +405,7 @@ static const char moatLayout[] = {
     'W','O','O','O','O','D','D','D','D','B','O','O','O','B','D','D','D','D','O','O','O','O','W',
     'W','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','W',
     'W','B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B','W',
-    'W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W',
+    'W','W','W','W','W','W','W','W','W','W','D','D','D','W','W','W','W','W','W','W','W','W','W',
 };
 
 static mapEntry moatMap = {
@@ -423,7 +423,6 @@ static mapEntry moatMap = {
 
 static const char hourglassLayout[] = {
     'B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B',
-    'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
     'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
     'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
     'B','O','O','O','O','O','O','O','O','O','O','O','O','W','O','O','O','O','B',
@@ -445,14 +444,13 @@ static const char hourglassLayout[] = {
     'B','O','O','O','O','W','O','O','O','O','O','O','O','O','O','O','O','O','B',
     'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
     'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
-    'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
     'B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B',
 };
 
 static mapEntry hourglassMap = {
     .layout = hourglassLayout,
     .columns = 19,
-    .rows = 25,
+    .rows = 23,
     .randFloatingStandardWalls = 2,
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 2,
@@ -506,7 +504,7 @@ static const char cavernLayout[] = {
     'W','W','W','O','O','O','O','O','O','O','O','O','O','O','D','D','O','O','O','O','O','W','W',
     'W','W','W','W','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','W',
     'W','W','D','O','O','O','O','O','O','O','O','W','O','O','O','O','O','O','O','O','O','O','W',
-    'W','O','O','O','O','O','O','O','W','W','W','O','W','W','W','O','O','O','O','O','O','O','W',
+    'W','O','O','O','O','O','O','O','W','W','W','W','W','W','W','O','O','O','O','O','O','O','W',
     'W','O','O','O','O','O','O','O','O','O','O','W','O','O','O','O','O','O','O','O','D','W','W',
     'W','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','W','W','W','W',
     'W','W','O','O','O','O','O','D','D','O','O','O','O','O','O','O','O','O','O','O','W','W','W',
@@ -774,6 +772,21 @@ void computeMapBoundsAndQuadrants(iwEnv *e, mapEntry *map) {
             .y = map->bounds.max.y - WALL_THICKNESS,
         }
     };
+
+    // count the cells overlapping each quadrant, treating its bounds as
+    // half open since a position exactly on the max edge is vanishingly rare
+    const float halfWidth = ((float)map->columns * WALL_THICKNESS) / 2.0f;
+    const float halfHeight = ((float)map->rows * WALL_THICKNESS) / 2.0f;
+    map->quadCells = UINT16_MAX;
+    for (uint8_t i = 0; i < 4; i++) {
+        const mapBounds q = map->spawnQuads[i];
+        const int16_t firstCol = (int16_t)floorf((q.min.x + halfWidth) / WALL_THICKNESS);
+        const int16_t lastCol = (int16_t)ceilf((q.max.x + halfWidth) / WALL_THICKNESS) - 1;
+        const int16_t firstRow = (int16_t)floorf((q.min.y + halfHeight) / WALL_THICKNESS);
+        const int16_t lastRow = (int16_t)ceilf((q.max.y + halfHeight) / WALL_THICKNESS) - 1;
+        const uint16_t cells = (lastCol - firstCol + 1) * (lastRow - firstRow + 1);
+        map->quadCells = min(map->quadCells, cells);
+    }
 }
 
 bool posValidDroneSpawnPoint(const iwEnv *e, const b2Vec2 pos) {

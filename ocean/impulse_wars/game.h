@@ -350,7 +350,7 @@ bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos,
 
     size_t nCells = e->numCells - 1;
     if (quad != -1) {
-        nCells = nCells / 4;
+        nCells = e->map->quadCells;
     }
 
     while (true) {
@@ -1158,7 +1158,7 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
         const uint8_t srcIdx = physicsStep->srcIdx;
         const b2Vec2 invForce = b2MulSV(invMass, physicsStep->force);
         const b2Vec2 stepContrib = b2MulAdd(b2MulSV(invMass, physicsStep->impulse), e->deltaTime, invForce);
-        if (b2VecEqual(stepContrib, b2Vec2_zero)) {
+        if (b2Equal(stepContrib, b2Vec2_zero)) {
             continue;
         }
         contrib[srcIdx] = b2Add(contrib[srcIdx], stepContrib);
@@ -1186,7 +1186,7 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
     int8_t killer = -1;
     for (uint8_t i = 0; i < e->numDrones; i++) {
         DEBUG_LOGF("---\n> src drone contrib %d %f (%f, %f)", i, b2Length(contrib[i]), contrib[i].x, contrib[i].y);
-        if (b2VecEqual(contrib[i], b2Vec2_zero)) {
+        if (b2Equal(contrib[i], b2Vec2_zero)) {
             continue;
         }
 
@@ -1299,11 +1299,64 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     drone->lastVelocity = b2Vec2_zero;
 }
 
+int8_t mapQuad(const iwEnv *e, const b2Vec2 pos) {
+    return (int8_t)(pos.x >= 0.0f) + 2 * (int8_t)(pos.y >= 0.0f);
+}
+
 bool respawnDrone(iwEnv *e, droneEntity *drone) {
-    b2Vec2 pos;
-    if (!findOpenPos(e, DRONE_SHAPE, &pos, -1)) {
-        return false;
+    b2Vec2 pos = b2Vec2_zero;
+    uint8_t deadDrones = 0;
+    uint8_t openQuads = 4;
+    int8_t quads[4];
+
+    for (uint8_t i = 0; i < 4; i++) {
+        quads[i] = i;
     }
+
+    // attempt to respawn the drone in a different part of the map than
+    // living drones
+    for (uint8_t i = 0; i < e->numDrones; i++) {
+        if (i == drone->idx) {
+            continue;
+        }
+
+        const droneEntity *otherDrone = safe_array_get_at(e->drones, i);
+        if (otherDrone->dead) {
+            deadDrones++;
+            continue;
+        }
+        const int8_t quad = mapQuad(e, otherDrone->pos);
+        if (quads[quad] != -1) {
+            openQuads--;
+            quads[quad] = -1;
+        }
+    }
+
+    // if all drones are dead just pick a random position
+    if (deadDrones == e->numDrones - 1 || openQuads == 0) {
+        if (!findOpenPos(e, DRONE_SHAPE, &pos, -1)) {
+            return false;
+        }
+    } else {
+        bool foundPos = false;
+        shuffle(&e->rng, quads, 4);
+        for (uint8_t i = 0; i < 4; i++) {
+            if (quads[i] == -1) {
+                continue;
+            }
+            if (findOpenPos(e, DRONE_SHAPE, &pos, quads[i])) {
+                foundPos = true;
+                break;
+            }
+        }
+        // no open spots in open quads, search the whole map
+        if (!foundPos) {
+            if (!findOpenPos(e, DRONE_SHAPE, &pos, -1)) {
+                return false;
+            }
+        }
+    }
+
     b2Body_SetTransform(drone->bodyID, pos, b2Rot_identity);
     b2Body_Enable(drone->bodyID);
     b2Body_SetLinearDamping(drone->bodyID, DRONE_LINEAR_DAMPING);
@@ -1606,7 +1659,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     }
     // if the direction is zero, the magnitude cannot be calculated
     // correctly so set the direction randomly
-    if (b2VecEqual(direction, b2Vec2_zero)) {
+    if (b2Equal(direction, b2Vec2_zero)) {
         direction.x = randFloat(&ctx->e->rng, -1.0f, 1.0f);
         direction.y = randFloat(&ctx->e->rng, -1.0f, 1.0f);
         direction = b2Normalize(direction);
@@ -2221,7 +2274,7 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
     drone->weaponCharge = 0.0f;
 
     b2Vec2 normAim = drone->lastAim;
-    if (!b2VecEqual(aim, b2Vec2_zero)) {
+    if (!b2Equal(aim, b2Vec2_zero)) {
         normAim = b2Normalize(aim);
     }
     ASSERT_VEC_NORMALIZED(normAim);

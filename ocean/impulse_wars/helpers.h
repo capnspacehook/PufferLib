@@ -136,8 +136,16 @@ static inline void *safe_array_get_at(const CC_Array *const array, size_t index)
     return val;
 }
 
-static inline bool b2VecEqual(const b2Vec2 v1, const b2Vec2 v2) {
-    return v1.x == v2.x && v1.y == v2.y;
+static inline bool b2Equal(const b2Vec2 a, const b2Vec2 b) {
+    return a.x == b.x && a.y == b.y;
+}
+
+bool b2LtEq(const b2Vec2 a, const b2Vec2 b) {
+    return a.x <= b.x && a.y <= b.y;
+}
+
+bool b2GtEq(const b2Vec2 a, const b2Vec2 b) {
+    return a.x >= b.x && a.y >= b.y;
 }
 
 static inline float randFloat(unsigned int *state, const float min, const float max) {
@@ -147,6 +155,15 @@ static inline float randFloat(unsigned int *state, const float min, const float 
 
 static inline int randInt(unsigned int *state, const int min, const int max) {
     return min + rand_r(state) % (max - min + 1);
+}
+
+static inline void shuffle(unsigned int *state, int8_t *a, uint8_t len) {
+    for (uint8_t i = len - 1; i > 0; i--) {
+        const uint8_t j = randInt(state, 0, i);
+        const int8_t t = a[i];
+        a[i] = a[j];
+        a[j] = t;
+    }
 }
 
 static inline float logBasef(const float v, const float b) {
