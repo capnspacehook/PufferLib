@@ -490,6 +490,68 @@ enum botPolicy {
     BOT_SCRIPTED = 1,
 };
 
+// scripted bot behaviors, toggled per drone so variants of the bot can be
+// played against each other in the same env (see bot_tournament.c)
+enum botFeature {
+    BOT_FEAT_AMMO_RESERVE = 1 << 0,
+    BOT_FEAT_PICKUP_SCORE = 1 << 1,
+    BOT_FEAT_PROJ_DEFENSE = 1 << 2,
+    BOT_FEAT_FLAK_RANGE = 1 << 3,
+    BOT_FEAT_AIM = 1 << 4,
+    BOT_FEAT_WALL_AVOID = 1 << 5,
+    BOT_FEAT_BURST = 1 << 6,
+    BOT_FEAT_BURST_BOOST = 1 << 7,
+    BOT_FEAT_KILL_GEOMETRY = 1 << 8,
+    BOT_FEAT_SNIPER_DODGE = 1 << 9,
+    BOT_FEAT_ESCAPE_FIRE = 1 << 10,
+    BOT_FEAT_LONG_SHOTS = 1 << 11,
+    BOT_FEAT_SMART_RESERVE = 1 << 12,
+};
+#define BOT_FEAT_ALL 0x1FFF
+
+// how many cells ahead along a planned route the scripted bot remembers
+#define BOT_PATH_WAYPOINTS 4
+
+// per drone scripted bot state that persists between actions
+typedef struct scriptedBotState {
+    // pickup the bot committed to, and the step it gives up on it
+    int8_t pickupIdx;
+    uint16_t pickupUntilStep;
+    // side the bot sidesteps to when dodging, kept for a few steps to
+    // avoid oscillating
+    int8_t dodgeSide;
+    uint16_t dodgeUntilStep;
+    // last planned route, reused until the drone changes cells, the
+    // destination changes or it expires
+    int16_t pathSrcIdx;
+    int16_t pathDstIdx;
+    uint16_t pathUntilStep;
+    int16_t pathWaypoints[BOT_PATH_WAYPOINTS];
+    uint8_t pathNumWaypoints;
+} scriptedBotState;
+
+// counts of scripted bot decisions, for tuning the bot; never reset by
+// the env
+enum botEvent {
+    BOT_EVENT_THREAT,
+    BOT_EVENT_THREAT_SHOT,
+    BOT_EVENT_THREAT_BURST,
+    BOT_EVENT_SNIPER_DODGE,
+    BOT_EVENT_SNIPER_URGENT,
+    BOT_EVENT_BURST_START,
+    BOT_EVENT_BOOST_RELEASE,
+    BOT_EVENT_KILL_GEOMETRY,
+    BOT_EVENT_PICKUP_SKIPPED,
+    BOT_EVENT_AMMO_RESERVED,
+    BOT_EVENT_CLEARANCE_STEER,
+    BOT_EVENT_ESCAPE_FIRE,
+    BOT_EVENT_LONG_SHOT,
+    BOT_EVENT_SPARE_AMMO_MOVE,
+    BOT_EVENT_DYNAMIC_PATH,
+    BOT_EVENT_DYNAMIC_PATH_FAILED,
+    NUM_BOT_EVENTS,
+};
+
 struct Env {
     Agent agents[_MAX_DRONES];
     int num_agents;
@@ -506,6 +568,9 @@ struct Env {
 
     float botCLNoise;
     float botCLDecay;
+    uint32_t botFeatures[_MAX_DRONES];
+    scriptedBotState botState[_MAX_DRONES];
+    uint32_t botEvents[_MAX_DRONES][NUM_BOT_EVENTS];
 
     // easy episode curriculum: with probability easyEpProb an episode is
     // played on the empty map against a sitting duck with bursts disabled;

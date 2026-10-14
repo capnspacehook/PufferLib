@@ -3,6 +3,16 @@
 
 #include "game.h"
 
+// behaviors the scripted bot uses by default; see enum botFeature. These are
+// the ones that won paired bot tournaments (bot_tournament.c); the others
+// measured neutral or worse against scripted opponents and are kept for
+// evaluating against learned policies
+#ifndef BOT_FEATURES_DEFAULT
+#define BOT_FEATURES_DEFAULT                                                                                    \
+    (BOT_FEAT_AMMO_RESERVE | BOT_FEAT_PICKUP_SCORE | BOT_FEAT_FLAK_RANGE | BOT_FEAT_AIM | BOT_FEAT_WALL_AVOID | \
+     BOT_FEAT_ESCAPE_FIRE | BOT_FEAT_LONG_SHOTS)
+#endif
+
 static const uint8_t NUM_NEAR_WALLS = 3;
 static const uint8_t NUM_NEAR_PICKUPS = 1;
 
@@ -71,9 +81,16 @@ b2Vec2 positionWithDamping(const iwEnv *e, const droneEntity *drone, const b2Vec
     return b2MulAdd(drone->pos, distance, direction);
 }
 
+// displacement after time seconds from a constant force on a body with
+// linear damping, starting at rest
+static inline float forcedDistance(const float accel, const float linearDamping, const float time) {
+    return (accel / linearDamping) * (time - ((1.0f - expf(-linearDamping * time)) / linearDamping));
+}
+
 // returns true if drone can fire in the given direction without hitting
-// or getting too close to a death wall before it can fire again
-bool safeToFire(iwEnv *e, const droneEntity *drone, const b2Vec2 direction) {
+// or getting too close to a death wall before it can fire again; the
+// planned movement is included in the predicted position
+bool safeToFireMoving(iwEnv *e, const droneEntity *drone, const b2Vec2 direction, const b2Vec2 move) {
     // don't shoot shotgun point blank at walls, the shots will immediately
     // bounce back and send the drone flying uncontrollably
     if (drone->weaponInfo->type == SHOTGUN_WEAPON) {
@@ -94,7 +111,11 @@ bool safeToFire(iwEnv *e, const droneEntity *drone, const b2Vec2 direction) {
     }
     const float recoilSpeed = -drone->weaponInfo->recoilMagnitude * DRONE_INV_MASS;
     const b2Vec2 recoil = b2MulSV(recoilSpeed, direction);
-    const b2Vec2 recoilPos = positionWithDamping(e, drone, recoil, DRONE_LINEAR_DAMPING, shotWait);
+    b2Vec2 recoilPos = positionWithDamping(e, drone, recoil, DRONE_LINEAR_DAMPING, shotWait);
+    if (!b2VecEqual(move, b2Vec2_zero)) {
+        const float moveDistance = forcedDistance(DRONE_MOVE_MAGNITUDE * DRONE_INV_MASS, DRONE_LINEAR_DAMPING, shotWait * e->deltaTime);
+        recoilPos = b2MulAdd(recoilPos, moveDistance, move);
+    }
 
     addDebugPoint(e, b2MulAdd(drone->pos, 2.0f * DRONE_RADIUS, direction), 0.5f, WHITE);
 
@@ -125,6 +146,380 @@ bool safeToFire(iwEnv *e, const droneEntity *drone, const b2Vec2 direction) {
     return false;
 }
 
+bool safeToFire(iwEnv *e, const droneEntity *drone, const b2Vec2 direction) {
+    return safeToFireMoving(e, drone, direction, b2Vec2_zero);
+}
+
+// engagement range of the flak cannon with BOT_FEAT_FLAK_RANGE; flak
+// shells only arm after FLAK_CANNON_SAFE_DISTANCE so the default ideal range
+// leaves too small a window
+static const float FLAK_RANGE = FLAK_CANNON_SAFE_DISTANCE + 15.0f;
+
+// how many seconds of fighting a weapon pickup is worth, for BOT_FEAT_PICKUP_SCORE
+static const float botWeaponValue[_NUM_WEAPONS] = {
+    [STANDARD_WEAPON] = 0.0f,
+    [MACHINEGUN_WEAPON] = 4.0f,
+    [SNIPER_WEAPON] = 3.0f,
+    [SHOTGUN_WEAPON] = 3.5f,
+    [IMPLODER_WEAPON] = 2.0f,
+    [ACCELERATOR_WEAPON] = 2.5f,
+    [FLAK_CANNON_WEAPON] = 3.0f,
+    [MINE_LAUNCHER_WEAPON] = 1.5f,
+    [BLACK_HOLE_WEAPON] = 2.5f,
+    [NUKE_WEAPON] = 2.0f,
+};
+
+static const float PICKUP_TRAVEL_SPEED = 12.0f;
+static const float PICKUP_WALL_RISK_DISTANCE = 4.0f;
+static const float PICKUP_COMMIT_TIME = 3.0f;
+static const float HAZARD_CHECK_DISTANCE = 15.0f;
+static const float HAZARD_PREDICT_TIME = 0.5f;
+static const float HAZARD_SAFE_CLEARANCE = 2.5f;
+static const float MINE_HAZARD_MARGIN = 2.0f;
+static const float KILL_WALL_DISTANCE = 15.0f;
+static const float BURST_KILL_WALL_DISTANCE = 10.0f;
+static const float BURST_ENERGY_RESERVE = 0.5f;
+static const float BOOST_ENERGY_RESERVE = 0.4f;
+static const float THREAT_HORIZON = 2.0f;
+static const float NUKE_THREAT_HORIZON = 5.0f;
+static const float THREAT_BURST_TIME = 0.35f;
+static const float ACCELERATOR_THREAT_SPEED = 60.0f;
+static const float SNIPER_TELL_CHARGE = 0.5f;
+static const float SNIPER_URGENT_CHARGE = 0.8f;
+static const float DODGE_HOLD_TIME = 0.5f;
+static const float SNIPER_AIM_COS = 0.966f;
+// with BOT_FEAT_SMART_RESERVE this fraction of a special weapon's ammo is
+// saved for attacking, the rest may be spent closing distance
+static const float SMART_RESERVE_FRACTION = 0.5f;
+// cost of moving through a cell next to a death wall, in cells
+static const float PATH_DEATH_WALL_COST = 3.0f;
+// cost of pushing through a non death floating wall, in cells
+static const float PATH_FLOATING_WALL_COST = 4.0f;
+// clearance around floating walls when marking the cells they block
+static const float PATH_FLOATING_WALL_MARGIN = DRONE_RADIUS;
+// only plan around floating walls this close to the drone
+static const float PATH_FLOATING_WALL_CHECK_DISTANCE = 20.0f;
+// a planned route is reused for this long while the drone stays in the
+// same cell heading to the same destination
+static const float PATH_REPLAN_TIME = 0.5f;
+// how many cells ahead along the path the drone may head straight for
+static const uint8_t PATH_LOOKAHEAD = BOT_PATH_WAYPOINTS;
+
+typedef struct hazard {
+    // static walls are axis aligned boxes so their distance is cheap;
+    // floating walls need a shape distance query
+    const wallEntity *floatingWall;
+    b2Vec2 pos;
+    float radius;
+    bool isStaticWall;
+} hazard;
+
+#define MAX_HAZARDS 24
+
+typedef struct botCtx {
+    iwEnv *e;
+    droneEntity *drone;
+    uint32_t feats;
+    scriptedBotState *state;
+
+    droneEntity *enemy;
+    float enemyDistSq;
+    float enemyDist;
+    b2Vec2 enemyDir;
+    float idealRangeSquared;
+
+    bool hazardsFound;
+    hazard hazards[MAX_HAZARDS];
+    uint8_t numHazards;
+} botCtx;
+
+static inline bool botHas(const botCtx *c, const uint32_t feature) {
+    return (c->feats & feature) != 0;
+}
+
+static inline void botEvent(const botCtx *c, const enum botEvent event) {
+    c->e->botEvents[c->drone->idx][event]++;
+}
+
+static inline uint16_t botStep(const iwEnv *e) {
+    return e->episodeLength;
+}
+
+static inline float burstRadius(const float charge) {
+    return (DRONE_BURST_RADIUS_BASE * charge) + DRONE_BURST_RADIUS_MIN;
+}
+
+static inline float droneDamping(const droneEntity *drone) {
+    if (drone->braking) {
+        return DRONE_LINEAR_DAMPING * DRONE_BRAKE_DAMPING_COEF;
+    }
+    return DRONE_LINEAR_DAMPING;
+}
+
+// fraction of a velocity covered after time seconds with linear damping
+static inline float dampedTime(const float linearDamping, const float time) {
+    if (linearDamping == 0.0f) {
+        return time;
+    }
+    return (1.0f - expf(-linearDamping * time)) / linearDamping;
+}
+
+// time for a damped projectile to travel distance, or -1 if it never will
+static inline float dampedTravelTime(const float distance, const float speed, const float linearDamping) {
+    if (linearDamping == 0.0f) {
+        return distance / speed;
+    }
+    const float x = distance * linearDamping / speed;
+    if (x >= 0.99f) {
+        return -1.0f;
+    }
+    return -logf(1.0f - x) / linearDamping;
+}
+
+// smallest positive t where |relPos + relVel * t| = speed * t, or -1
+float interceptTime(const b2Vec2 relPos, const b2Vec2 relVel, const float speed) {
+    const float a = b2Dot(relVel, relVel) - SQUARED(speed);
+    const float b = 2.0f * b2Dot(relPos, relVel);
+    const float c = b2Dot(relPos, relPos);
+    if (fabsf(a) < 1e-6f) {
+        if (b >= 0.0f) {
+            return -1.0f;
+        }
+        return -c / b;
+    }
+    const float disc = SQUARED(b) - (4.0f * a * c);
+    if (disc < 0.0f) {
+        return -1.0f;
+    }
+    const float sq = sqrtf(disc);
+    const float t1 = (-b - sq) / (2.0f * a);
+    const float t2 = (-b + sq) / (2.0f * a);
+    float t = -1.0f;
+    if (t1 > 0.0f) {
+        t = t1;
+    }
+    if (t2 > 0.0f && (t < 0.0f || t2 < t)) {
+        t = t2;
+    }
+    return t;
+}
+
+// finds the direction to fire the current weapon so its projectile meets a
+// target moving with targetVel and targetDamping. Projectile damping and the
+// lateral shooter velocity projectiles inherit are included, which a closed
+// form intercept can't handle, so this iterates on the impact time starting
+// from the undamped solution. Returns false if the target can't be reached.
+bool interceptAim(const droneEntity *drone, const b2Vec2 targetPos, const b2Vec2 targetVel, const float targetDamping, b2Vec2 *aim, float *distance) {
+    const weaponInformation *weapon = drone->weaponInfo;
+    const float speed = weapon->initialSpeed;
+    // lateral velocity is added as an impulse scaled by density, so the
+    // resulting velocity only depends on the projectile's area
+    const float lateralCoef = DRONE_MOVE_AIM_COEF / (PI * SQUARED(weapon->radius));
+    float droneRadius = DRONE_RADIUS;
+    if (drone->shield != NULL) {
+        droneRadius = DRONE_SHIELD_RADIUS;
+    }
+    const float spawnOffset = droneRadius + (weapon->radius * 1.5f);
+
+    const b2Vec2 relPos = b2Sub(targetPos, drone->pos);
+    float t = interceptTime(relPos, targetVel, speed);
+    if (t < 0.0f) {
+        t = b2Length(relPos) / speed;
+    }
+    b2Vec2 dir = b2Normalize(relPos);
+    float dist = b2Length(relPos);
+    for (uint8_t i = 0; i < 4; i++) {
+        const b2Vec2 forward = b2MulSV(b2Dot(drone->velocity, dir), dir);
+        const b2Vec2 lateral = b2MulSV(lateralCoef, b2Sub(drone->velocity, forward));
+        const float projTime = dampedTime(weapon->damping, t);
+        const b2Vec2 predicted = b2MulAdd(targetPos, dampedTime(targetDamping, t), targetVel);
+        const b2Vec2 toPredicted = b2Sub(b2MulAdd(predicted, -projTime, lateral), drone->pos);
+        dist = b2Length(toPredicted);
+        if (dist < 1e-3f) {
+            break;
+        }
+        dir = b2MulSV(1.0f / dist, toPredicted);
+        const float newT = dampedTravelTime(max(dist - spawnOffset, 0.0f), speed, weapon->damping);
+        if (newT < 0.0f) {
+            return false;
+        }
+        t = newT;
+    }
+
+    *aim = dir;
+    *distance = dist;
+    return true;
+}
+
+// casts the current weapon's projectile along aim; returns true if it
+// reaches distance without hitting a wall, or first hits the target drone
+bool shotPathClear(const botCtx *c, const b2Vec2 aim, const float distance, const droneEntity *target) {
+    const droneEntity *drone = c->drone;
+    const b2Vec2 translation = b2MulSV(distance, aim);
+    const b2ShapeProxy cirProxy = b2MakeProxy(&drone->pos, 1, drone->weaponInfo->radius);
+    uint64_t mask = WALL_SHAPE | FLOATING_WALL_SHAPE;
+    if (target != NULL) {
+        mask |= DRONE_SHAPE;
+    }
+    const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = mask};
+
+    castCircleCtx ctx = {0};
+    b2World_CastShape(c->e->worldID, &cirProxy, translation, filter, castCircleCallback, &ctx);
+    if (!ctx.hit) {
+        return true;
+    }
+    const entity *ent = b2Shape_GetUserData(ctx.shapeID);
+    if (ent == NULL || ent->type != DRONE_ENTITY || target == NULL) {
+        return false;
+    }
+    const droneEntity *hitDrone = ent->entity;
+    return hitDrone->idx == target->idx;
+}
+
+// distance from a point to the closest point of a static wall
+static inline float staticWallDistance(const b2Vec2 wallPos, const b2Vec2 pos) {
+    const float halfExtent = WALL_THICKNESS / 2.0f;
+    const float dx = max(fabsf(pos.x - wallPos.x) - halfExtent, 0.0f);
+    const float dy = max(fabsf(pos.y - wallPos.y) - halfExtent, 0.0f);
+    return sqrtf(SQUARED(dx) + SQUARED(dy));
+}
+
+static float floatingWallDistance(const wallEntity *wall, const b2Vec2 pos) {
+    bool isCircle = false;
+    b2DistanceInput input;
+    input.proxyA = b2MakeProxy(&pos, 1, 0.0f);
+    input.proxyB = makeDistanceProxy(wall->ent, &isCircle);
+    input.transformA = b2Transform_identity;
+    input.transformB = entityTransform(wall->ent);
+    input.useRadii = false;
+    b2SimplexCache cache = {0};
+    return b2ShapeDistance(&input, &cache, NULL, 0).distance;
+}
+
+// collects death walls and enemy mines stuck to walls near the drone
+void findHazards(botCtx *c) {
+    if (c->hazardsFound) {
+        return;
+    }
+    c->hazardsFound = true;
+    iwEnv *e = c->e;
+    const droneEntity *drone = c->drone;
+
+    if (drone->mapCellIdx != -1) {
+        nearWall nearWalls[MAX_NEAREST_WALLS] = {0};
+        findNearWalls(e, drone, nearWalls, MAX_NEAREST_WALLS);
+        for (uint8_t i = 0; i < MAX_NEAREST_WALLS && c->numHazards < MAX_HAZARDS; i++) {
+            if (nearWalls[i].type != DEATH_WALL_ENTITY) {
+                continue;
+            }
+            c->hazards[c->numHazards++] = (hazard){.pos = nearWalls[i].pos, .isStaticWall = true};
+        }
+    }
+    for (uint8_t i = 0; i < cc_array_size(e->floatingWalls) && c->numHazards < MAX_HAZARDS; i++) {
+        const wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
+        if (wall->type != DEATH_WALL_ENTITY || b2DistanceSquared(wall->pos, drone->pos) > SQUARED(HAZARD_CHECK_DISTANCE)) {
+            continue;
+        }
+        c->hazards[c->numHazards++] = (hazard){.floatingWall = wall, .pos = wall->pos};
+    }
+    for (uint8_t i = 0; i < cc_array_size(e->projectiles) && c->numHazards < MAX_HAZARDS; i++) {
+        const projectileEntity *proj = safe_array_get_at(e->projectiles, i);
+        if (!proj->setMine || proj->droneIdx == drone->idx || b2DistanceSquared(proj->pos, drone->pos) > SQUARED(HAZARD_CHECK_DISTANCE + MINE_LAUNCHER_PROXIMITY_RADIUS)) {
+            continue;
+        }
+        c->hazards[c->numHazards++] = (hazard){.pos = proj->pos, .radius = MINE_LAUNCHER_PROXIMITY_RADIUS + MINE_HAZARD_MARGIN};
+    }
+}
+
+// distance from the drone's edge at pos to the closest hazard
+float hazardClearance(botCtx *c, const b2Vec2 pos) {
+    findHazards(c);
+    float droneRadius = DRONE_RADIUS;
+    if (c->drone->shield != NULL) {
+        droneRadius = DRONE_SHIELD_RADIUS;
+    }
+    float clearance = FLT_MAX;
+    for (uint8_t i = 0; i < c->numHazards; i++) {
+        const hazard *h = &c->hazards[i];
+        float dist;
+        if (h->isStaticWall) {
+            dist = staticWallDistance(h->pos, pos);
+        } else if (h->floatingWall != NULL) {
+            dist = floatingWallDistance(h->floatingWall, pos);
+        } else {
+            dist = b2Distance(h->pos, pos) - h->radius;
+        }
+        clearance = min(clearance, dist - droneRadius);
+    }
+    return clearance;
+}
+
+// where the drone will be after time seconds moving in direction move
+// with an optional extra velocity change
+b2Vec2 predictDronePos(const droneEntity *drone, const b2Vec2 move, const b2Vec2 deltaVel, const float time) {
+    const float damping = droneDamping(drone);
+    const b2Vec2 vel = b2Add(drone->velocity, deltaVel);
+    b2Vec2 pos = b2MulAdd(drone->pos, dampedTime(damping, time), vel);
+    if (!b2VecEqual(move, b2Vec2_zero)) {
+        pos = b2MulAdd(pos, forcedDistance(DRONE_MOVE_MAGNITUDE * DRONE_INV_MASS, damping, time), move);
+    }
+    return pos;
+}
+
+// finds the enemy's closest death wall; returns false if none is within maxDistance
+bool enemyDeathWall(botCtx *c, const float maxDistance, b2Vec2 *wallDir, float *wallDistance) {
+    iwEnv *e = c->e;
+    const droneEntity *enemy = c->enemy;
+    float best = maxDistance;
+    b2Vec2 bestPoint = b2Vec2_zero;
+    bool found = false;
+    if (enemy->mapCellIdx != -1) {
+        nearWall nearWalls[MAX_NEAREST_WALLS] = {0};
+        findNearWalls(e, enemy, nearWalls, MAX_NEAREST_WALLS);
+        const float halfExtent = WALL_THICKNESS / 2.0f;
+        for (uint8_t i = 0; i < MAX_NEAREST_WALLS; i++) {
+            if (nearWalls[i].type != DEATH_WALL_ENTITY) {
+                continue;
+            }
+            const float dist = staticWallDistance(nearWalls[i].pos, enemy->pos);
+            if (dist < best) {
+                best = dist;
+                bestPoint.x = fminf(fmaxf(enemy->pos.x, nearWalls[i].pos.x - halfExtent), nearWalls[i].pos.x + halfExtent);
+                bestPoint.y = fminf(fmaxf(enemy->pos.y, nearWalls[i].pos.y - halfExtent), nearWalls[i].pos.y + halfExtent);
+                found = true;
+            }
+        }
+    }
+    for (uint8_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
+        const wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
+        if (wall->type != DEATH_WALL_ENTITY || b2DistanceSquared(wall->pos, enemy->pos) > SQUARED(maxDistance + FLOATING_WALL_THICKNESS)) {
+            continue;
+        }
+        const b2DistanceOutput output = closestPoint(enemy->ent, wall->ent);
+        if (output.distance < best) {
+            best = output.distance;
+            bestPoint = output.pointB;
+            found = true;
+        }
+    }
+    if (!found) {
+        return false;
+    }
+    *wallDir = b2Normalize(b2Sub(bestPoint, enemy->pos));
+    *wallDistance = best;
+    return true;
+}
+
+// true if pushing the enemy away from the drone sends it toward a death wall
+bool killGeometryGood(botCtx *c, const float maxWallDistance) {
+    b2Vec2 wallDir;
+    float wallDistance;
+    if (!enemyDeathWall(c, maxWallDistance, &wallDir, &wallDistance)) {
+        return false;
+    }
+    return b2Dot(c->enemyDir, wallDir) > 0.5f;
+}
+
 bool weaponSafeForMovement(const droneEntity *drone) {
     switch (drone->weaponInfo->type) {
     case IMPLODER_WEAPON:
@@ -137,6 +532,30 @@ bool weaponSafeForMovement(const droneEntity *drone) {
     }
 }
 
+// special weapon ammo is saved for attacking instead of being spent on
+// recoil movement while an enemy is alive
+bool reservingAmmo(const botCtx *c) {
+    const droneEntity *drone = c->drone;
+    if (!botHas(c, BOT_FEAT_AMMO_RESERVE) || c->enemy == NULL || drone->ammo == INFINITE) {
+        return false;
+    }
+    // ammo above the reserve may be spent closing in on an enemy that's
+    // out of range
+    if (botHas(c, BOT_FEAT_SMART_RESERVE) && c->enemyDistSq > c->idealRangeSquared) {
+        const int8_t maxAmmo = weaponAmmo(c->e->defaultWeapon->type, drone->weaponInfo->type);
+        if (drone->ammo > maxAmmo * SMART_RESERVE_FRACTION) {
+            botEvent(c, BOT_EVENT_SPARE_AMMO_MOVE);
+            return false;
+        }
+    }
+    botEvent(c, BOT_EVENT_AMMO_RESERVED);
+    return true;
+}
+
+bool recoilMoveAllowed(const botCtx *c) {
+    return weaponSafeForMovement(c->drone) && !reservingAmmo(c);
+}
+
 void scriptedAgentShoot(const droneEntity *drone, agentActions *actions) {
     actions->shoot = true;
     if (drone->chargingWeapon && drone->weaponCharge == drone->weaponInfo->charge) {
@@ -144,7 +563,265 @@ void scriptedAgentShoot(const droneEntity *drone, agentActions *actions) {
     }
 }
 
-void moveTo(iwEnv *e, const droneEntity *drone, agentActions *actions, const b2Vec2 dstPos) {
+static bool segmentClear(const iwEnv *e, const b2Vec2 start, const b2Vec2 end, const float radius) {
+    const b2QueryFilter filter = {.categoryBits = DRONE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE};
+    const b2Vec2 translation = b2Sub(end, start);
+    if (radius == 0.0f) {
+        return !b2World_CastRayClosest(e->worldID, start, translation, filter).hit;
+    }
+    const b2ShapeProxy proxy = b2MakeProxy(&start, 1, radius);
+    castCircleCtx ctx = {0};
+    b2World_CastShape(e->worldID, &proxy, translation, filter, castCircleCallback, &ctx);
+    return !ctx.hit;
+}
+
+// head for the furthest of the next waypoints that can be reached in a
+// straight line
+static bool pathDirection(const botCtx *c, const int16_t *waypoints, const uint8_t numWaypoints, b2Vec2 *moveDir) {
+    if (numWaypoints == 0) {
+        return false;
+    }
+    const iwEnv *e = c->e;
+    const droneEntity *drone = c->drone;
+    b2Vec2 target = e->cells[waypoints[0]].pos;
+    for (uint8_t k = 1; k < numWaypoints; k++) {
+        const b2Vec2 candidate = e->cells[waypoints[k]].pos;
+        if (!segmentClear(e, drone->pos, candidate, DRONE_RADIUS)) {
+            break;
+        }
+        target = candidate;
+    }
+    const b2Vec2 toTarget = b2Sub(target, drone->pos);
+    if (b2LengthSquared(toTarget) < 1e-4f) {
+        return false;
+    }
+    *moveDir = b2Normalize(toTarget);
+    return true;
+}
+
+typedef struct pathNode {
+    float cost;
+    uint16_t cellIdx;
+} pathNode;
+
+static void pathHeapPush(pathNode *heap, uint16_t *size, const pathNode node) {
+    uint16_t i = (*size)++;
+    while (i > 0) {
+        const uint16_t parent = (i - 1) / 2;
+        if (heap[parent].cost <= node.cost) {
+            break;
+        }
+        heap[i] = heap[parent];
+        i = parent;
+    }
+    heap[i] = node;
+}
+
+static pathNode pathHeapPop(pathNode *heap, uint16_t *size) {
+    const pathNode top = heap[0];
+    const pathNode last = heap[--(*size)];
+    uint16_t i = 0;
+    while (true) {
+        uint16_t child = (2 * i) + 1;
+        if (child >= *size) {
+            break;
+        }
+        if (child + 1 < *size && heap[child + 1].cost < heap[child].cost) {
+            child++;
+        }
+        if (last.cost <= heap[child].cost) {
+            break;
+        }
+        heap[i] = heap[child];
+        i = child;
+    }
+    heap[i] = last;
+    return top;
+}
+
+static inline float octileDistance(const int16_t col, const int16_t row, const int16_t dstCol, const int16_t dstRow) {
+    const float dx = fabsf((float)(col - dstCol));
+    const float dy = fabsf((float)(row - dstRow));
+    return fmaxf(dx, dy) + (0.41421356f * fminf(dx, dy));
+}
+
+static inline bool circleOverlapsCell(const b2Vec2 cellPos, const b2Vec2 pos, const float radius) {
+    const float halfExtent = WALL_THICKNESS / 2.0f;
+    const float dx = max(fabsf(pos.x - cellPos.x) - halfExtent, 0.0f);
+    const float dy = max(fabsf(pos.y - cellPos.y) - halfExtent, 0.0f);
+    return SQUARED(dx) + SQUARED(dy) < SQUARED(radius);
+}
+
+static bool floatingWallNear(const iwEnv *e, const droneEntity *drone) {
+    for (uint8_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
+        const wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
+        if (b2DistanceSquared(wall->pos, drone->pos) <= SQUARED(PATH_FLOATING_WALL_CHECK_DISTANCE)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// plans a route over the map grid that accounts for floating walls, which
+// the precomputed flow field doesn't know about, and avoids hugging death
+// walls. Returns false if no route was found.
+bool planPath(botCtx *c, const b2Vec2 dstPos, b2Vec2 *moveDir) {
+    iwEnv *e = c->e;
+    const droneEntity *drone = c->drone;
+    const uint8_t columns = e->map->columns;
+    const uint8_t rows = e->map->rows;
+    const uint16_t numCells = columns * rows;
+    const int16_t srcIdx = drone->mapCellIdx;
+    const int16_t dstIdx = entityPosToCellIdx(e, dstPos);
+    if (srcIdx == -1 || dstIdx == -1) {
+        return false;
+    }
+    scriptedBotState *state = c->state;
+    if (state->pathSrcIdx == srcIdx && state->pathDstIdx == dstIdx && botStep(e) < state->pathUntilStep) {
+        return pathDirection(c, state->pathWaypoints, state->pathNumWaypoints, moveDir);
+    }
+
+    bool blocked[MAX_CELLS];
+    float extraCost[MAX_CELLS];
+    for (uint16_t i = 0; i < numCells; i++) {
+        const entity *ent = e->cells[i].ent;
+        blocked[i] = ent != NULL && entityTypeIsWall(ent->type);
+        extraCost[i] = 0.0f;
+    }
+    for (uint16_t i = 0; i < numCells; i++) {
+        const entity *ent = e->cells[i].ent;
+        if (ent == NULL || ent->type != DEATH_WALL_ENTITY) {
+            continue;
+        }
+        const int16_t col = i % columns;
+        const int16_t row = i / columns;
+        for (int16_t dr = -1; dr <= 1; dr++) {
+            for (int16_t dc = -1; dc <= 1; dc++) {
+                const int16_t nc = col + dc, nr = row + dr;
+                if (nc >= 0 && nc < columns && nr >= 0 && nr < rows) {
+                    extraCost[nc + (nr * columns)] += PATH_DEATH_WALL_COST;
+                }
+            }
+        }
+    }
+    const float floatingRadius = (FLOATING_WALL_THICKNESS * 0.70710678f) + PATH_FLOATING_WALL_MARGIN;
+    for (uint8_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
+        const wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
+        const int16_t wallIdx = entityPosToCellIdx(e, wall->pos);
+        if (wallIdx == -1) {
+            continue;
+        }
+        const int16_t col = wallIdx % columns;
+        const int16_t row = wallIdx / columns;
+        for (int16_t dr = -2; dr <= 2; dr++) {
+            for (int16_t dc = -2; dc <= 2; dc++) {
+                const int16_t nc = col + dc, nr = row + dr;
+                if (nc < 0 || nc >= columns || nr < 0 || nr >= rows) {
+                    continue;
+                }
+                const uint16_t idx = nc + (nr * columns);
+                const b2Vec2 cellPos = e->cells[idx].pos;
+                if (wall->type == DEATH_WALL_ENTITY) {
+                    if (circleOverlapsCell(cellPos, wall->pos, floatingRadius)) {
+                        blocked[idx] = true;
+                    } else if (circleOverlapsCell(cellPos, wall->pos, floatingRadius + WALL_THICKNESS)) {
+                        extraCost[idx] += PATH_DEATH_WALL_COST;
+                    }
+                } else if (circleOverlapsCell(cellPos, wall->pos, floatingRadius)) {
+                    extraCost[idx] += PATH_FLOATING_WALL_COST;
+                }
+            }
+        }
+    }
+    // a floating wall may overlap the drone's own cell or the destination's,
+    // both need to stay reachable
+    blocked[srcIdx] = false;
+    blocked[dstIdx] = false;
+
+    float cost[MAX_CELLS];
+    int16_t prev[MAX_CELLS];
+    bool done[MAX_CELLS];
+    for (uint16_t i = 0; i < numCells; i++) {
+        cost[i] = FLT_MAX;
+        prev[i] = -1;
+        done[i] = false;
+    }
+    pathNode heap[(MAX_CELLS) * 8];
+    uint16_t heapSize = 0;
+    // A* with the octile distance, which never overestimates since
+    // extra costs are only ever added
+    const int16_t dstCol = dstIdx % columns;
+    const int16_t dstRow = dstIdx / columns;
+    cost[srcIdx] = 0.0f;
+    pathHeapPush(heap, &heapSize, (pathNode){.cost = octileDistance(srcIdx % columns, srcIdx / columns, dstCol, dstRow), .cellIdx = srcIdx});
+
+    static const int8_t dirCol[8] = {1, -1, 0, 0, 1, 1, -1, -1};
+    static const int8_t dirRow[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+    int16_t goalIdx = -1;
+    while (heapSize > 0) {
+        const pathNode node = pathHeapPop(heap, &heapSize);
+        const uint16_t u = node.cellIdx;
+        if (done[u]) {
+            continue;
+        }
+        done[u] = true;
+
+        if (u == dstIdx) {
+            goalIdx = u;
+            break;
+        }
+
+        const int16_t col = u % columns;
+        const int16_t row = u / columns;
+        for (uint8_t d = 0; d < 8; d++) {
+            const int16_t nc = col + dirCol[d], nr = row + dirRow[d];
+            if (nc < 0 || nc >= columns || nr < 0 || nr >= rows) {
+                continue;
+            }
+            const uint16_t v = nc + (nr * columns);
+            if (blocked[v] || done[v]) {
+                continue;
+            }
+            float step = 1.0f;
+            if (d >= 4) {
+                // don't cut corners between walls
+                if (blocked[nc + (row * columns)] || blocked[col + (nr * columns)]) {
+                    continue;
+                }
+                step = 1.41421356f;
+            }
+            const float newCost = cost[u] + step + extraCost[v];
+            if (newCost < cost[v]) {
+                cost[v] = newCost;
+                prev[v] = u;
+                pathHeapPush(heap, &heapSize, (pathNode){.cost = newCost + octileDistance(nc, nr, dstCol, dstRow), .cellIdx = v});
+            }
+        }
+    }
+    if (goalIdx == -1 || goalIdx == srcIdx) {
+        return false;
+    }
+
+    // walk back to the cells right after the drone's cell
+    int16_t path[MAX_CELLS];
+    uint16_t pathLen = 0;
+    for (int16_t i = goalIdx; i != srcIdx && i != -1; i = prev[i]) {
+        path[pathLen++] = i;
+    }
+    // path is reversed, keep the next few cells in order
+    state->pathNumWaypoints = 0;
+    for (uint8_t k = 1; k <= PATH_LOOKAHEAD && k <= pathLen; k++) {
+        state->pathWaypoints[state->pathNumWaypoints++] = path[pathLen - k];
+    }
+    state->pathSrcIdx = srcIdx;
+    state->pathDstIdx = dstIdx;
+    state->pathUntilStep = botStep(e) + (uint16_t)(PATH_REPLAN_TIME * e->frameRate);
+    return pathDirection(c, state->pathWaypoints, state->pathNumWaypoints, moveDir);
+}
+
+void moveTo(botCtx *c, agentActions *actions, const b2Vec2 dstPos) {
+    iwEnv *e = c->e;
+    const droneEntity *drone = c->drone;
     ASSERT(drone->mapCellIdx != -1);
     int16_t dstIdx = entityPosToCellIdx(e, dstPos);
     if (dstIdx == -1) {
@@ -153,15 +830,35 @@ void moveTo(iwEnv *e, const droneEntity *drone, agentActions *actions, const b2V
 
     // fully precomputed in initMaps; 8 means "no route"
     const uint8_t direction = e->map->paths[pathOffset(e, drone->mapCellIdx, dstIdx)];
-    if (direction >= 8) {
+    b2Vec2 moveDir = b2Vec2_zero;
+    if (direction < 8) {
+        moveDir = (b2Vec2){.x = discMoveToContMoveMap[0][direction], .y = discMoveToContMoveMap[1][direction]};
+    }
+    // the flow field only knows about static walls, so plan a route when
+    // floating walls are around
+    if (direction >= 8 || floatingWallNear(e, drone)) {
+        b2Vec2 planned;
+        if (planPath(c, dstPos, &planned)) {
+            botEvent(c, BOT_EVENT_DYNAMIC_PATH);
+            moveDir = planned;
+        } else {
+            botEvent(c, BOT_EVENT_DYNAMIC_PATH_FAILED);
+        }
+    }
+    if (b2VecEqual(moveDir, b2Vec2_zero)) {
         return;
     }
-    actions->move.x += discMoveToContMoveMap[0][direction];
-    actions->move.y += discMoveToContMoveMap[1][direction];
-    actions->move = b2Normalize(actions->move);
+    actions->move = b2Normalize(b2Add(actions->move, moveDir));
 
     const b2Vec2 invDirection = b2MulSV(-1.0f, actions->move);
-    if (!weaponSafeForMovement(drone) || !safeToFire(e, drone, invDirection)) {
+    if (!weaponSafeForMovement(drone) || reservingAmmo(c)) {
+        return;
+    }
+    if (botHas(c, BOT_FEAT_WALL_AVOID)) {
+        if (!safeToFireMoving(e, drone, invDirection, actions->move)) {
+            return;
+        }
+    } else if (!safeToFire(e, drone, invDirection)) {
         return;
     }
     actions->aim = invDirection;
@@ -227,6 +924,31 @@ bool shouldShootAtEnemy(iwEnv *e, const droneEntity *drone, const droneEntity *e
     return true;
 }
 
+// can the current weapon's projectile travel distance before it's destroyed
+bool shotReaches(const droneEntity *drone, const float distance) {
+    const float maxDistance = drone->weaponInfo->maxDistance;
+    return maxDistance == INFINITE || distance <= maxDistance;
+}
+
+// intercept aiming: solves for the firing direction and checks the
+// path of the actual shot rather than the line to the enemy's current
+// position
+bool shouldShootAtEnemyIntercept(botCtx *c, b2Vec2 *aim) {
+    const droneEntity *drone = c->drone;
+    const droneEntity *enemy = c->enemy;
+    if (drone->weaponInfo->type == SNIPER_WEAPON && enemy->shield != NULL) {
+        return false;
+    }
+    float distance;
+    if (!interceptAim(drone, enemy->pos, enemy->velocity, droneDamping(enemy), aim, &distance)) {
+        return false;
+    }
+    if (!safeToFire(c->e, drone, *aim)) {
+        return false;
+    }
+    return shotPathClear(c, *aim, distance + DRONE_RADIUS, enemy);
+}
+
 b2Vec2 predictiveAim(const droneEntity *drone, const droneEntity *enemyDrone, const float distanceSquared) {
     const float timeToImpact = sqrtf(distanceSquared) / drone->weaponInfo->initialSpeed;
     const b2Vec2 predictedPos = b2MulAdd(enemyDrone->pos, timeToImpact, enemyDrone->velocity);
@@ -241,6 +963,10 @@ void scriptedAgentBurst(const droneEntity *drone, agentActions *actions) {
     }
 }
 
+static inline bool canBurst(const droneEntity *drone) {
+    return drone->shield == NULL && !drone->energyFullyDepleted && drone->burstCooldown == 0.0f;
+}
+
 void handleWallProximity(iwEnv *e, const droneEntity *drone, const wallEntity *wall, const float distance, agentActions *actions) {
     // shoot to move away faster from a death wall if we're too close and it's safe
     const b2Vec2 wallDirection = b2Normalize(b2Sub(wall->pos, drone->pos));
@@ -252,6 +978,66 @@ void handleWallProximity(iwEnv *e, const droneEntity *drone, const wallEntity *w
     if (distance <= WALL_AVOID_DISTANCE) {
         actions->move = b2MulAdd(actions->move, -distance, wallDirection);
     }
+}
+
+// velocity aware wall avoidance: steer away from the closest point on the
+// wall, weighting closer and faster approaching walls more, and react to
+// walls further away when the drone couldn't stop in time
+void handleWallProximityVelocity(botCtx *c, const b2DistanceOutput *output, agentActions *actions) {
+    const droneEntity *drone = c->drone;
+    const float distance = output->distance;
+    b2Vec2 wallDirection = output->normal;
+    if (distance == 0.0f || b2VecEqual(wallDirection, b2Vec2_zero)) {
+        wallDirection = b2Normalize(b2Sub(output->pointB, drone->pos));
+    }
+    const float approachSpeed = max(b2Dot(drone->velocity, wallDirection), 0.0f);
+    const float brakingStop = approachSpeed / (DRONE_LINEAR_DAMPING * DRONE_BRAKE_DAMPING_COEF);
+    const float coastingStop = approachSpeed / DRONE_LINEAR_DAMPING;
+    const float urgency = 1.0f / max(distance, 0.25f);
+
+    // surviving is worth spending reserved ammo on
+    const bool canFire = botHas(c, BOT_FEAT_ESCAPE_FIRE) ? weaponSafeForMovement(drone) : recoilMoveAllowed(c);
+    if ((distance <= WALL_DANGER_DISTANCE || brakingStop > distance - 0.5f) && canFire && safeToFire(c->e, drone, wallDirection)) {
+        if (!recoilMoveAllowed(c)) {
+            botEvent(c, BOT_EVENT_ESCAPE_FIRE);
+        }
+        actions->aim = b2MulAdd(actions->aim, urgency, wallDirection);
+        scriptedAgentShoot(drone, actions);
+    }
+    if (distance <= WALL_AVOID_DISTANCE || coastingStop > distance) {
+        actions->move = b2MulAdd(actions->move, -(urgency + (0.1f * approachSpeed)), wallDirection);
+    }
+    if (brakingStop > distance - 1.0f && distance < WALL_BURST_CHECK_DISTANCE * 2.0f) {
+        actions->brake = true;
+    }
+}
+
+// pick the movement direction with the most predicted hazard clearance
+// if the current one is getting too close
+void steerForClearance(botCtx *c, agentActions *actions) {
+    findHazards(c);
+    if (c->numHazards == 0) {
+        return;
+    }
+    const b2Vec2 move = b2VecEqual(actions->move, b2Vec2_zero) ? b2Vec2_zero : b2Normalize(actions->move);
+    const float current = hazardClearance(c, predictDronePos(c->drone, move, b2Vec2_zero, HAZARD_PREDICT_TIME));
+    if (current >= HAZARD_SAFE_CLEARANCE) {
+        return;
+    }
+    float best = current;
+    b2Vec2 bestMove = move;
+    for (uint8_t i = 0; i < 8; i++) {
+        const b2Vec2 dir = {.x = discMoveToContMoveMap[0][i], .y = discMoveToContMoveMap[1][i]};
+        const float clearance = hazardClearance(c, predictDronePos(c->drone, dir, b2Vec2_zero, HAZARD_PREDICT_TIME));
+        if (clearance > best + 0.1f) {
+            best = clearance;
+            bestMove = dir;
+        }
+    }
+    if (!b2VecEqual(bestMove, move)) {
+        botEvent(c, BOT_EVENT_CLEARANCE_STEER);
+    }
+    actions->move = bestMove;
 }
 
 // charge burst until we're close enough to a death wall to burst off
@@ -271,6 +1057,314 @@ void wallBurst(iwEnv *e, const droneEntity *drone, const float distance, agentAc
         scriptedAgentBurst(drone, actions);
     } else {
         actions->chargingBurst = true;
+    }
+}
+
+// effective danger radius and reaction horizon of hostile projectiles worth
+// reacting to; everything else is ignored
+bool projectileThreat(const projectileEntity *proj, float *radius, float *horizon, float *blastRadius) {
+    *horizon = THREAT_HORIZON;
+    switch (proj->weaponInfo->type) {
+    case IMPLODER_WEAPON:
+        *radius = DRONE_RADIUS + IMPLODER_RADIUS + 2.0f;
+        *blastRadius = 15.0f;
+        return true;
+    case NUKE_WEAPON:
+        *radius = DRONE_RADIUS + NUKE_RADIUS + 3.0f;
+        *blastRadius = 35.0f;
+        *horizon = NUKE_THREAT_HORIZON;
+        return true;
+    case BLACK_HOLE_WEAPON:
+        *radius = BLACK_HOLE_PROXIMITY_RADIUS;
+        *blastRadius = BLACK_HOLE_PROXIMITY_RADIUS;
+        return true;
+    case ACCELERATOR_WEAPON:
+        if (proj->speed < ACCELERATOR_THREAT_SPEED) {
+            return false;
+        }
+        *radius = DRONE_RADIUS + ACCELERATOR_RADIUS + 1.0f;
+        *blastRadius = 0.0f;
+        return true;
+    default:
+        return false;
+    }
+}
+
+// move perpendicular to dangerDir, toward the side with more hazard clearance
+b2Vec2 dodgeDirection(botCtx *c, const b2Vec2 dangerDir, const int8_t preferredSide) {
+    const b2Vec2 left = b2LeftPerp(dangerDir);
+    const b2Vec2 right = b2RightPerp(dangerDir);
+    const float leftClear = hazardClearance(c, predictDronePos(c->drone, left, b2Vec2_zero, HAZARD_PREDICT_TIME));
+    const float rightClear = hazardClearance(c, predictDronePos(c->drone, right, b2Vec2_zero, HAZARD_PREDICT_TIME));
+    int8_t side = preferredSide;
+    if (side == 0 || (side > 0 && leftClear < HAZARD_SAFE_CLEARANCE && rightClear > leftClear) || (side < 0 && rightClear < HAZARD_SAFE_CLEARANCE && leftClear > rightClear)) {
+        side = leftClear >= rightClear ? 1 : -1;
+    }
+    c->state->dodgeSide = side;
+    c->state->dodgeUntilStep = botStep(c->e) + (uint16_t)(DODGE_HOLD_TIME * c->e->frameRate);
+    return side > 0 ? left : right;
+}
+
+// react to whitelisted dangerous projectiles: shoot them away, sidestep,
+// and burst as a last resort. Returns true if the threat took over the
+// drone's actions.
+bool defendAgainstProjectiles(botCtx *c, agentActions *actions) {
+    iwEnv *e = c->e;
+    droneEntity *drone = c->drone;
+
+    const projectileEntity *threat = NULL;
+    float threatTime = FLT_MAX;
+    float threatBlast = 0.0f;
+    b2Vec2 threatMiss = b2Vec2_zero;
+    for (uint8_t i = 0; i < cc_array_size(e->projectiles); i++) {
+        const projectileEntity *proj = safe_array_get_at(e->projectiles, i);
+        if (proj->droneIdx == drone->idx || proj->needsToBeDestroyed) {
+            continue;
+        }
+        const droneEntity *owner = safe_array_get_at(e->drones, proj->droneIdx);
+        if (owner->team == drone->team) {
+            continue;
+        }
+        float radius, horizon, blast;
+        if (!projectileThreat(proj, &radius, &horizon, &blast)) {
+            continue;
+        }
+        const b2Vec2 relPos = b2Sub(proj->pos, drone->pos);
+        const b2Vec2 relVel = b2Sub(proj->velocity, drone->velocity);
+        const float relSpeedSq = b2Dot(relVel, relVel);
+        if (relSpeedSq < 1.0f) {
+            continue;
+        }
+        const float t = -b2Dot(relPos, relVel) / relSpeedSq;
+        if (t < 0.0f || t > horizon || t >= threatTime) {
+            continue;
+        }
+        const b2Vec2 miss = b2MulAdd(relPos, t, relVel);
+        if (b2Length(miss) > radius) {
+            continue;
+        }
+        threat = proj;
+        threatTime = t;
+        threatBlast = blast;
+        threatMiss = miss;
+    }
+
+    if (threat == NULL) {
+        return false;
+    }
+    botEvent(c, BOT_EVENT_THREAT);
+
+    // 1. shoot it away if the collision would happen far enough away
+    bool shotAtThreat = false;
+    if (drone->weaponCooldown == 0.0f && drone->weaponInfo->charge == 0.0f && drone->weaponInfo->type != MINE_LAUNCHER_WEAPON) {
+        b2Vec2 aim;
+        float distance;
+        if (interceptAim(drone, threat->pos, threat->velocity, threat->weaponInfo->damping, &aim, &distance) && distance > threatBlast && safeToFire(e, drone, aim) && shotPathClear(c, aim, distance, NULL)) {
+            actions->aim = aim;
+            scriptedAgentShoot(drone, actions);
+            shotAtThreat = true;
+            botEvent(c, BOT_EVENT_THREAT_SHOT);
+        }
+    }
+
+    // 2. sidestep away from the projectile's path
+    b2Vec2 dodge;
+    if (b2Length(threatMiss) > 0.25f) {
+        dodge = b2Normalize(b2MulSV(-1.0f, threatMiss));
+    } else {
+        dodge = dodgeDirection(c, b2Normalize(threat->velocity), c->state->dodgeSide);
+    }
+    if (hazardClearance(c, predictDronePos(drone, dodge, b2Vec2_zero, HAZARD_PREDICT_TIME)) < HAZARD_SAFE_CLEARANCE) {
+        dodge = b2MulSV(-1.0f, dodge);
+    }
+    if (1) {
+        actions->move = dodge;
+    }
+    if (!shotAtThreat && recoilMoveAllowed(c)) {
+        const b2Vec2 recoilAim = b2MulSV(-1.0f, dodge);
+        if (safeToFireMoving(e, drone, recoilAim, dodge)) {
+            actions->aim = recoilAim;
+            scriptedAgentShoot(drone, actions);
+        }
+    }
+
+    // 3. burst when nothing else will work in time
+    if (threatTime < THREAT_BURST_TIME && threat->weaponInfo->type != NUKE_WEAPON && canBurst(drone) && drone->energyLeft >= DRONE_BURST_BASE_COST * 2.0f) {
+        scriptedAgentBurst(drone, actions);
+        botEvent(c, BOT_EVENT_THREAT_BURST);
+    }
+
+    return true;
+}
+
+// get off the line of an enemy charging a sniper; returns true if the
+// drone should only dodge this step
+bool dodgeSniper(botCtx *c, agentActions *actions) {
+    const droneEntity *drone = c->drone;
+    const droneEntity *enemy = c->enemy;
+    if (enemy == NULL || enemy->weaponInfo->type != SNIPER_WEAPON || drone->shield != NULL) {
+        return false;
+    }
+    const float charge = enemy->weaponCharge / SNIPER_CHARGE;
+    if (charge < SNIPER_TELL_CHARGE) {
+        return false;
+    }
+    // only a threat if the enemy can see us
+    const b2Vec2 translation = b2Sub(drone->pos, enemy->pos);
+    const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE};
+    const b2RayResult ray = b2World_CastRayClosest(c->e->worldID, enemy->pos, translation, filter);
+    if (ray.hit) {
+        return false;
+    }
+
+    // the shot can only come along the enemy's aim
+    const b2Vec2 lineDir = b2MulSV(-1.0f, c->enemyDir);
+    if (b2Dot(enemy->lastAim, lineDir) < SNIPER_AIM_COS) {
+        return false;
+    }
+    int8_t side = 0;
+    if (botStep(c->e) < c->state->dodgeUntilStep) {
+        side = c->state->dodgeSide;
+    }
+    const b2Vec2 dodge = dodgeDirection(c, lineDir, side);
+    actions->move = dodge;
+    botEvent(c, BOT_EVENT_SNIPER_DODGE);
+
+    // urgent if the shot is about to come or a death wall is behind us
+    // along the line of fire
+    bool urgent = charge >= SNIPER_URGENT_CHARGE;
+    if (!urgent) {
+        const b2Vec2 behind = b2MulSV(25.0f, lineDir);
+        const b2QueryFilter wallFilter = {.categoryBits = DRONE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE};
+        const b2RayResult behindRay = b2World_CastRayClosest(c->e->worldID, drone->pos, behind, wallFilter);
+        if (behindRay.hit) {
+            const entity *ent = b2Shape_GetUserData(behindRay.shapeId);
+            urgent = ent != NULL && ent->type == DEATH_WALL_ENTITY;
+        }
+    }
+    if (!urgent) {
+        return false;
+    }
+    botEvent(c, BOT_EVENT_SNIPER_URGENT);
+    if (recoilMoveAllowed(c)) {
+        const b2Vec2 recoilAim = b2MulSV(-1.0f, dodge);
+        if (safeToFireMoving(c->e, drone, recoilAim, dodge)) {
+            actions->aim = recoilAim;
+            scriptedAgentShoot(drone, actions);
+        }
+    }
+    return true;
+}
+
+// scores the weapon pickups and returns the best one worth leaving the
+// current fight for, or NULL
+weaponPickupEntity *choosePickup(botCtx *c) {
+    iwEnv *e = c->e;
+    const droneEntity *drone = c->drone;
+
+    // value of staying in the current fight
+    float combatValue = 0.0f;
+    if (c->enemy != NULL && c->enemyDistSq <= weaponIdealRangeSquared(drone) && shouldShootAtEnemy(e, drone, c->enemy, c->enemyDir)) {
+        combatValue = 1.0f;
+        if (killGeometryGood(c, BURST_KILL_WALL_DISTANCE)) {
+            combatValue = 3.0f;
+        }
+    }
+
+    weaponPickupEntity *best = NULL;
+    float bestScore = combatValue;
+    int8_t bestIdx = -1;
+    for (uint8_t i = 0; i < cc_array_size(e->pickups); i++) {
+        weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
+        if (pickup->floatingWallsTouching > 0 || pickup->bodyDestroyed) {
+            continue;
+        }
+        const float distance = b2Distance(pickup->pos, drone->pos);
+        float score = botWeaponValue[pickup->weapon] - (distance / PICKUP_TRAVEL_SPEED);
+
+        // pickups next to death walls are risky to grab
+        const nearWall *walls = e->map->nearestWalls + (MAX_NEAREST_WALLS * pickup->mapCellIdx);
+        for (uint8_t j = 0; j < MAX_NEAREST_WALLS; j++) {
+            if (walls[j].type == DEATH_WALL_ENTITY && staticWallDistance(walls[j].pos, pickup->pos) < PICKUP_WALL_RISK_DISTANCE) {
+                score -= 1.5f;
+                break;
+            }
+        }
+        // the enemy will likely get there first, or be waiting
+        if (c->enemy != NULL) {
+            const float enemyDistance = b2Distance(pickup->pos, c->enemy->pos);
+            if (enemyDistance < distance) {
+                score -= 2.0f * (1.0f - (enemyDistance / max(distance, 1.0f)));
+            }
+        }
+        // stick with the pickup we already committed to
+        if (i == c->state->pickupIdx && botStep(e) < c->state->pickupUntilStep) {
+            score += 1.0f;
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            best = pickup;
+            bestIdx = i;
+        }
+    }
+
+    if (bestIdx != c->state->pickupIdx) {
+        c->state->pickupIdx = bestIdx;
+        c->state->pickupUntilStep = botStep(e) + (uint16_t)(PICKUP_COMMIT_TIME * e->frameRate);
+    }
+    return best;
+}
+
+// decide whether to charge or release a burst at the enemy
+void deliberateBurst(botCtx *c, agentActions *actions) {
+    const droneEntity *drone = c->drone;
+    if (!canBurst(drone) && !drone->chargingBurst) {
+        return;
+    }
+    const float reach = c->enemyDist - DRONE_RADIUS;
+    const bool geometry = killGeometryGood(c, BURST_KILL_WALL_DISTANCE);
+    if (drone->chargingBurst) {
+        // keep charging while the burst can't reach yet but soon will
+        if (geometry && reach > burstRadius(drone->burstCharge) && reach < burstRadius(0.8f) && drone->burstCharge < 0.8f && drone->energyLeft > 0.05f) {
+            actions->chargingBurst = true;
+        }
+        return;
+    }
+    if (geometry && reach <= burstRadius(0.6f) && drone->energyLeft >= 0.15f) {
+        actions->chargingBurst = true;
+        botEvent(c, BOT_EVENT_BURST_START);
+    } else if (reach <= DRONE_BURST_RADIUS_MIN - 1.0f && drone->energyLeft >= BURST_ENERGY_RESERVE) {
+        // separate from a drone that's right on top of us
+        actions->chargingBurst = true;
+        botEvent(c, BOT_EVENT_BURST_START);
+    }
+}
+
+// charge a burst before firing and release it with the shot so the burst
+// speeds up the just fired projectile
+void burstBoost(botCtx *c, agentActions *actions) {
+    const droneEntity *drone = c->drone;
+    const enum weaponType type = drone->weaponInfo->type;
+    bool worthIt = false;
+    if (type == FLAK_CANNON_WEAPON) {
+        worthIt = drone->energyLeft >= BOOST_ENERGY_RESERVE;
+    } else if (type == STANDARD_WEAPON) {
+        worthIt = drone->energyLeft >= BOOST_ENERGY_RESERVE && killGeometryGood(c, BURST_KILL_WALL_DISTANCE);
+    }
+    if (!worthIt) {
+        return;
+    }
+    if (!drone->chargingBurst) {
+        if (canBurst(drone)) {
+            actions->chargingBurst = true;
+        }
+        return;
+    }
+    // release with the shot, keep charging until the weapon is ready
+    if (drone->weaponCooldown != 0.0f) {
+        actions->chargingBurst = true;
+    } else {
+        botEvent(c, BOT_EVENT_BOOST_RELEASE);
     }
 }
 
@@ -298,6 +1392,41 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
         return actions;
     }
 
+    botCtx c = {
+        .e = e,
+        .drone = drone,
+        .feats = e->botFeatures[drone->idx],
+        .state = &e->botState[drone->idx],
+    };
+
+    // find closest enemy drone
+    droneEntity *enemyDrone = NULL;
+    float closestDistanceSquared = FLT_MAX;
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        if (i == drone->idx) {
+            continue;
+        }
+        droneEntity *otherDrone = safe_array_get_at(e->drones, i);
+        if (otherDrone->dead || otherDrone->team == drone->team) {
+            continue;
+        }
+        const float distanceSquared = b2DistanceSquared(otherDrone->pos, drone->pos);
+        if (distanceSquared < closestDistanceSquared) {
+            closestDistanceSquared = distanceSquared;
+            enemyDrone = otherDrone;
+        }
+    }
+    if (enemyDrone != NULL) {
+        c.enemy = enemyDrone;
+        c.enemyDistSq = closestDistanceSquared;
+        c.enemyDist = sqrtf(closestDistanceSquared);
+        c.enemyDir = b2Normalize(b2Sub(enemyDrone->pos, drone->pos));
+    }
+    c.idealRangeSquared = weaponIdealRangeSquared(drone);
+    if (botHas(&c, BOT_FEAT_FLAK_RANGE) && drone->weaponInfo->type == FLAK_CANNON_WEAPON) {
+        c.idealRangeSquared = SQUARED(FLAK_RANGE);
+    }
+
     // keep the weapon charged and ready
     if (drone->weaponInfo->charge != 0.0f) {
         actions.chargingWeapon = true;
@@ -309,6 +1438,7 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
     findNearWalls(e, drone, nearWalls, NUM_NEAR_WALLS);
 
     // move away from and shoot at death walls if we're too close
+    const bool velocityWalls = botHas(&c, BOT_FEAT_WALL_AVOID);
     float closestWallDistance = FLT_MAX;
     for (uint8_t i = 0; i < NUM_NEAR_WALLS; i++) {
         if (nearWalls[i].type != DEATH_WALL_ENTITY) {
@@ -317,14 +1447,18 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
         // nothing below reacts to a wall further away than the burst check
         // distance, so skip the exact distance query when the cheap center
         // to center distance already rules the wall out
-        if (nearWalls[i].distanceSquared > WALL_IGNORE_DISTANCE_SQUARED) {
+        if (!velocityWalls && nearWalls[i].distanceSquared > WALL_IGNORE_DISTANCE_SQUARED) {
             continue;
         }
 
         const wallEntity *wall = safe_array_get_at(e->walls, nearWalls[i].wallIdx);
         const b2DistanceOutput output = closestPoint(drone->ent, wall->ent);
         closestWallDistance = min(closestWallDistance, output.distance);
-        handleWallProximity(e, drone, wall, output.distance, &actions);
+        if (velocityWalls) {
+            handleWallProximityVelocity(&c, &output, &actions);
+        } else {
+            handleWallProximity(e, drone, wall, output.distance, &actions);
+        }
     }
 
     for (uint8_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
@@ -332,16 +1466,35 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
         if (floatingWall->type != DEATH_WALL_ENTITY) {
             continue;
         }
-        if (b2DistanceSquared(floatingWall->pos, drone->pos) > WALL_CHECK_DISTANCE_SQUARED) {
+        if (b2DistanceSquared(floatingWall->pos, drone->pos) > WALL_CHECK_DISTANCE_SQUARED * (velocityWalls ? 4.0f : 1.0f)) {
             continue;
         }
 
         const b2DistanceOutput output = closestPoint(drone->ent, floatingWall->ent);
         closestWallDistance = min(closestWallDistance, output.distance);
-        handleWallProximity(e, drone, floatingWall, output.distance, &actions);
+        if (velocityWalls) {
+            handleWallProximityVelocity(&c, &output, &actions);
+        } else {
+            handleWallProximity(e, drone, floatingWall, output.distance, &actions);
+        }
     }
 
-    // TODO: shoot mines around enemy, only if not too close
+    if (velocityWalls) {
+        // keep clear of enemy mines stuck to walls
+        findHazards(&c);
+        for (uint8_t i = 0; i < c.numHazards; i++) {
+            const hazard *h = &c.hazards[i];
+            if (h->isStaticWall || h->floatingWall != NULL) {
+                continue;
+            }
+            const float distance = b2Distance(h->pos, drone->pos) - h->radius;
+            if (distance <= WALL_AVOID_DISTANCE) {
+                const b2Vec2 away = b2Normalize(b2Sub(drone->pos, h->pos));
+                actions.move = b2MulAdd(actions.move, 1.0f / max(distance, 0.25f), away);
+            }
+        }
+        steerForClearance(&c, &actions);
+    }
 
     // if we are moving towards a death wall at a high speed, do everything
     // possible to avoid hitting it
@@ -391,46 +1544,48 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
         return actions;
     }
 
-    // get a weapon if the standard weapon is active
-    if (drone->weaponInfo->type == STANDARD_WEAPON && cc_array_size(e->pickups) != 0) {
-        nearEntity nearPickups[MAX_WEAPON_PICKUPS] = {0};
-        uint8_t numActivePickups = 0;
-        for (uint8_t i = 0; i < cc_array_size(e->pickups); i++) {
-            weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
-            if (pickup->floatingWallsTouching > 0) {
-                continue;
-            }
-            const nearEntity nearEnt = {
-                .entity = pickup,
-                .distanceSquared = b2DistanceSquared(pickup->pos, drone->pos),
-            };
-            nearPickups[numActivePickups++] = nearEnt;
-        }
-        if (numActivePickups > 0) {
-            insertionSortEntities(nearPickups, numActivePickups);
-            const weaponPickupEntity *pickup = nearPickups[0].entity;
-            moveTo(e, drone, &actions, pickup->pos);
+    // dangerous incoming projectiles take priority over everything else
+    if (botHas(&c, BOT_FEAT_PROJ_DEFENSE)) {
+        if (defendAgainstProjectiles(&c, &actions)) {
             return actions;
         }
     }
+    if (botHas(&c, BOT_FEAT_SNIPER_DODGE) && dodgeSniper(&c, &actions)) {
+        return actions;
+    }
 
-    // find closest enemy drone
-    droneEntity *enemyDrone = NULL;
-    float closestDistanceSquared = FLT_MAX;
-    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
-        if (i == drone->idx) {
-            continue;
-        }
-        droneEntity *otherDrone = safe_array_get_at(e->drones, i);
-        if (otherDrone->dead || otherDrone->team == drone->team) {
-            continue;
-        }
-        const float distanceSquared = b2DistanceSquared(otherDrone->pos, drone->pos);
-        if (distanceSquared < closestDistanceSquared) {
-            closestDistanceSquared = distanceSquared;
-            enemyDrone = otherDrone;
+    // get a weapon if the standard weapon is active
+    if (drone->weaponInfo->type == STANDARD_WEAPON && cc_array_size(e->pickups) != 0) {
+        if (botHas(&c, BOT_FEAT_PICKUP_SCORE)) {
+            const weaponPickupEntity *pickup = choosePickup(&c);
+            if (pickup != NULL) {
+                moveTo(&c, &actions, pickup->pos);
+                return actions;
+            }
+            botEvent(&c, BOT_EVENT_PICKUP_SKIPPED);
+        } else {
+            nearEntity nearPickups[MAX_WEAPON_PICKUPS] = {0};
+            uint8_t numActivePickups = 0;
+            for (uint8_t i = 0; i < cc_array_size(e->pickups); i++) {
+                weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
+                if (pickup->floatingWallsTouching > 0) {
+                    continue;
+                }
+                const nearEntity nearEnt = {
+                    .entity = pickup,
+                    .distanceSquared = b2DistanceSquared(pickup->pos, drone->pos),
+                };
+                nearPickups[numActivePickups++] = nearEnt;
+            }
+            if (numActivePickups > 0) {
+                insertionSortEntities(nearPickups, numActivePickups);
+                const weaponPickupEntity *pickup = nearPickups[0].entity;
+                moveTo(&c, &actions, pickup->pos);
+                return actions;
+            }
         }
     }
+
     if (enemyDrone == NULL) {
         // fight recoil if we're not otherwise moving
         if (b2VecEqual(actions.move, b2Vec2_zero) && droneSpeed >= STABILIZE_MOVE_SPEED) {
@@ -440,27 +1595,67 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
     }
 
     // burst if the enemy drone is very close
-    if (closestDistanceSquared <= BURST_MIN_RADIUS_SQUARED) {
+    if (botHas(&c, BOT_FEAT_BURST)) {
+        deliberateBurst(&c, &actions);
+    } else if (closestDistanceSquared <= BURST_MIN_RADIUS_SQUARED) {
         scriptedAgentBurst(drone, &actions);
     }
-    // move into ideal range for the current weapon
-    if (closestDistanceSquared > weaponIdealRangeSquared(drone)) {
-        moveTo(e, drone, &actions, enemyDrone->pos);
-        return actions;
+    // move into ideal range for the current weapon, but take any clear
+    // shot that will reach on the way
+    const float idealRangeSquared = c.idealRangeSquared;
+    const b2Vec2 enemyDroneDirection = c.enemyDir;
+    b2Vec2 aim = b2Vec2_zero;
+    bool shoot = false;
+    if (closestDistanceSquared > idealRangeSquared) {
+        if (botHas(&c, BOT_FEAT_LONG_SHOTS) && botHas(&c, BOT_FEAT_AIM) && shouldShootAtEnemyIntercept(&c, &aim) && shotReaches(drone, c.enemyDist)) {
+            botEvent(&c, BOT_EVENT_LONG_SHOT);
+            shoot = true;
+        } else {
+            moveTo(&c, &actions, enemyDrone->pos);
+            return actions;
+        }
+    } else if (botHas(&c, BOT_FEAT_AIM)) {
+        shoot = shouldShootAtEnemyIntercept(&c, &aim);
+    } else {
+        shoot = shouldShootAtEnemy(e, drone, enemyDrone, enemyDroneDirection);
+        if (shoot) {
+            aim = predictiveAim(drone, enemyDrone, closestDistanceSquared);
+        }
     }
 
-    // shoot at enemy drone if it's in line of sight and safe, otherwise move towards it
-    const b2Vec2 enemyDroneDirection = b2Normalize(b2Sub(enemyDrone->pos, drone->pos));
-    if (shouldShootAtEnemy(e, drone, enemyDrone, enemyDroneDirection)) {
+    if (shoot) {
         if (drone->weaponCooldown == 0.0f && drone->weaponCharge >= drone->weaponInfo->charge - e->deltaTime) {
             actions.move.x += enemyDroneDirection.x;
             actions.move.y += enemyDroneDirection.y;
             actions.move = b2Normalize(actions.move);
         }
-        actions.aim = predictiveAim(drone, enemyDrone, closestDistanceSquared);
+        actions.aim = aim;
         scriptedAgentShoot(drone, &actions);
+        if (botHas(&c, BOT_FEAT_BURST_BOOST) && !actions.chargingBurst) {
+            burstBoost(&c, &actions);
+        }
     } else {
-        moveTo(e, drone, &actions, enemyDrone->pos);
+        moveTo(&c, &actions, enemyDrone->pos);
+    }
+
+    if (shoot && botHas(&c, BOT_FEAT_KILL_GEOMETRY)) {
+        // get on the far side of the enemy from its closest death wall so
+        // hits push it into the wall
+        b2Vec2 wallDir;
+        float wallDistance;
+        if (enemyDeathWall(&c, KILL_WALL_DISTANCE, &wallDir, &wallDistance)) {
+            const float range = fminf(fmaxf(c.enemyDist, 8.0f), fminf(sqrtf(idealRangeSquared), 25.0f));
+            const b2Vec2 desired = b2MulAdd(enemyDrone->pos, -range, wallDir);
+            const b2Vec2 toDesired = b2Sub(desired, drone->pos);
+            if (b2Length(toDesired) > 2.0f) {
+                botEvent(&c, BOT_EVENT_KILL_GEOMETRY);
+                actions.move = b2Normalize(b2Add(actions.move, b2MulSV(2.0f, b2Normalize(toDesired))));
+            }
+        }
+    }
+
+    if (velocityWalls && !b2VecEqual(actions.move, b2Vec2_zero)) {
+        steerForClearance(&c, &actions);
     }
 
     // fight recoil if we're not otherwise moving

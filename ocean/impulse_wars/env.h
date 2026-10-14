@@ -703,6 +703,9 @@ void setupEnv(iwEnv *e) {
     e->suddenDeathWallCounter = 0;
 
     e->lastSpawnQuad = -1;
+    for (uint8_t i = 0; i < _MAX_DRONES; i++) {
+        e->botState[i] = (scriptedBotState){.pickupIdx = -1, .pathSrcIdx = -1, .pathDstIdx = -1};
+    }
 
     e->easyEp = e->easyEpProb > 0.0f && randFloat(&e->rng, 0.0f, 1.0f) < e->easyEpProb;
 
@@ -783,6 +786,9 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     e->botPolicy = botPolicy;
     e->botCLNoise = botCLNoise;
     e->botCLDecay = botCLDecay;
+    for (uint8_t i = 0; i < _MAX_DRONES; i++) {
+        e->botFeatures[i] = BOT_FEATURES_DEFAULT;
+    }
 
     e->obsSize = obsSize(e->numDrones);
 
