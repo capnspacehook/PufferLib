@@ -122,11 +122,11 @@ void puf_init(Env *env, Dict *kwargs) {
 }
 
 void puf_set_bot_policy(iwEnv *e, int botPolicy) {
-    if (botPolicy != BOT_SITTING_DUCK && botPolicy != BOT_SCRIPTED) {
+    if (botPolicy < BOT_SITTING_DUCK || botPolicy >= NUM_BOT_POLICIES) {
         fprintf(stderr, "impulse_wars: unknown bot policy %d\n", botPolicy);
         abort();
     }
-    e->botPolicy = (enum botPolicy)botPolicy;
+    setBotPersonality(e, (enum botPolicy)botPolicy);
 }
 
 #define LOG_DRONE_STATS(log, out, idx, idxStr)                                                    \

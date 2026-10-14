@@ -485,30 +485,42 @@ typedef struct debugPoint {
     Color color;
 } debugPoint;
 
-// Scripted opponents, weakest first. These are the rungs of [selfplay] eval_bots.
+// Scripted opponents. These are the rungs of [selfplay] eval_bots. Every
+// policy after BOT_SCRIPTED is a personality of the scripted bot with its
+// own playstyle, used to evaluate learned policies against varied opponents
 enum botPolicy {
     BOT_SITTING_DUCK = 0,
     BOT_SCRIPTED = 1,
+    // flees and only fires to move faster or when cornered
+    BOT_EVADER = 2,
+    // prefers long range charged weapons and waits for shots near cover
+    BOT_CAMPER = 3,
+    // prefers short range weapons and closes in fast with bursts
+    BOT_RUSHER = 4,
+    // prefers mines and black holes and makes the enemy come through them
+    BOT_TRAPPER = 5,
+    // holds a spot and only fires back
+    BOT_TURTLE = 6,
+    // never seeks weapon pickups
+    BOT_FUNDAMENTALS = 7,
+    NUM_BOT_POLICIES,
 };
 
 // scripted bot behaviors, toggled per drone so variants of the bot can be
-// played against each other in the same env (see bot_tournament.c)
+// played against each other in the same env (see bot_tournament.c). Ammo
+// reserve is on by default; the rest are experiments that measured neutral
+// or worse against scripted opponents and are kept for evaluating against
+// learned policies. Smart reserve only has an effect with ammo reserve on
 enum botFeature {
     BOT_FEAT_AMMO_RESERVE = 1 << 0,
-    BOT_FEAT_PICKUP_SCORE = 1 << 1,
-    BOT_FEAT_PROJ_DEFENSE = 1 << 2,
-    BOT_FEAT_FLAK_RANGE = 1 << 3,
-    BOT_FEAT_AIM = 1 << 4,
-    BOT_FEAT_WALL_AVOID = 1 << 5,
-    BOT_FEAT_BURST = 1 << 6,
-    BOT_FEAT_BURST_BOOST = 1 << 7,
-    BOT_FEAT_KILL_GEOMETRY = 1 << 8,
-    BOT_FEAT_SNIPER_DODGE = 1 << 9,
-    BOT_FEAT_ESCAPE_FIRE = 1 << 10,
-    BOT_FEAT_LONG_SHOTS = 1 << 11,
-    BOT_FEAT_SMART_RESERVE = 1 << 12,
+    BOT_FEAT_PROJ_DEFENSE = 1 << 1,
+    BOT_FEAT_BURST = 1 << 2,
+    BOT_FEAT_BURST_BOOST = 1 << 3,
+    BOT_FEAT_KILL_GEOMETRY = 1 << 4,
+    BOT_FEAT_SNIPER_DODGE = 1 << 5,
+    BOT_FEAT_SMART_RESERVE = 1 << 6,
 };
-#define BOT_FEAT_ALL 0x1FFF
+#define BOT_FEAT_ALL 0x7F
 
 // how many cells ahead along a planned route the scripted bot remembers
 #define BOT_PATH_WAYPOINTS 4
@@ -529,6 +541,15 @@ typedef struct scriptedBotState {
     uint16_t pathUntilStep;
     int16_t pathWaypoints[BOT_PATH_WAYPOINTS];
     uint8_t pathNumWaypoints;
+    // cell a personality is heading to or holding (flee target, sniping
+    // spot, home), and the step it's re-chosen
+    int16_t spotCellIdx;
+    uint16_t spotUntilStep;
+    // last step the bot fired at the enemy or the enemy fired
+    uint16_t lastShotStep;
+    uint16_t lastEnemyShotStep;
+    // lives left when the spot was chosen; a respawn re-chooses it
+    uint8_t livesLeft;
 } scriptedBotState;
 
 // counts of scripted bot decisions, for tuning the bot; never reset by
@@ -550,6 +571,13 @@ enum botEvent {
     BOT_EVENT_SPARE_AMMO_MOVE,
     BOT_EVENT_DYNAMIC_PATH,
     BOT_EVENT_DYNAMIC_PATH_FAILED,
+    BOT_EVENT_FLEE,
+    BOT_EVENT_HOLD_SPOT,
+    BOT_EVENT_SPOT_MOVE,
+    BOT_EVENT_RECOIL_BOOST,
+    BOT_EVENT_MINE_PLACED,
+    BOT_EVENT_COUNTER_SHOT,
+    BOT_EVENT_SUDDEN_DEATH_AVOID,
     NUM_BOT_EVENTS,
 };
 
@@ -569,6 +597,8 @@ struct Env {
 
     float botCLNoise;
     float botCLDecay;
+    // personality of each scripted drone, BOT_SCRIPTED or later
+    enum botPolicy botPersonality[_MAX_DRONES];
     uint32_t botFeatures[_MAX_DRONES];
     scriptedBotState botState[_MAX_DRONES];
     uint32_t botEvents[_MAX_DRONES][NUM_BOT_EVENTS];
