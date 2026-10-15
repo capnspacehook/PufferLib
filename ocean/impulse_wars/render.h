@@ -1036,8 +1036,8 @@ void renderUI(const iwEnv *e, const bool starting) {
             const char *killedBy = TextFormat("Killed by Player %d", drone->killedBy + 1);
             DrawText(killedBy, x, y, fontSize, getDroneColor(drone->killedBy));
 
-            char *killDetails1 = NULL;
-            char *killDetails2 = NULL;
+            const char *killDetails1 = NULL;
+            const char *killDetails2 = NULL;
             switch (drone->killSource.type) {
             case MOVEMENT_PHYSICS:
                 break;
