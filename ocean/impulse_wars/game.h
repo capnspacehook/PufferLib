@@ -1292,6 +1292,16 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
         destroyDroneShield(e, shield, false);
     }
 
+    // terminate any active brake trail so it won't connect to the
+    // drone's respawn position the next time it brakes
+    if (drone->braking && e->client != NULL && drone->brakeTrailPoints != NULL) {
+        brakeTrailPoint *trailPoint = fastCalloc(1, sizeof(brakeTrailPoint));
+        trailPoint->pos = drone->pos;
+        trailPoint->lifetime = UINT16_MAX;
+        trailPoint->isEnd = true;
+        cc_array_add(drone->brakeTrailPoints, trailPoint);
+    }
+
     b2Body_Disable(drone->bodyID);
     droneChangeWeapon(e, drone, e->defaultWeapon->type);
     drone->braking = false;

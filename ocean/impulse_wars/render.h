@@ -1098,54 +1098,178 @@ void renderUI(const iwEnv *e, const bool starting) {
     renderTimer(e, timerStr, PUFF_WHITE);
 }
 
-// TODO: track when trails begin and end (ie when respawning)
-void renderBrakeTrails(iwEnv *e, const droneEntity *drone) {
-    const float maxAlpha = 0.33f;
-    const float trailWidth = 0.33f;
+float brakeTrailLifeFrac(const iwEnv *e, const brakeTrailPoint *pt) {
+    // points added this frame haven't had their lifetime initialized yet
+    if (pt->lifetime == UINT16_MAX) {
+        return 1.0f;
+    }
+    return Clamp((float)pt->lifetime / e->client->maxBrakeTrailLifetime, 0.0f, 1.0f);
+}
 
-    size_t count = cc_array_size(drone->brakeTrailPoints);
+// renders one continuous brake trail from point start to point end
+// (inclusive) as a soft edged ribbon with shared vertices between
+// segments so there are no gaps or overlapping alpha at the joints
+void renderBrakeTrailRun(const iwEnv *e, const droneEntity *drone, const size_t start, const size_t end) {
+    const float maxAlpha = 0.33f;
+    // half width of the solid part of the trail
+    const float trailWidth = 0.33f;
+    // extra width past the solid part that fades out to soften the edges
+    const float fringeWidth = 0.15f;
+    // distance over which each end of the trail tapers to a point
+    const float taperLength = 1.0f;
+    // the trail is brighter where the drone was moving faster, nearly
+    // saturating at this speed, and fainter where it was moving slowly
+    const float fastSpeed = 150.0f;
+    const float slowAlphaScale = 0.5f;
+    const float fastAlphaScale = 2.5f;
+    // how much closer to white the trail gets at full speed
+    const float fastWhiten = 0.4f;
+    // number of neighboring points on each side used to smooth the speed
+    const size_t speedWindow = 3;
+
+    // lanes across the width of the trail; the outer edges are fully
+    // transparent so the trail looks like a soft skid mark instead of
+    // a hard quad
+#define BRAKE_TRAIL_COLS 5
+    const float colOffsets[BRAKE_TRAIL_COLS] = {-trailWidth - fringeWidth, -trailWidth, 0.0f, trailWidth, trailWidth + fringeWidth};
+    const float colAlphas[BRAKE_TRAIL_COLS] = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f};
+
+    const Color droneColor = getDroneColor(drone->idx);
+    const Color edgeColor = ColorLerp(GRAY, droneColor, 0.2f);
+    const Color coreColor = ColorLerp(edgeColor, RAYWHITE, 0.15f);
+
+    // the drone slows down while braking so points bunch up towards the
+    // end of the trail; taper by distance so both ends look the same
+    float totalLength = 0.0f;
+    for (size_t i = start; i < end; i++) {
+        const brakeTrailPoint *p0 = safe_array_get_at(drone->brakeTrailPoints, i);
+        const brakeTrailPoint *p1 = safe_array_get_at(drone->brakeTrailPoints, i + 1);
+        totalLength += b2Distance(p0->pos, p1->pos);
+    }
+    const float endTaperLength = fminf(taperLength, totalLength / 2.0f);
+    float distFromStart = 0.0f;
+
+    Vector2 perp = Vector2Zero();
+    bool havePerp = false;
+    Vector3 prevVerts[BRAKE_TRAIL_COLS];
+    Color prevColors[BRAKE_TRAIL_COLS];
+
+    rlBegin(RL_TRIANGLES);
+    for (size_t i = start; i <= end; i++) {
+        const brakeTrailPoint *pt = safe_array_get_at(drone->brakeTrailPoints, i);
+        const Vector2 pos = (Vector2){.x = pt->pos.x, .y = pt->pos.y};
+        if (i > start) {
+            const brakeTrailPoint *lastPt = safe_array_get_at(drone->brakeTrailPoints, i - 1);
+            distFromStart += b2Distance(lastPt->pos, pt->pos);
+        }
+
+        // use the direction between neighboring points so joints are
+        // smooth; keep the last direction if the drone was stationary
+        const brakeTrailPoint *prevPt = safe_array_get_at(drone->brakeTrailPoints, i > start ? i - 1 : start);
+        const brakeTrailPoint *nextPt = safe_array_get_at(drone->brakeTrailPoints, i < end ? i + 1 : end);
+        const Vector2 dir = (Vector2){.x = nextPt->pos.x - prevPt->pos.x, .y = nextPt->pos.y - prevPt->pos.y};
+        if (Vector2LengthSqr(dir) > 1e-8f) {
+            const Vector2 n = Vector2Normalize(dir);
+            perp = (Vector2){-n.y, n.x};
+            havePerp = true;
+        }
+        if (!havePerp) {
+            // look ahead for the first non-stationary direction
+            for (size_t j = i + 1; j <= end; j++) {
+                const brakeTrailPoint *aheadPt = safe_array_get_at(drone->brakeTrailPoints, j);
+                const Vector2 aheadDir = (Vector2){.x = aheadPt->pos.x - pt->pos.x, .y = aheadPt->pos.y - pt->pos.y};
+                if (Vector2LengthSqr(aheadDir) > 1e-8f) {
+                    const Vector2 n = Vector2Normalize(aheadDir);
+                    perp = (Vector2){-n.y, n.x};
+                    havePerp = true;
+                    break;
+                }
+            }
+            if (!havePerp) {
+                // drone never moved while braking, nothing to draw
+                break;
+            }
+        }
+
+        const float lifeFrac = brakeTrailLifeFrac(e, pt);
+        float taper = 1.0f;
+        if (endTaperLength > 0.0f) {
+            const float endDist = fminf(distFromStart, totalLength - distFromStart);
+            const float t = Clamp(endDist / endTaperLength, 0.0f, 1.0f);
+            // ease out so the ends are rounded instead of pointed
+            taper = sqrtf(t * (2.0f - t));
+        }
+        // estimate how fast the drone was moving here from the spacing
+        // of nearby points, which are added once per frame
+        const size_t lo = i - start > speedWindow ? i - speedWindow : start;
+        const size_t hi = end - i > speedWindow ? i + speedWindow : end;
+        float windowLength = 0.0f;
+        for (size_t j = lo; j < hi; j++) {
+            const brakeTrailPoint *p0 = safe_array_get_at(drone->brakeTrailPoints, j);
+            const brakeTrailPoint *p1 = safe_array_get_at(drone->brakeTrailPoints, j + 1);
+            windowLength += b2Distance(p0->pos, p1->pos);
+        }
+        const float speed = hi > lo ? (windowLength / (float)(hi - lo)) * e->frameRate : 0.0f;
+        // tanh eases out smoothly so typical speeds well below the max
+        // still brighten; it reaches ~0.96 at fastSpeed
+        const float speedFrac = tanhf(2.0f * speed / fastSpeed);
+        const float speedScale = Lerp(slowAlphaScale, fastAlphaScale, speedFrac);
+
+        const float width = taper;
+        const float alpha = fminf(1.0f, maxAlpha * speedScale * lifeFrac * fminf(1.0f, 0.25f + taper));
+
+        Vector3 verts[BRAKE_TRAIL_COLS];
+        Color colors[BRAKE_TRAIL_COLS];
+        for (uint8_t c = 0; c < BRAKE_TRAIL_COLS; c++) {
+            const Vector2 v = Vector2Add(pos, Vector2Scale(perp, width * colOffsets[c]));
+            verts[c] = (Vector3){.x = v.x, .y = 0.0f, .z = v.y};
+            const Color base = c == BRAKE_TRAIL_COLS / 2 ? coreColor : edgeColor;
+            colors[c] = Fade(ColorLerp(base, RAYWHITE, fastWhiten * speedFrac), alpha * colAlphas[c]);
+        }
+
+        if (i > start) {
+            for (uint8_t c = 0; c < BRAKE_TRAIL_COLS - 1; c++) {
+                const Vector3 *quad[4] = {&prevVerts[c], &prevVerts[c + 1], &verts[c], &verts[c + 1]};
+                const Color *quadColors[4] = {&prevColors[c], &prevColors[c + 1], &colors[c], &colors[c + 1]};
+                // wind the same way as DrawTriangle3D callers so the faces
+                // aren't backface culled
+                const uint8_t order[6] = {0, 1, 2, 2, 1, 3};
+                for (uint8_t k = 0; k < 6; k++) {
+                    const Color *col = quadColors[order[k]];
+                    rlColor4ub(col->r, col->g, col->b, col->a);
+                    rlVertex3f(quad[order[k]]->x, quad[order[k]]->y, quad[order[k]]->z);
+                }
+            }
+        }
+
+        memcpy(prevVerts, verts, sizeof(verts));
+        memcpy(prevColors, colors, sizeof(colors));
+    }
+    rlEnd();
+#undef BRAKE_TRAIL_COLS
+}
+
+void renderBrakeTrails(iwEnv *e, const droneEntity *drone) {
+    if (drone->brakeTrailPoints == NULL) {
+        return;
+    }
+    const size_t count = cc_array_size(drone->brakeTrailPoints);
     if (count < 2) {
         return;
     }
 
-    for (size_t i = 0; i + 1 < count; i++) {
-        const brakeTrailPoint *trailPoint0 = safe_array_get_at(drone->brakeTrailPoints, i);
-        if (trailPoint0->isEnd) {
+    // a trail is split into separate runs wherever the drone stopped
+    // braking or died, so unrelated trails are never connected
+    size_t runStart = 0;
+    for (size_t i = 0; i < count; i++) {
+        const brakeTrailPoint *pt = safe_array_get_at(drone->brakeTrailPoints, i);
+        if (!pt->isEnd && i != count - 1) {
             continue;
         }
-        const brakeTrailPoint *trailPoint1 = safe_array_get_at(drone->brakeTrailPoints, i + 1);
-        const Vector2 p0 = (Vector2){.x = trailPoint0->pos.x, .y = trailPoint0->pos.y};
-        const Vector2 p1 = (Vector2){.x = trailPoint1->pos.x, .y = trailPoint1->pos.y};
-
-        // compute direction and a perpendicular vector
-        Vector2 segment = Vector2Subtract(p1, p0);
-        if (Vector2Length(segment) == 0) {
-            continue;
+        if (i > runStart) {
+            renderBrakeTrailRun(e, drone, runStart, i);
         }
-        segment = Vector2Normalize(segment);
-        const Vector2 perp = {-segment.y, segment.x};
-
-        // compute four vertices for the quad segment
-        const Vector2 v0 = Vector2Add(p0, Vector2Scale(perp, trailWidth));
-        const Vector2 v1 = Vector2Subtract(p0, Vector2Scale(perp, trailWidth));
-        const Vector2 v2 = Vector2Add(p1, Vector2Scale(perp, trailWidth));
-        const Vector2 v3 = Vector2Subtract(p1, Vector2Scale(perp, trailWidth));
-
-        // draw the quad as two triangles
-        const float alpha0 = maxAlpha * (trailPoint0->lifetime / e->client->maxBrakeTrailLifetime);
-        const float alpha1 = maxAlpha * (trailPoint1->lifetime / e->client->maxBrakeTrailLifetime);
-        DrawTriangle3D(
-            (Vector3){.x = v0.x, .y = 0.0f, .z = v0.y},
-            (Vector3){.x = v2.x, .y = 0.0f, .z = v2.y},
-            (Vector3){.x = v1.x, .y = 0.0f, .z = v1.y},
-            Fade(GRAY, alpha0)
-        );
-        DrawTriangle3D(
-            (Vector3){.x = v1.x, .y = 0.0f, .z = v1.y},
-            (Vector3){.x = v2.x, .y = 0.0f, .z = v2.y},
-            (Vector3){.x = v3.x, .y = 0.0f, .z = v3.y},
-            Fade(GRAY, alpha1)
-        );
+        runStart = i + 1;
     }
 }
 
