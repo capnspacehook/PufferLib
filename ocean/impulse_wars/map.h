@@ -433,7 +433,7 @@ static const char hourglassLayout[] = {
     'W','W','D','O','O','O','O','O','O','O','O','O','O','O','O','O','D','W','W',
     'W','W','W','D','D','O','O','O','O','d','O','O','O','O','D','D','W','W','W',
     'W','W','W','W','W','D','D','O','O','O','O','O','D','D','W','W','W','W','W',
-    'W','W','W','W','W','W','D','O','O','D','O','O','D','W','W','W','W','W','W',
+    'W','W','W','W','W','W','D','O','O','d','O','O','D','W','W','W','W','W','W',
     'W','W','W','W','W','D','D','O','O','O','O','O','D','D','W','W','W','W','W',
     'W','W','W','D','D','O','O','O','O','d','O','O','O','O','D','D','W','W','W',
     'W','W','D','O','O','O','O','O','O','O','O','O','O','O','O','O','D','W','W',
@@ -495,10 +495,10 @@ static mapEntry jawsMap = {
 
 static const char cavernLayout[] = {
     'W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W',
-    'W','W','W','W','O','O','O','O','O','O','W','W','W','W','D','O','O','O','O','O','O','W','W',
-    'W','W','O','O','O','O','O','O','O','O','O','W','W','D','O','O','O','O','O','O','O','O','W',
-    'W','O','O','O','O','O','O','O','O','O','O','O','D','O','O','O','O','O','O','O','O','O','W',
-    'W','O','O','O','O','B','B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','D','W',
+    'W','D','D','D','O','O','O','O','O','O','W','W','W','W','D','O','O','O','O','O','O','W','W',
+    'W','D','O','O','O','O','O','O','O','O','O','W','W','D','O','O','O','O','O','O','O','O','W',
+    'W','O','O','O','O','O','O','O','O','O','O','O','D','O','O','O','O','O','O','O','O','D','W',
+    'W','O','O','O','O','B','B','O','O','O','O','O','O','O','O','O','O','O','O','O','D','D','W',
     'W','O','O','O','B','B','B','O','O','O','O','O','O','O','D','D','O','O','O','O','O','O','W',
     'W','W','O','O','O','B','O','O','O','O','O','O','O','O','D','D','D','O','O','O','O','W','W',
     'W','W','W','O','O','O','O','O','O','O','O','O','O','O','D','D','O','O','O','O','O','W','W',
@@ -510,10 +510,10 @@ static const char cavernLayout[] = {
     'W','W','O','O','O','O','O','D','D','O','O','O','O','O','O','O','O','O','O','O','W','W','W',
     'W','W','O','O','O','O','D','D','D','O','O','O','O','O','O','O','O','B','O','O','O','W','W',
     'W','O','O','O','O','O','O','D','D','O','O','O','O','O','O','O','B','B','B','O','O','O','W',
-    'W','D','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B','B','O','O','O','O','W',
-    'W','O','O','O','O','O','O','O','O','O','D','O','O','O','O','O','O','O','O','O','O','O','W',
-    'W','O','O','O','O','O','O','O','O','D','W','W','O','O','O','O','O','O','O','O','O','W','W',
-    'W','W','O','O','O','O','O','O','D','W','W','W','W','O','O','O','O','O','O','W','W','W','W',
+    'W','D','D','O','O','O','O','O','O','O','O','O','O','O','O','O','B','B','O','O','O','O','W',
+    'W','D','O','O','O','O','O','O','O','O','D','O','O','O','O','O','O','O','O','O','O','O','W',
+    'W','O','O','O','O','O','O','O','O','D','W','W','O','O','O','O','O','O','O','O','O','D','W',
+    'W','W','O','O','O','O','O','O','D','W','W','W','W','O','O','O','O','O','O','D','D','D','W',
     'W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W','W',
 };
 
@@ -527,7 +527,7 @@ static mapEntry cavernMap = {
     .hasSetFloatingWalls = false,
     .weaponPickups = 8,
     .defaultWeapon = STANDARD_WEAPON,
-    .maxSuddenDeathWalls = 5,
+    .maxSuddenDeathWalls = 4,
 };
 
 static const char crossroadsLayout[] = {

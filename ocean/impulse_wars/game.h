@@ -632,7 +632,11 @@ void createWeaponPickup(iwEnv *e) {
     b2Vec2 pos;
     e->lastSpawnQuad = (e->lastSpawnQuad + 1) % 4;
     if (!findOpenPos(e, WEAPON_PICKUP_SHAPE, &pos, e->lastSpawnQuad)) {
-        ERROR("no open position for weapon pickup");
+        // if we couldn't find a position in a specific quad fallback to
+        // searching across the whole map
+        if (!findOpenPos(e, WEAPON_PICKUP_SHAPE, &pos, -1)) {
+            ERRORF("no open position for weapon pickup %d; map %d", cc_array_size(e->pickups), e->mapIdx);
+        }
     }
 
     weaponPickupEntity *pickup = fastCalloc(1, sizeof(weaponPickupEntity));
