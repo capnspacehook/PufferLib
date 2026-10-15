@@ -1,9 +1,11 @@
-// CPU Impulse Wars encoder: map grid CNN, wall/weapon/ray type embeddings +
-// projection, then MinGRU + decoder. Weight order matches CUDA
-// create_impulse_wars_encoder + algo decoder/mingru:
-//   wall embed (4 x 4), weapon embed (11 x 8), ray embed (8 x 4),
+// CPU Impulse Wars encoder: map grid CNN, one-hot wall/weapon/ray types +
+// projection plus the max pooled projectile branch, then MinGRU + decoder.
+// Weight order matches CUDA create_impulse_wars_encoder + algo
+// decoder/mingru:
 //   conv1 (32 x 90), conv2 (64 x 288), conv3 (64 x 576),
 //   proj (hidden x IW_CONCAT),
+//   projectile l1 (IW_PROJ_HIDDEN x IW_PROJ_FEATURES),
+//   projectile l2 (hidden x IW_PROJ_HIDDEN),
 //   decoder ((atn_sum+1) x hidden), decoder logstd (NUM_ATNS) if continuous,
 //   mingru layers (3*hidden x hidden each).
 // CONTINUOUS_ACTIONS in impulse_wars.h selects gaussian mean or multidiscrete
@@ -14,9 +16,6 @@
 
 typedef struct ImpulseWarsNet {
     int num_agents;
-    float *wall_emb;
-    float *weapon_emb;
-    float *ray_emb;
     // one-hot map grid planes, (num_agents, IW_C1_IC, IW_C1_IN, IW_C1_IN)
     float *grid;
     Conv2D *conv1;
@@ -25,6 +24,11 @@ typedef struct ImpulseWarsNet {
     int scalar_idx[IW_NUM_SCALARS];
     float *concat;
     Linear *proj;
+    // projectile records, (num_agents * IW_NUM_PROJECTILES, IW_PROJ_FEATURES)
+    float *rec;
+    int *rec_active;
+    Linear *proj_l1;
+    Linear *proj_l2;
     Linear *decoder;
     float *log_std;
     MinGRU *mingru;
@@ -46,13 +50,12 @@ static inline int puf_iw_align8(int n) {
 
 static inline int impulse_wars_weight_count(int hidden, int layers) {
     int n = 0;
-    n = puf_iw_align8(n + IW_WALL_EMB_N);
-    n = puf_iw_align8(n + IW_WEAPON_EMB_N);
-    n = puf_iw_align8(n + IW_RAY_EMB_N);
     n = puf_iw_align8(n + IW_C1_W_N);
     n = puf_iw_align8(n + IW_C2_W_N);
     n = puf_iw_align8(n + IW_C3_W_N);
     n = puf_iw_align8(n + hidden * IW_CONCAT);
+    n = puf_iw_align8(n + IW_PROJ_L1_N);
+    n = puf_iw_align8(n + hidden * IW_PROJ_HIDDEN);
     n = puf_iw_align8(n + (impulse_wars_atn_sum() + 1) * hidden);
 #if CONTINUOUS_ACTIONS
     n = puf_iw_align8(n + NUM_ATNS);
@@ -90,15 +93,17 @@ static inline ImpulseWarsNet *init_impulse_wars_net(Weights *weights, int num_ag
 
     ImpulseWarsNet *net = (ImpulseWarsNet *)calloc(1, sizeof(ImpulseWarsNet));
     net->num_agents = num_agents;
-    net->wall_emb = get_weights_aligned(weights, IW_WALL_EMB_N);
-    net->weapon_emb = get_weights_aligned(weights, IW_WEAPON_EMB_N);
-    net->ray_emb = get_weights_aligned(weights, IW_RAY_EMB_N);
     net->grid = (float *)calloc((size_t)num_agents * IW_C1_IC * IW_C1_IN * IW_C1_IN, sizeof(float));
     net->conv1 = make_conv2d(weights, num_agents, IW_C1_IN, IW_C1_IN, IW_C1_IC, IW_C1_OC, IW_C1_K, IW_C1_S);
     net->conv2 = make_conv2d(weights, num_agents, IW_C2_IN, IW_C2_IN, IW_C2_IC, IW_C2_OC, IW_C2_K, IW_C2_S);
     net->conv3 = make_conv2d(weights, num_agents, IW_C3_IN, IW_C3_IN, IW_C3_IC, IW_C3_OC, IW_C3_K, IW_C3_S);
     net->concat = (float *)calloc((size_t)num_agents * IW_CONCAT, sizeof(float));
     net->proj = make_linear(weights, num_agents, IW_CONCAT, hidden);
+    const int recs = num_agents * IW_NUM_PROJECTILES;
+    net->rec = (float *)calloc((size_t)recs * IW_PROJ_FEATURES, sizeof(float));
+    net->rec_active = (int *)calloc((size_t)recs, sizeof(int));
+    net->proj_l1 = make_linear(weights, recs, IW_PROJ_FEATURES, IW_PROJ_HIDDEN);
+    net->proj_l2 = make_linear(weights, recs, IW_PROJ_HIDDEN, hidden);
     net->decoder = make_linear(weights, num_agents, hidden, impulse_wars_atn_sum() + 1);
 #if CONTINUOUS_ACTIONS
     net->log_std = get_weights_aligned(weights, NUM_ATNS);
@@ -111,7 +116,7 @@ static inline ImpulseWarsNet *init_impulse_wars_net(Weights *weights, int num_ag
 
     int n = 0;
     for (int i = 0; i < OBS_SIZE; i++) {
-        if (!iw_is_type_slot(i)) {
+        if (iw_is_scalar(i)) {
             net->scalar_idx[n++] = i;
         }
     }
@@ -151,6 +156,44 @@ static inline void impulse_wars_grid_cnn(ImpulseWarsNet *net, const float *obser
     iw_relu_inplace(net->conv3->output, B * IW_CONV_FLAT);
 }
 
+// projectile branch: shared Linear -> GELU -> Linear over every projectile
+// record, max pooled over the active records and added to proj->output
+static inline void impulse_wars_proj_branch(ImpulseWarsNet *net, const float *observations) {
+    const int recs = net->num_agents * IW_NUM_PROJECTILES;
+    for (int row = 0; row < recs; row++) {
+        const float *slot = observations + (row / IW_NUM_PROJECTILES) * OBS_SIZE + iw_proj_slot_idx(row % IW_NUM_PROJECTILES);
+        for (int f = 0; f < IW_PROJ_FEATURES; f++) {
+            net->rec[row * IW_PROJ_FEATURES + f] = iw_proj_feature(slot[iw_proj_field(f)], f);
+        }
+        net->rec_active[row] = iw_proj_active(slot[1]);
+    }
+    linear(net->proj_l1, net->rec);
+    for (int i = 0; i < recs * IW_PROJ_HIDDEN; i++) {
+        net->proj_l1->output[i] = iw_gelu(net->proj_l1->output[i]);
+    }
+    linear(net->proj_l2, net->proj_l1->output);
+
+    const int hidden = net->proj->output_dim;
+    for (int b = 0; b < net->num_agents; b++) {
+        for (int h = 0; h < hidden; h++) {
+            float best = 0.0f;
+            int bestRecord = -1;
+            for (int r = 0; r < IW_NUM_PROJECTILES; r++) {
+                const int row = b * IW_NUM_PROJECTILES + r;
+                if (!net->rec_active[row]) {
+                    continue;
+                }
+                const float v = net->proj_l2->output[row * hidden + h];
+                if (bestRecord < 0 || v > best) {
+                    best = v;
+                    bestRecord = r;
+                }
+            }
+            net->proj->output[b * hidden + h] += best;
+        }
+    }
+}
+
 static inline void impulse_wars_encode(ImpulseWarsNet *net, const float *observations) {
     impulse_wars_grid_cnn(net, observations);
     for (int b = 0; b < net->num_agents; b++) {
@@ -158,26 +201,17 @@ static inline void impulse_wars_encode(ImpulseWarsNet *net, const float *observa
         float *concat = net->concat + b * IW_CONCAT;
         memcpy(concat, net->conv3->output + b * IW_CONV_FLAT, IW_CONV_FLAT * sizeof(float));
         concat += IW_CONV_FLAT;
-        for (int j = 0; j < IW_NUM_WALL_SLOTS; j++) {
-            int row = iw_type_idx(obs[iw_wall_slot_idx(j)], IW_WALL_VOCAB);
-            memcpy(concat + j * IW_WALL_DIM, net->wall_emb + row * IW_WALL_DIM, IW_WALL_DIM * sizeof(float));
+        for (int c = 0; c < IW_ONEHOT_COLS; c++) {
+            const iwOneHotCol col = iw_onehot_col(c);
+            concat[c] = iw_onehot_value(obs[col.obsIdx], col);
         }
-        concat += IW_WALL_COLS;
-        for (int j = 0; j < IW_NUM_WEAPON_SLOTS; j++) {
-            int row = iw_type_idx(obs[iw_weapon_slot_idx(j)], IW_WEAPON_VOCAB);
-            memcpy(concat + j * IW_WEAPON_DIM, net->weapon_emb + row * IW_WEAPON_DIM, IW_WEAPON_DIM * sizeof(float));
-        }
-        concat += IW_WEAPON_COLS;
-        for (int j = 0; j < IW_NUM_RAY_SLOTS; j++) {
-            int row = iw_type_idx(obs[iw_ray_slot_idx(j)], IW_RAY_VOCAB);
-            memcpy(concat + j * IW_RAY_DIM, net->ray_emb + row * IW_RAY_DIM, IW_RAY_DIM * sizeof(float));
-        }
-        concat += IW_RAY_COLS;
+        concat += IW_ONEHOT_COLS;
         for (int j = 0; j < IW_NUM_SCALARS; j++) {
             concat[j] = obs[net->scalar_idx[j]];
         }
     }
     linear(net->proj, net->concat);
+    impulse_wars_proj_branch(net, observations);
 }
 
 static inline void forward_impulse_wars(ImpulseWarsNet *net, const float *observations, float *terminals, float *actions) {

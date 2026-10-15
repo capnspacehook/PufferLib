@@ -72,7 +72,7 @@ static const uint16_t NEAR_WALL_INFO_OBS_OFFSET = 0;
 
 #define _NUM_FLOATING_WALL_OBS 8
 static const uint8_t NUM_FLOATING_WALL_OBS = _NUM_FLOATING_WALL_OBS;
-static const uint8_t FLOATING_WALL_INFO_OBS_SIZE = 6;
+static const uint8_t FLOATING_WALL_INFO_OBS_SIZE = 7;
 static const uint8_t FLOATING_WALL_OBS_SIZE = NUM_FLOATING_WALL_OBS * FLOATING_WALL_INFO_OBS_SIZE;
 static const uint16_t FLOATING_WALL_INFO_OBS_OFFSET = NEAR_WALL_INFO_OBS_OFFSET + NEAR_WALL_OBS_SIZE;
 
@@ -104,11 +104,11 @@ static const float RAY_TIME_HORIZON = 2.0f;
 
 static const uint16_t ENEMY_DRONE_OBS_OFFSET = PROJECTILE_INFO_OBS_OFFSET + PROJECTILE_OBS_SIZE;
 // the ray to the enemy is last
-static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 29;
+static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 27;
 static const uint8_t ENEMY_DRONE_OBS_SIZE = ENEMY_DRONE_RAY_OBS_IDX + RAY_OBS_SIZE;
 
 // the rays are last
-static const uint8_t DRONE_RAY_OBS_IDX = 28;
+static const uint8_t DRONE_RAY_OBS_IDX = 27;
 static const uint8_t DRONE_OBS_SIZE = DRONE_RAY_OBS_IDX + (NUM_DRONE_RAY_OBS * RAY_OBS_SIZE);
 
 static const uint8_t MISC_OBS_SIZE = 1 + NUM_MAPS;
@@ -124,12 +124,15 @@ static uint16_t obsSize(uint8_t numDrones) {
     return DISCRETE_OBS_SIZE + continuousObsSize(numDrones);
 }
 
-static const float MAX_X_POS = 150.0f;
-static const float MAX_Y_POS = 150.0f;
 static const float MAX_DISTANCE = 200.0f;
 static const float MAX_SPEED = 500.0f;
-static const float MAX_ACCEL = 1000.0f;
-static const float MAX_ANGLE = PI;
+
+static const float MAX_OBS_AGENT_POS = 50.0f;
+static const float MAX_OBS_RELATIVE_POS = 100.0f;
+static const float MAX_OBS_DRONE_DISTANCE = 150.0f;
+static const float MAX_OBS_WALL_POS = 50.0f;
+static const float MAX_OBS_ENTITY_SPEED = 75.0f;
+static const float MAX_OBS_PROJECTILE_SPEED = 150.0f;
 
 // action constants
 static const uint8_t CONTINUOUS_ACTION_SIZE = 7;

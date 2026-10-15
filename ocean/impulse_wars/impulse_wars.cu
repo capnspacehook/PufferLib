@@ -1,15 +1,15 @@
-// Impulse Wars CUDA encoder: map grid CNN, wall type, weapon type and ray
-// hit type embeddings, concat with the continuous obs, projection. The map
-// grid's packed cell codes are unpacked into one-hot channels by conv1's
-// im2col and run through 3 convs with ReLU. Wall types of near walls and
-// floating walls share one table; weapon types of pickups, projectiles,
-// enemy drones and the agent's drone share another; hit types of the enemy
-// and agent rays share a third. Included by src/ocean.cu.
+// Impulse Wars CUDA encoder: map grid CNN, projectile branch, one-hot type
+// slots, concat with the continuous obs, projection. The map grid's packed
+// cell codes are unpacked into one-hot channels by conv1's im2col and run
+// through 3 convs with ReLU. Projectile slots are records for a shared
+// Linear -> GELU -> Linear that is max pooled over the non-empty records and
+// added to the projection, like the OSRS entity encoder. Wall, weapon and
+// ray hit type slots are one-hot encoded into the concat. Included by
+// src/ocean.cu.
 
 #include "impulse_wars_obs.h"
 
 static_assert(OBS_SIZE >= IW_BASE_OBS_SIZE + IW_ENEMY_DRONE_SIZE && (OBS_SIZE - IW_BASE_OBS_SIZE) % IW_ENEMY_DRONE_SIZE == 0, "impulse_wars encoder obs layout does not match OBS_SIZE");
-static_assert(IW_EMB_N <= 1024, "impulse_wars embed tables too big for shared memory");
 static_assert(IW_GRID_CODE_MAX < 256, "impulse_wars map grid codes must be exact in bf16");
 static_assert(IW_C3_OUT == 3, "impulse_wars CNN output should keep a 3x3 layout");
 
@@ -22,7 +22,7 @@ static constexpr IwScalarIdx iw_make_scalar_idx() {
     IwScalarIdx t = {};
     int n = 0;
     for (int i = 0; i < OBS_SIZE; i++) {
-        if (!iw_is_type_slot(i)) {
+        if (iw_is_scalar(i)) {
             t.idx[n++] = i;
         }
     }
@@ -30,11 +30,8 @@ static constexpr IwScalarIdx iw_make_scalar_idx() {
 }
 
 static constexpr IwScalarIdx IW_SCALAR_IDX_HOST = iw_make_scalar_idx();
-static_assert(IW_SCALAR_IDX_HOST.idx[IW_NUM_SCALARS - 1] == OBS_SIZE - 1, "impulse_wars type slot count does not match IW_NUM_SCALARS");
+static_assert(IW_SCALAR_IDX_HOST.idx[IW_NUM_SCALARS - 1] == OBS_SIZE - 1, "impulse_wars scalar count does not match IW_NUM_SCALARS");
 __constant__ IwScalarIdx IW_SCALAR_IDX = iw_make_scalar_idx();
-
-// 2^24 fixed-point: integer atomics are associative (nmmo3 embed scatter).
-#define IW_FXP 16777216.0f
 
 // conv1 im2col straight from the obs cell codes, skipping the dense one-hot
 // planes: (B * IW_C1_SPATIAL, IW_C1_COL_W)
@@ -157,41 +154,8 @@ __global__ void iw_conv_grad_from_concat(
     conv_grad[idx] = to_float(conv_out[idx]) > 0.0f ? grad_concat[(int64_t)b * IW_CONCAT + c] : from_float(0.0f);
 }
 
-// maps embedding concat column c to its embedding table entry
-__device__ __forceinline__ int iw_emb_entry(const precision_t *obs, int c) {
-    if (c < IW_WALL_COLS) {
-        int slot = c / IW_WALL_DIM, d = c % IW_WALL_DIM;
-        int row = iw_type_idx(to_float(obs[iw_wall_slot_idx(slot)]), IW_WALL_VOCAB);
-        return row * IW_WALL_DIM + d;
-    }
-    c -= IW_WALL_COLS;
-    if (c < IW_WEAPON_COLS) {
-        int slot = c / IW_WEAPON_DIM, d = c % IW_WEAPON_DIM;
-        int row = iw_type_idx(to_float(obs[iw_weapon_slot_idx(slot)]), IW_WEAPON_VOCAB);
-        return IW_WALL_EMB_N + row * IW_WEAPON_DIM + d;
-    }
-    c -= IW_WEAPON_COLS;
-    int slot = c / IW_RAY_DIM, d = c % IW_RAY_DIM;
-    int row = iw_type_idx(to_float(obs[iw_ray_slot_idx(slot)]), IW_RAY_VOCAB);
-    return IW_WALL_EMB_N + IW_WEAPON_EMB_N + row * IW_RAY_DIM + d;
-}
-
-// reads embedding table entry e from the table it belongs to
-__device__ __forceinline__ precision_t iw_emb_value(
-    const precision_t *wall_emb, const precision_t *weapon_emb, const precision_t *ray_emb, int e
-) {
-    if (e < IW_WALL_EMB_N) {
-        return wall_emb[e];
-    }
-    e -= IW_WALL_EMB_N;
-    if (e < IW_WEAPON_EMB_N) {
-        return weapon_emb[e];
-    }
-    return ray_emb[e - IW_WEAPON_EMB_N];
-}
-
 __global__ void iw_concat_kernel(
-    precision_t *__restrict__ concat, const precision_t *__restrict__ obs, const precision_t *__restrict__ conv_out, const precision_t *__restrict__ wall_emb, const precision_t *__restrict__ weapon_emb, const precision_t *__restrict__ ray_emb, int B, int obs_size
+    precision_t *__restrict__ concat, const precision_t *__restrict__ obs, const precision_t *__restrict__ conv_out, int B, int obs_size
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= B * IW_CONCAT) {
@@ -203,81 +167,114 @@ __global__ void iw_concat_kernel(
     precision_t v;
     if (c < IW_CONV_FLAT) {
         v = conv_out[(int64_t)b * IW_CONV_FLAT + c];
-    } else if (c < IW_CONV_FLAT + IW_EMB_COLS) {
-        int e = iw_emb_entry(o, c - IW_CONV_FLAT);
-        v = iw_emb_value(wall_emb, weapon_emb, ray_emb, e);
+    } else if (c < IW_CONV_FLAT + IW_ONEHOT_COLS) {
+        iwOneHotCol col = iw_onehot_col(c - IW_CONV_FLAT);
+        v = from_float(iw_onehot_value(to_float(o[col.obsIdx]), col));
     } else {
-        v = o[IW_SCALAR_IDX.idx[c - IW_CONV_FLAT - IW_EMB_COLS]];
+        v = o[IW_SCALAR_IDX.idx[c - IW_CONV_FLAT - IW_ONEHOT_COLS]];
     }
     concat[idx] = v;
 }
 
-__global__ void iw_fxp_to_precision_kernel(
-    precision_t *__restrict__ wall_dst, precision_t *__restrict__ weapon_dst, precision_t *__restrict__ ray_dst, const long long *__restrict__ src
+// projectile records from the obs: (B * IW_NUM_PROJECTILES, IW_PROJ_FEATURES),
+// and whether each record is a projectile
+__global__ void iw_proj_gather(
+    precision_t *__restrict__ rec, int *__restrict__ active, const precision_t *__restrict__ obs, int B, int obs_size
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= IW_EMB_N) {
+    if (idx >= B * IW_NUM_PROJECTILES * IW_PROJ_FEATURES) {
         return;
     }
-    precision_t v = from_float((float)((double)src[idx] * (1.0 / (double)IW_FXP)));
-    if (idx < IW_WALL_EMB_N) {
-        wall_dst[idx] = v;
-    } else if (idx < IW_WALL_EMB_N + IW_WEAPON_EMB_N) {
-        weapon_dst[idx - IW_WALL_EMB_N] = v;
-    } else {
-        ray_dst[idx - IW_WALL_EMB_N - IW_WEAPON_EMB_N] = v;
+    int f = idx % IW_PROJ_FEATURES;
+    int row = idx / IW_PROJ_FEATURES;
+    int b = row / IW_NUM_PROJECTILES;
+    const precision_t *slot = obs + (int64_t)b * obs_size + iw_proj_slot_idx(row % IW_NUM_PROJECTILES);
+    rec[idx] = from_float(iw_proj_feature(to_float(slot[iw_proj_field(f)]), f));
+    if (f == 0) {
+        active[row] = iw_proj_active(to_float(slot[1]));
     }
 }
 
-// Per-block int64 histogram over all tables, then one global integer atomic
-// per table entry. Integer add is associative so scatter order does not
-// change bits.
-__global__ void iw_embed_backward_kernel(
-    long long *__restrict__ emb_wgrad_i,
-    const precision_t *__restrict__ grad_concat,
-    const precision_t *__restrict__ obs,
-    int B,
-    int obs_size
-) {
-    __shared__ long long acc[IW_EMB_N];
-    for (int i = threadIdx.x; i < IW_EMB_N; i += blockDim.x) {
-        acc[i] = 0;
+__global__ void iw_gelu_kernel(precision_t *__restrict__ out, const precision_t *__restrict__ in, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) {
+        return;
     }
-    __syncthreads();
-    int total = B * IW_EMB_COLS;
-    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < total;
-         idx += blockDim.x * gridDim.x) {
-        int c = idx % IW_EMB_COLS;
-        int b = idx / IW_EMB_COLS;
-        long long g = __float2ll_rn(to_float(grad_concat[(int64_t)b * IW_CONCAT + IW_CONV_FLAT + c]) * IW_FXP);
-        if (g == 0) {
+    out[idx] = from_float(iw_gelu(to_float(in[idx])));
+}
+
+// multiplies the gradient of GELU's output by GELU's derivative at its input
+__global__ void iw_gelu_backward(precision_t *__restrict__ grad, const precision_t *__restrict__ in, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) {
+        return;
+    }
+    grad[idx] = from_float(to_float(grad[idx]) * iw_gelu_grad(to_float(in[idx])));
+}
+
+// adds the max over the active projectile records of each record output
+// (B * IW_NUM_PROJECTILES, H) to out (B, H); a sample with no projectiles
+// adds 0. argmax is the pooled record, -1 if none, or null for rollout.
+__global__ void iw_proj_pool(
+    precision_t *__restrict__ out, int *__restrict__ argmax, const precision_t *__restrict__ rec_out, const int *__restrict__ active, int B, int H
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= B * H) {
+        return;
+    }
+    int b = idx / H;
+    int h = idx % H;
+    float best = 0.0f;
+    int bestRecord = -1;
+    for (int r = 0; r < IW_NUM_PROJECTILES; r++) {
+        int row = b * IW_NUM_PROJECTILES + r;
+        if (!active[row]) {
             continue;
         }
-        int e = iw_emb_entry(obs + (int64_t)b * obs_size, c);
-        atomicAdd((unsigned long long *)&acc[e], (unsigned long long)g);
-    }
-    __syncthreads();
-    for (int i = threadIdx.x; i < IW_EMB_N; i += blockDim.x) {
-        if (acc[i] != 0) {
-            atomicAdd((unsigned long long *)&emb_wgrad_i[i], (unsigned long long)acc[i]);
+        float v = to_float(rec_out[(int64_t)row * H + h]);
+        if (bestRecord < 0 || v > best) {
+            best = v;
+            bestRecord = r;
         }
     }
+    out[idx] = from_float(to_float(out[idx]) + best);
+    if (argmax) {
+        argmax[idx] = bestRecord;
+    }
+}
+
+// routes the encoder output gradient (B, H) to the pooled record outputs:
+// (B * IW_NUM_PROJECTILES, H), 0 for records that weren't pooled
+__global__ void iw_proj_pool_backward(
+    precision_t *__restrict__ grad_rec_out, const precision_t *__restrict__ grad, const int *__restrict__ argmax, int B, int H
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= B * IW_NUM_PROJECTILES * H) {
+        return;
+    }
+    int h = idx % H;
+    int row = idx / H;
+    int b = row / IW_NUM_PROJECTILES;
+    int r = row % IW_NUM_PROJECTILES;
+    grad_rec_out[idx] = argmax[b * H + h] == r ? grad[b * H + h] : from_float(0.0f);
 }
 
 struct IwEncoderWeights {
-    Prec wall_emb, weapon_emb, ray_emb, conv1_w, conv2_w, conv3_w, proj_w;
+    Prec conv1_w, conv2_w, conv3_w, proj_w, proj_l1_w, proj_l2_w;
     int obs_size, hidden;
 };
 
 struct IwEncoderActivations {
-    Prec concat, out, saved_obs;
+    Prec concat, out;
     // per conv: im2col, matmul rows, NCHW ReLU output, output gradient
     Prec col1, mm1, conv1_out, conv1_grad;
     Prec col2, mm2, conv2_out, conv2_grad;
     Prec col3, mm3, conv3_out, conv3_grad;
-    Prec wall_emb_wgrad, weapon_emb_wgrad, ray_emb_wgrad;
-    Prec conv1_wgrad, conv2_wgrad, conv3_wgrad, proj_wgrad;
-    Long emb_wgrad_i;
+    // projectile branch: records, first layer pre and post GELU, per record
+    // output; backward reuses rec_out and rec_h1 for their gradients
+    Prec rec, rec_z1, rec_h1, rec_out;
+    Int rec_active, rec_argmax;
+    Prec conv1_wgrad, conv2_wgrad, conv3_wgrad, proj_wgrad, proj_l1_wgrad, proj_l2_wgrad;
 };
 
 // matmul of a conv's im2col with its weights, then ReLU into NCHW
@@ -315,15 +312,23 @@ static void iw_conv_input_grad(
     iw_col2im<<<grid_size(B * ic * in * in), BLOCK_SIZE, 0, stream>>>(grad_in, col, B, ic, in, out, k, stride);
 }
 
+// projectile branch forward: adds the pooled records to a->out; argmax is
+// null for rollout
+static void iw_proj_forward(IwEncoderWeights *ew, IwEncoderActivations *a, Prec input, int *argmax, int B, cudaStream_t stream) {
+    int rows = B * IW_NUM_PROJECTILES;
+    iw_proj_gather<<<grid_size(rows * IW_PROJ_FEATURES), BLOCK_SIZE, 0, stream>>>(a->rec.data, a->rec_active.data, input.data, B, ew->obs_size);
+    puf_mm(&a->rec, &ew->proj_l1_w, &a->rec_z1, stream);
+    iw_gelu_kernel<<<grid_size(rows * IW_PROJ_HIDDEN), BLOCK_SIZE, 0, stream>>>(a->rec_h1.data, a->rec_z1.data, rows * IW_PROJ_HIDDEN);
+    puf_mm(&a->rec_h1, &ew->proj_l2_w, &a->rec_out, stream);
+    iw_proj_pool<<<grid_size(B * ew->hidden), BLOCK_SIZE, 0, stream>>>(a->out.data, argmax, a->rec_out.data, a->rec_active.data, B, ew->hidden);
+}
+
 static Prec iw_encoder_forward(
     void *w, void *activations, Prec input, cudaStream_t stream
 ) {
     IwEncoderWeights *ew = (IwEncoderWeights *)w;
     IwEncoderActivations *a = (IwEncoderActivations *)activations;
     int B = input.shape[0];
-    if (a->saved_obs.data) {
-        puf_copy(&a->saved_obs, &input, stream);
-    }
 
     iw_c1_im2col_obs<<<grid_size(B * IW_C1_SPATIAL * IW_C1_COL_W), BLOCK_SIZE, 0, stream>>>(
         a->col1.data, input.data, B, ew->obs_size
@@ -339,10 +344,11 @@ static Prec iw_encoder_forward(
     iw_conv_mm(a->col3.data, &ew->conv3_w, a->mm3.data, a->conv3_out.data, B, IW_C3_OC, IW_C3_SPATIAL, IW_C3_COL_W, stream);
 
     iw_concat_kernel<<<grid_size(B * IW_CONCAT), BLOCK_SIZE, 0, stream>>>(
-        a->concat.data, input.data, a->conv3_out.data, ew->wall_emb.data, ew->weapon_emb.data, ew->ray_emb.data, B, ew->obs_size
+        a->concat.data, input.data, a->conv3_out.data, B, ew->obs_size
     );
-
     puf_mm(&a->concat, &ew->proj_w, &a->out, stream);
+
+    iw_proj_forward(ew, a, input, a->rec_argmax.data, B, stream);
     return a->out;
 }
 
@@ -352,6 +358,18 @@ static void iw_encoder_backward(
     IwEncoderWeights *ew = (IwEncoderWeights *)w;
     IwEncoderActivations *a = (IwEncoderActivations *)activations;
     int B = grad.shape[0];
+
+    // projectile branch: rec_out holds the record output gradient and
+    // rec_h1, once its weight gradient is done, the first layer's
+    iw_proj_pool_backward<<<grid_size(B * IW_NUM_PROJECTILES * ew->hidden), BLOCK_SIZE, 0, stream>>>(
+        a->rec_out.data, grad.data, a->rec_argmax.data, B, ew->hidden
+    );
+    puf_mm_tn(&a->rec_out, &a->rec_h1, &a->proj_l2_wgrad, stream);
+    puf_mm_nn(&a->rec_out, &ew->proj_l2_w, &a->rec_h1, stream);
+    iw_gelu_backward<<<grid_size(B * IW_NUM_PROJECTILES * IW_PROJ_HIDDEN), BLOCK_SIZE, 0, stream>>>(
+        a->rec_h1.data, a->rec_z1.data, B * IW_NUM_PROJECTILES * IW_PROJ_HIDDEN
+    );
+    puf_mm_tn(&a->rec_h1, &a->rec, &a->proj_l1_wgrad, stream);
 
     puf_mm_tn(&grad, &a->concat, &a->proj_wgrad, stream);
     Prec grad_concat = {.data = a->concat.data, .shape = {B, IW_CONCAT}};
@@ -372,52 +390,50 @@ static void iw_encoder_backward(
         a->conv1_grad.data, a->conv1_out.data, B * IW_C1_OC * IW_C1_SPATIAL
     );
     iw_conv_wgrad(a->conv1_grad.data, a->conv1_wgrad.data, a->col1.data, a->mm1.data, B, IW_C1_OC, IW_C1_SPATIAL, IW_C1_COL_W, stream);
-
-    cudaMemsetAsync(a->emb_wgrad_i.data, 0, IW_EMB_N * sizeof(long), stream);
-    int blocks = (B * IW_EMB_COLS) / BLOCK_SIZE;
-    if (blocks < 1) {
-        blocks = 1;
-    }
-    if (blocks > 2048) {
-        blocks = 2048;
-    }
-    iw_embed_backward_kernel<<<blocks, BLOCK_SIZE, 0, stream>>>(
-        (long long *)a->emb_wgrad_i.data, grad_concat.data, a->saved_obs.data, B, ew->obs_size
-    );
-    iw_fxp_to_precision_kernel<<<grid_size(IW_EMB_N), BLOCK_SIZE, 0, stream>>>(
-        a->wall_emb_wgrad.data, a->weapon_emb_wgrad.data, a->ray_emb_wgrad.data, (long long *)a->emb_wgrad_i.data
-    );
 }
 
 static void iw_encoder_init_weights(void *w, ulong *seed, cudaStream_t stream) {
     IwEncoderWeights *ew = (IwEncoderWeights *)w;
-    puf_normal_init(&ew->wall_emb, 1.0f, (*seed)++, stream);
-    puf_normal_init(&ew->weapon_emb, 1.0f, (*seed)++, stream);
-    puf_normal_init(&ew->ray_emb, 1.0f, (*seed)++, stream);
     puf_kaiming_init(&ew->conv1_w, 1.0f, (*seed)++, stream);
     puf_kaiming_init(&ew->conv2_w, 1.0f, (*seed)++, stream);
     puf_kaiming_init(&ew->conv3_w, 1.0f, (*seed)++, stream);
     Prec pw = {.data = ew->proj_w.data, .shape = {ew->hidden, IW_CONCAT}};
     puf_kaiming_init(&pw, 1.0f, (*seed)++, stream);
+    // as asteroids' entity encoder: gain sqrt(2) into the nonlinearity
+    puf_kaiming_init(&ew->proj_l1_w, sqrtf(2.0f), (*seed)++, stream);
+    puf_kaiming_init(&ew->proj_l2_w, 1.0f, (*seed)++, stream);
 }
 
 static void iw_encoder_reg_params(void *w, Allocator *alloc) {
     IwEncoderWeights *ew = (IwEncoderWeights *)w;
-    ew->wall_emb = {.shape = {IW_WALL_VOCAB, IW_WALL_DIM}};
-    ew->weapon_emb = {.shape = {IW_WEAPON_VOCAB, IW_WEAPON_DIM}};
-    ew->ray_emb = {.shape = {IW_RAY_VOCAB, IW_RAY_DIM}};
     ew->conv1_w = {.shape = {IW_C1_OC, IW_C1_COL_W}};
     ew->conv2_w = {.shape = {IW_C2_OC, IW_C2_COL_W}};
     ew->conv3_w = {.shape = {IW_C3_OC, IW_C3_COL_W}};
     ew->proj_w = {.shape = {ew->hidden, IW_CONCAT}};
+    ew->proj_l1_w = {.shape = {IW_PROJ_HIDDEN, IW_PROJ_FEATURES}};
+    ew->proj_l2_w = {.shape = {ew->hidden, IW_PROJ_HIDDEN}};
     // the CPU net (impulse_wars_net.h) loads weights in this order
-    alloc_register(alloc, &ew->wall_emb);
-    alloc_register(alloc, &ew->weapon_emb);
-    alloc_register(alloc, &ew->ray_emb);
     alloc_register(alloc, &ew->conv1_w);
     alloc_register(alloc, &ew->conv2_w);
     alloc_register(alloc, &ew->conv3_w);
     alloc_register(alloc, &ew->proj_w);
+    alloc_register(alloc, &ew->proj_l1_w);
+    alloc_register(alloc, &ew->proj_l2_w);
+}
+
+// projectile branch forward buffers, used by both training and rollout
+static void iw_reg_proj_acts(IwEncoderActivations *a, Allocator *alloc, int B, int hidden) {
+    int rows = B * IW_NUM_PROJECTILES;
+    a->rec = {.shape = {rows, IW_PROJ_FEATURES}};
+    a->rec_z1 = {.shape = {rows, IW_PROJ_HIDDEN}};
+    a->rec_h1 = {.shape = {rows, IW_PROJ_HIDDEN}};
+    a->rec_out = {.shape = {rows, hidden}};
+    a->rec_active = {.shape = {rows}};
+    alloc_register(alloc, &a->rec);
+    alloc_register(alloc, &a->rec_z1);
+    alloc_register(alloc, &a->rec_h1);
+    alloc_register(alloc, &a->rec_out);
+    alloc_register(alloc, &a->rec_active);
 }
 
 // forward CNN buffers, used by both training and rollout
@@ -450,34 +466,31 @@ static void iw_encoder_reg_train(
     *a = {};
     a->concat = {.shape = {B_TT, IW_CONCAT}};
     a->out = {.shape = {B_TT, ew->hidden}};
-    a->saved_obs = {.shape = {B_TT, ew->obs_size}};
     alloc_register(acts, &a->concat);
     alloc_register(acts, &a->out);
-    alloc_register(acts, &a->saved_obs);
     iw_reg_conv_acts(a, acts, B_TT);
+    iw_reg_proj_acts(a, acts, B_TT, ew->hidden);
+    a->rec_argmax = {.shape = {B_TT, ew->hidden}};
+    alloc_register(acts, &a->rec_argmax);
     a->conv1_grad = {.shape = {B_TT * IW_C1_OC * IW_C1_SPATIAL}};
     a->conv2_grad = {.shape = {B_TT * IW_C2_OC * IW_C2_SPATIAL}};
     a->conv3_grad = {.shape = {B_TT * IW_CONV_FLAT}};
     alloc_register(acts, &a->conv1_grad);
     alloc_register(acts, &a->conv2_grad);
     alloc_register(acts, &a->conv3_grad);
-    a->wall_emb_wgrad = {.shape = {IW_WALL_VOCAB, IW_WALL_DIM}};
-    a->weapon_emb_wgrad = {.shape = {IW_WEAPON_VOCAB, IW_WEAPON_DIM}};
-    a->ray_emb_wgrad = {.shape = {IW_RAY_VOCAB, IW_RAY_DIM}};
     a->conv1_wgrad = {.shape = {IW_C1_OC, IW_C1_COL_W}};
     a->conv2_wgrad = {.shape = {IW_C2_OC, IW_C2_COL_W}};
     a->conv3_wgrad = {.shape = {IW_C3_OC, IW_C3_COL_W}};
     a->proj_wgrad = {.shape = {ew->hidden, IW_CONCAT}};
-    a->emb_wgrad_i = {.shape = {IW_EMB_N}};
+    a->proj_l1_wgrad = {.shape = {IW_PROJ_HIDDEN, IW_PROJ_FEATURES}};
+    a->proj_l2_wgrad = {.shape = {ew->hidden, IW_PROJ_HIDDEN}};
     // same order as the params in iw_encoder_reg_params
-    alloc_register(grads, &a->wall_emb_wgrad);
-    alloc_register(grads, &a->weapon_emb_wgrad);
-    alloc_register(grads, &a->ray_emb_wgrad);
     alloc_register(grads, &a->conv1_wgrad);
     alloc_register(grads, &a->conv2_wgrad);
     alloc_register(grads, &a->conv3_wgrad);
     alloc_register(grads, &a->proj_wgrad);
-    alloc_register(acts, &a->emb_wgrad_i);
+    alloc_register(grads, &a->proj_l1_wgrad);
+    alloc_register(grads, &a->proj_l2_wgrad);
 }
 
 static void iw_encoder_reg_rollout(
@@ -491,6 +504,7 @@ static void iw_encoder_reg_rollout(
     alloc_register(alloc, &a->concat);
     alloc_register(alloc, &a->out);
     iw_reg_conv_acts(a, alloc, B);
+    iw_reg_proj_acts(a, alloc, B, ew->hidden);
 }
 
 static void *iw_encoder_create_weights(void *self) {
