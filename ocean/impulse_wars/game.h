@@ -635,7 +635,7 @@ void createWeaponPickup(iwEnv *e) {
         // if we couldn't find a position in a specific quad fallback to
         // searching across the whole map
         if (!findOpenPos(e, WEAPON_PICKUP_SHAPE, &pos, -1)) {
-            ERRORF("no open position for weapon pickup %d; map %d", cc_array_size(e->pickups), e->mapIdx);
+            ERRORF("no open position for weapon pickup %zu; map %d", cc_array_size(e->pickups), e->mapIdx);
         }
     }
 
