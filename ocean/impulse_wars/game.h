@@ -1228,7 +1228,8 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
     return killer;
 }
 
-void findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
+// returns the index of the killer, or -1 if it's unknown
+int8_t findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     float maxMoveContrib = -FLT_MAX;
     physicsSource source = {0};
     DEBUG_LOG("finding drone killer");
@@ -1248,7 +1249,7 @@ void findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     if (killer == -1) {
         DEBUG_LOGF(">>> drone %d killed by UNKNOWN", drone->idx);
         e->stats[drone->idx].unknownKills++;
-        return;
+        return -1;
     }
 
     DEBUG_LOGF(">>> drone %d killed by drone %d", drone->idx, killer);
@@ -1262,6 +1263,40 @@ void findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     drone->killSource = source;
     droneEntity *killerDrone = safe_array_get_at(e->drones, killer);
     killerDrone->killed[drone->idx] = true;
+    return killer;
+}
+
+static inline bool physicsSourceIsWeapon(const physicsSource source) {
+    return source.type == RECOIL_PHYSICS || source.type == PROJECTILE_PHYSICS || source.type == EXPLOSION_PHYSICS;
+}
+
+void recordDeathAnalysis(iwEnv *e, const droneEntity *drone, const int8_t killer, const wallEntity *killWall) {
+    droneAnalysisStats *stats = &e->analysisStats[drone->idx];
+    stats->diedHolding[drone->weaponInfo->type]++;
+    if (killer == -1) {
+        return;
+    }
+
+    const physicsSource source = drone->killSource;
+    const bool floatingWall = killWall != NULL && killWall->isFloating;
+    const bool weapon = physicsSourceIsWeapon(source);
+    if (killer == drone->idx) {
+        stats->selfKillsBySource[source.type]++;
+        stats->floatingWallSelfKills += floatingWall;
+        if (weapon) {
+            stats->selfKillsByWeapon[source.weapon]++;
+            stats->boostedSelfKills[source.weapon] += source.boosted;
+        }
+        return;
+    }
+
+    stats->deathsBySource[source.type]++;
+    stats->floatingWallDeaths += floatingWall;
+    if (weapon) {
+        droneAnalysisStats *killerStats = &e->analysisStats[killer];
+        killerStats->killsByWeapon[source.weapon]++;
+        killerStats->boostedKills[source.weapon] += source.boosted;
+    }
 }
 
 void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
@@ -1270,7 +1305,8 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     }
     DEBUG_LOGF("drone %d died", drone->idx);
 
-    findDroneKiller(e, drone, killWall);
+    const int8_t killer = findDroneKiller(e, drone, killWall);
+    recordDeathAnalysis(e, drone, killer, killWall);
 
     for (size_t i = 0; i < cc_array_size(drone->physicsTracking); i++) {
         physicsStepInfo *physicsStep = safe_array_get_at(drone->physicsTracking, i);
@@ -1460,6 +1496,7 @@ void createProjectile(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
 
     projectileEntity *projectile = fastCalloc(1, sizeof(projectileEntity));
     projectile->droneIdx = drone->idx;
+    projectile->spawnFrame = e->episodeLength;
     projectile->bodyID = projectileBodyID;
     projectile->shapeID = projectileShapeID;
     projectile->weaponInfo = drone->weaponInfo;
@@ -1789,6 +1826,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     } else {
         source.type = EXPLOSION_PHYSICS;
         source.weapon = ctx->projectile->weaponInfo->type;
+        source.boosted = ctx->projectile->boosted;
     }
 
     switch (entity->type) {
@@ -1802,7 +1840,16 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         }
         wall->velocity = b2Body_GetLinearVelocity(wall->bodyID);
         break;
-    case PROJECTILE_ENTITY:
+    case PROJECTILE_ENTITY: {
+        // a burst on the frame a projectile was fired boosts it
+        const bool boost = ctx->isBurst && !projectile->boosted && projectile->droneIdx == ctx->parentDrone->idx && projectile->spawnFrame == ctx->e->episodeLength;
+        const float speedBefore = projectile->speed;
+        droneAnalysisStats *stats = &ctx->e->analysisStats[projectile->droneIdx];
+        if (boost) {
+            projectile->boosted = true;
+            stats->boostedShotsFired[projectile->weaponInfo->type]++;
+        }
+
         b2Body_ApplyLinearImpulseToCenter(bodyID, impulse, true);
         // mine launcher projectiles explode when caught in another
         // explosion, explode this mine only once
@@ -1812,8 +1859,13 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         }
 
         fixProjectileSpeed(projectile);
+        if (boost) {
+            stats->boostedSpeedBefore[projectile->weaponInfo->type] += speedBefore;
+            stats->boostedSpeedAfter[projectile->weaponInfo->type] += projectile->speed;
+        }
 
         break;
+    }
     case DRONE_ENTITY:
         if (drone->idx == ctx->parentDrone->idx && !ctx->isBurst) {
             drone->stepInfo.ownShotTaken = true;
@@ -1827,6 +1879,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         } else {
             DEBUG_LOGF("drone %d hit drone %d with explosion from weapon %d", ctx->parentDrone->idx, drone->idx, ctx->projectile->weaponInfo->type);
             ctx->e->stats[ctx->parentDrone->idx].shotsHit[ctx->projectile->weaponInfo->type]++;
+            ctx->e->analysisStats[ctx->parentDrone->idx].boostedShotsHit[ctx->projectile->weaponInfo->type] += ctx->projectile->boosted;
             ctx->e->stats[ctx->parentDrone->idx].totalShotsHit++;
             DEBUG_LOGF("drone %d hit by explosion from weapon %d from drone %d", drone->idx, ctx->projectile->weaponInfo->type, ctx->parentDrone->idx);
         }
@@ -2776,6 +2829,7 @@ void weaponPickupsOverlapStep(iwEnv *e) {
             disableWeaponPickup(e, pickup);
             drone->stepInfo.pickedUpWeapon = true;
             drone->stepInfo.prevWeapon = drone->weaponInfo->type;
+            e->analysisStats[drone->idx].pickupsFrom[drone->weaponInfo->type][pickup->weapon]++;
             droneChangeWeapon(e, drone, pickup->weapon);
 
             e->stats[drone->idx].weaponsPickedUp[pickup->weapon]++;
@@ -2934,7 +2988,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
     projectileEntity *projectile = proj->entity;
     projectile->contacts++;
 
-    const physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = projectile->weaponInfo->type};
+    const physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = projectile->weaponInfo->type, .boosted = projectile->boosted};
 
     // e (shape B in the collision) will be NULL if it's another
     // projectile that was just destroyed
@@ -3022,6 +3076,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             }
             shooterDrone->stepInfo.shotHit[hitDrone->idx] += hitStrength * SHOT_HIT_IMPULSE_SCALE;
             e->stats[shooterDrone->idx].shotsHit[projectile->weaponInfo->type]++;
+            e->analysisStats[shooterDrone->idx].boostedShotsHit[projectile->weaponInfo->type] += projectile->boosted;
             e->stats[shooterDrone->idx].totalShotsHit++;
             DEBUG_LOGF("drone %d hit drone %d with weapon %d", shooterDrone->idx, hitDrone->idx, projectile->weaponInfo->type);
             hitDrone->stepInfo.shotTaken[shooterDrone->idx] += hitStrength * SHOT_HIT_IMPULSE_SCALE;

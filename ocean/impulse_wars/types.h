@@ -223,6 +223,10 @@ typedef struct projectileEntity {
     uint8_t dronesBehindWalls[_MAX_DRONES];
     CC_Array *entsInBlackHole;
     bool needsToBeDestroyed;
+    // episode frame the projectile was fired on, and whether its owner
+    // burst on that same frame and boosted it
+    uint16_t spawnFrame;
+    bool boosted;
 
     entity *ent;
 
@@ -287,6 +291,9 @@ enum physicsType {
 typedef struct physicsSource {
     enum physicsType type;
     enum weaponType weapon;
+    // the projectile was boosted by its owner's burst on the frame it
+    // was fired
+    bool boosted;
 } physicsSource;
 
 typedef struct physicsStepInfo {
@@ -386,6 +393,31 @@ typedef struct droneStats {
     float totalAimError;
     float shotsAimedAway;
 } droneStats;
+
+// per episode stats for offline analysis; kept out of Log so they aren't
+// aggregated or logged during training
+typedef struct droneAnalysisStats {
+    // weapon kills credit the weapon that made the killing push; kills by
+    // movement, drone collisions and bursts are only in deathsBySource
+    float killsByWeapon[_NUM_WEAPONS];
+    float selfKillsByWeapon[_NUM_WEAPONS];
+    float deathsBySource[NUM_PHYSICS_TYPES];
+    float selfKillsBySource[NUM_PHYSICS_TYPES];
+    float floatingWallDeaths;
+    float floatingWallSelfKills;
+    float diedHolding[_NUM_WEAPONS];
+    // pickups by the weapon held before and the weapon picked up
+    float pickupsFrom[_NUM_WEAPONS][_NUM_WEAPONS];
+    // projectiles boosted by their owner's burst on the frame they were fired
+    float boostedShotsFired[_NUM_WEAPONS];
+    float boostedShotsHit[_NUM_WEAPONS];
+    float boostedKills[_NUM_WEAPONS];
+    float boostedSelfKills[_NUM_WEAPONS];
+    // projectile speed right before and after the boost; mines explode
+    // when boosted so they're excluded
+    float boostedSpeedBefore[_NUM_WEAPONS];
+    float boostedSpeedAfter[_NUM_WEAPONS];
+} droneAnalysisStats;
 
 struct Log {
     float length;
@@ -636,6 +668,9 @@ struct Env {
     uint16_t episodeLength;
     Log log;
     droneStats stats[_MAX_DRONES];
+    droneAnalysisStats analysisStats[_MAX_DRONES];
+    // analysisStats of the last finished episode, saved before the reset
+    droneAnalysisStats lastAnalysisStats[_MAX_DRONES];
 
     b2WorldId worldID;
     int8_t pinnedMapIdx;

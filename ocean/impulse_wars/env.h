@@ -848,6 +848,7 @@ void clearEnv(iwEnv *e) {
 
     e->episodeLength = 0;
     memset(e->stats, 0x0, sizeof(e->stats));
+    memset(e->analysisStats, 0x0, sizeof(e->analysisStats));
 
     for (size_t i = 0; i < cc_array_size(e->drones); i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
@@ -1460,6 +1461,7 @@ void endEpisode(iwEnv *e, const int8_t lastAlive, const int8_t lastAliveTeam) {
 
     memcpy(log.stats, e->stats, sizeof(e->stats));
     addLog(e, &log);
+    memcpy(e->lastAnalysisStats, e->analysisStats, sizeof(e->analysisStats));
 
     if (e->client != NULL) {
         e->roundState = ROUND_STATE_ENDING;
