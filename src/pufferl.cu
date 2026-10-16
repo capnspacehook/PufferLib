@@ -3015,7 +3015,17 @@ static PuffeRL* eval_make(Ini* ini, TrainContext* ctx, int mode, int render) {
     if (render) {
         puf_ini_put(ini, "train.horizon", "1");
     }
+    // Eval never trains; one minibatch segment keeps create_pufferl's
+    // learner-rows assert satisfied when render/match shrink total_agents.
+    // Restored after so run_train's logged ini keeps the trained value.
+    char mb_orig[32], mb_eval[32];
+    snprintf(mb_orig, sizeof(mb_orig), "%d",
+        (int)puf_ini_get(ini, "train", "minibatch_size"));
+    snprintf(mb_eval, sizeof(mb_eval), "%d",
+        (int)puf_ini_get(ini, "train", "horizon"));
+    puf_ini_put(ini, "train.minibatch_size", mb_eval);
     PuffeRL* p = create_pufferl(ini, ctx);
+    puf_ini_put(ini, "train.minibatch_size", mb_orig);
     if (match) {
         char a_buf[4096], b_buf[4096];
         const char* a = puf_checkpoint_path_key(ini, "load_model_path", a_buf, sizeof(a_buf));

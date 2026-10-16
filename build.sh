@@ -6,6 +6,9 @@ set -e
 #   ./build.sh breakout mybin        # Native -> ./mybin (does not clobber ./puffer)
 #   ./build.sh breakout --cu         # CUDA env (ENV_HEADER=ocean/ENV/ENV.cu; exclusive vs .h)
 #   ./build.sh robot_arm             # CUDA-only; implies --cu
+#   ./build.sh breakout --dynamic    # Link CUDA/NCCL/OpenMP/libstdc++ dynamically
+#                                    # (default is static: runs on any host with
+#                                    # an NVIDIA driver and glibc >= 2.35)
 #   ./build.sh breakout --float      # float32 precision (required for --slowly)
 #   ./build.sh breakout --cpu        # Play/eval binary (optimized) -> ./ENV
 #   ./build.sh osrs_inferno --cpu     # OSRS visual policy viewer -> ./osrs_inferno
@@ -36,9 +39,11 @@ fi
 
 USE_GPU_ENV=0
 SNAKE_RAW=0
+STATIC_CUDA=1
 while [ $# -gt 0 ]; do
     case $1 in
         --cu) USE_GPU_ENV=1 ;;
+        --dynamic) STATIC_CUDA=0 ;;
         --float) PRECISION="-DPRECISION_FLOAT" ;;
         --no-onehot) SNAKE_RAW=1 ;;
         --debug) DEBUG=1 ;;
@@ -524,6 +529,25 @@ if [ "$MODE" = "native" ]; then
                 -o "$OSRS_RENDER_OBJECT"
             ;;
     esac
+    # Static: only the driver (libnvidia-ml, libcuda via cudart) and glibc stay
+    # dynamic, so the binary runs outside this container.
+    if [ "$STATIC_CUDA" = "1" ]; then
+        NCCL_LIB=-lnccl
+        for dir in ${NCCL_LFLAG#-L} $CUDA_HOME/lib64; do
+            if [ -f "$dir/libnccl_static.a" ]; then NCCL_LIB=-lnccl_static; break; fi
+        done
+        CUDA_LIBS=(
+            -cudart=static $NCCL_LIB
+            -lcublas_static -lcublasLt_static
+            -lcusolver_static -lcusolver_lapack_static -lcusparse_static
+            -lnvJitLink_static -lcurand_static -lculibos -lnvidia-ml
+            "$(g++ -print-file-name=libgomp.a)"
+            -Xcompiler=-static-libstdc++ -Xcompiler=-static-libgcc
+            src/glibc_compat.c
+        )
+    else
+        CUDA_LIBS=(-lcudart -lnccl -lnvidia-ml -lcublas -lcusolver -lcurand $OMP_LIB)
+    fi
     echo "Compiling $ENV_HEADER -> $TRAIN_BIN..."
     $NVCC $NVCC_OPT -arch=$ARCH -std=c++17 \
         -I. -Isrc -I$SRC_DIR -Ivendor \
@@ -544,8 +568,8 @@ if [ "$MODE" = "native" ]; then
         "${LINK_ARCHIVES[@]}" \
         -L$CUDA_HOME/lib64 $NCCL_LFLAG \
         "${EXTRA_LDFLAGS[@]}" \
-        -lcudart -lnccl -lnvidia-ml -lcublas -lcusolver -lcurand \
-        -lm -Xlinker=-lpthread $OMP_LIB "${STANDALONE_LDFLAGS[@]}" \
+        "${CUDA_LIBS[@]}" \
+        -lm -Xlinker=-lpthread "${STANDALONE_LDFLAGS[@]}" \
         -o "$TRAIN_BIN"
     echo "Built: ./$TRAIN_BIN"
 
