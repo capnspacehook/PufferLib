@@ -202,14 +202,14 @@ static const float DRONE_BURST_IMPACT_MIN = 35.0f;
 static const float DRONE_BURST_COOLDOWN = 0.5f;
 
 static const float DRONE_SHIELD_RADIUS = DRONE_RADIUS * 1.5f;
-static const float DRONE_SHIELD_HEALTH = 100.0f;
+static const float DRONE_SHIELD_HEALTH = 150.0f;
 static const float DRONE_SHIELD_START_DURATION = 1.5f;
 static const float DRONE_SHIELD_RESPAWN_DURATION = 3.0f;
-static const float DRONE_SHIELD_EXPLOSION_REDUCTION = 0.5f;
+static const float DRONE_SHIELD_EXPLOSION_REDUCTION = 0.66f;
 static const float DRONE_SHIELD_HEALTH_IMPULSE_COEF = 0.5f;
 static const float DRONE_SHIELD_HEALTH_EXPLOSION_COEF = 0.8;
 static const float DRONE_SHIELD_BREAK_ENERGY_COST = -0.33f;
-static const float DRONE_SHIELD_BREAK_ENERGY_REFILL = 0.25f;
+static const float DRONE_SHIELD_BREAK_ENERGY_REFILL = 0.33f;
 
 #define PROJECTILE_ENERGY_REFILL_COEF 0.001f
 static const float EXPLOSION_ENERGY_REFILL_COEF = 1.75f;
@@ -231,7 +231,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define STANDARD_FIRE_MAGNITUDE 17.0f
 #define STANDARD_DAMPING 0.0f
 #define STANDARD_CHARGE 0.0f
-#define STANDARD_COOL_DOWN 0.37f
+#define STANDARD_COOL_DOWN 0.375f
 #define STANDARD_MAX_DISTANCE 80.0f
 #define STANDARD_RADIUS 0.2
 #define STANDARD_DENSITY 3.25f
@@ -246,7 +246,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define MACHINEGUN_FIRE_MAGNITUDE 30.0f
 #define MACHINEGUN_DAMPING 0.1f
 #define MACHINEGUN_CHARGE 0.0f
-#define MACHINEGUN_COOL_DOWN 0.07f
+#define MACHINEGUN_COOL_DOWN 0.075f
 #define MACHINEGUN_MAX_DISTANCE 225.0f
 #define MACHINEGUN_RADIUS 0.15f
 #define MACHINEGUN_DENSITY 3.2f
@@ -255,14 +255,16 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define MACHINEGUN_BOUNCE 1
 #define MACHINEGUN_ENERGY_REFILL_COEF 0.2f
 #define MACHINEGUN_SPAWN_WEIGHT 3.0f
-#define MACHINEGUN_HEAT_BUILDUP 9
+#define MACHINEGUN_SWAY (5.7f * PI / 180.0f)
+#define MACHINEGUN_SWAY_HEAT 120.0f
+#define MACHINEGUN_HEAT_BUILDUP 10
 
 #define SNIPER_AMMO 3
 #define SNIPER_PROJECTILES 1
-#define SNIPER_RECOIL_MAGNITUDE 96.0f
-#define SNIPER_FIRE_MAGNITUDE 300.0f
+#define SNIPER_RECOIL_MAGNITUDE 110.0f
+#define SNIPER_FIRE_MAGNITUDE 280.0f
 #define SNIPER_DAMPING 0.05f
-#define SNIPER_CHARGE 1.0f
+#define SNIPER_CHARGE 1.5f
 #define SNIPER_COOL_DOWN 1.5f
 #define SNIPER_MAX_DISTANCE INFINITE
 #define SNIPER_RADIUS 0.5f
@@ -277,10 +279,10 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define SHOTGUN_PROJECTILES 8
 #define SHOTGUN_RECOIL_MAGNITUDE 100.0f
 #define SHOTGUN_FIRE_MAGNITUDE 25.0f
-#define SHOTGUN_DAMPING 0.3f
+#define SHOTGUN_DAMPING 0.4f
 #define SHOTGUN_CHARGE 0.0f
 #define SHOTGUN_COOL_DOWN 0.8f
-#define SHOTGUN_MAX_DISTANCE 100.0f
+#define SHOTGUN_MAX_DISTANCE 75.0f
 #define SHOTGUN_RADIUS 0.15f
 #define SHOTGUN_DENSITY 2.5f
 #define SHOTGUN_MASS MASS(SHOTGUN_DENSITY, SHOTGUN_RADIUS)
@@ -288,13 +290,15 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define SHOTGUN_BOUNCE 1
 #define SHOTGUN_ENERGY_REFILL_COEF 0.5f
 #define SHOTGUN_SPAWN_WEIGHT 3.0f
+#define SHOTGUN_SPREAD (8.0f * PI / 180.0f)
+#define SHOTGUN_SPREAD_JITTER (1.0f * PI / 180.0f)
 
 #define IMPLODER_AMMO 1
 #define IMPLODER_PROJECTILES 1
 #define IMPLODER_RECOIL_MAGNITUDE 65.0f
 #define IMPLODER_FIRE_MAGNITUDE 60.0f
 #define IMPLODER_DAMPING 0.0f
-#define IMPLODER_CHARGE 2.0f
+#define IMPLODER_CHARGE 1.5f
 #define IMPLODER_COOL_DOWN 1.5f
 #define IMPLODER_MAX_DISTANCE INFINITE
 #define IMPLODER_RADIUS 0.8f
@@ -303,6 +307,8 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define IMPLODER_INV_MASS INV_MASS(IMPLODER_MASS)
 #define IMPLODER_BOUNCE 0
 #define IMPLODER_SPAWN_WEIGHT 1.0f
+#define IMPLODER_EXPLOSION_RADIUS 20.0f
+#define IMPLODER_EXPLOSION_IMPULSE -250.0f
 
 #define ACCELERATOR_AMMO 1
 #define ACCELERATOR_PROJECTILES 1
@@ -337,6 +343,8 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define FLAK_CANNON_SAFE_DISTANCE 25.0f
 #define FLAK_CANNON_PROXIMITY_RADIUS 2.0f
 #define FLAK_CANNON_SPAWN_WEIGHT 2.0f
+#define FLAK_CANNON_EXPLOSION_RADIUS 7.5f
+#define FLAK_CANNON_EXPLOSION_IMPULSE 15.0f
 
 #define MINE_LAUNCHER_AMMO 3
 #define MINE_LAUNCHER_PROJECTILES 1
@@ -352,6 +360,8 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define MINE_LAUNCHER_INV_MASS INV_MASS(MINE_LAUNCHER_MASS)
 #define MINE_LAUNCHER_BOUNCE INFINITE // this is to avoid mines sometimes exploding when hitting walls
 #define MINE_LAUNCHER_SPAWN_WEIGHT 2.0f
+#define MINE_LAUNCHER_EXPLOSION_RADIUS 15.0f
+#define MINE_LAUNCHER_EXPLOSION_IMPULSE 200.0f
 #define MINE_LAUNCHER_PROXIMITY_RADIUS 7.5f
 
 #define BLACK_HOLE_AMMO 3
@@ -366,11 +376,11 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define BLACK_HOLE_DENSITY 10.0f
 #define BLACK_HOLE_MASS MASS(BLACK_HOLE_DENSITY, BLACK_HOLE_RADIUS)
 #define BLACK_HOLE_INV_MASS INV_MASS(BLACK_HOLE_MASS)
-#define BLACK_HOLE_BOUNCE 0
+#define BLACK_HOLE_BOUNCE 1
 #define BLACK_HOLE_SPAWN_WEIGHT 2.0f
 #define BLACK_HOLE_PROXIMITY_RADIUS 10.0f
 #define BLACK_HOLE_PARENT_IGNORE_DISTANCE BLACK_HOLE_PROXIMITY_RADIUS * 1.5f
-#define BLACK_HOLE_PULL_MAGNITUDE -300.0f
+#define BLACK_HOLE_PULL_MAGNITUDE -350.0f
 // Seconds for the visual pull field and tint to fade after projectile destruction.
 #define BLACK_HOLE_DISTORTION_FADE_TIME 0.3f
 
@@ -379,7 +389,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define NUKE_RECOIL_MAGNITUDE 150.0f
 #define NUKE_FIRE_MAGNITUDE 85.0f
 #define NUKE_DAMPING 0.0f
-#define NUKE_CHARGE 5.0f
+#define NUKE_CHARGE 3.0f
 #define NUKE_COOL_DOWN 3.0f
 #define NUKE_MAX_DISTANCE INFINITE
 #define NUKE_RADIUS 0.8f
@@ -388,6 +398,8 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define NUKE_INV_MASS INV_MASS(NUKE_MASS)
 #define NUKE_BOUNCE 0
 #define NUKE_SPAWN_WEIGHT 0.5f
+#define NUKE_EXPLOSION_RADIUS 40.0f
+#define NUKE_EXPLOSION_IMPULSE 500.0f
 
 static const weaponInformation standard = {
     .type = STANDARD_WEAPON,
@@ -758,22 +770,17 @@ static float weaponFire(unsigned int *seed, const enum weaponType type) {
     }
 }
 
-static b2Vec2 weaponAdjustAim(unsigned int *seed, const enum weaponType type, const uint16_t heat, const b2Vec2 normAim) {
+static b2Vec2 weaponAdjustAim(unsigned int *seed, const enum weaponType type, const uint16_t heat, const b2Vec2 normAim, const uint8_t projIdx) {
     switch (type) {
     case MACHINEGUN_WEAPON: {
-        const float swayCoef = logBasef((heat / 5.0f) + 1, 180);
-        const float maxSway = 0.1f;
-        const float swayX = randFloat(seed, maxSway * -swayCoef, maxSway * swayCoef);
-        const float swayY = randFloat(seed, maxSway * -swayCoef, maxSway * swayCoef);
-        b2Vec2 machinegunAim = {.x = normAim.x + swayX, .y = normAim.y + swayY};
-        return b2Normalize(machinegunAim);
+        const float swayCoef = tanhf(SQUARED(heat / MACHINEGUN_SWAY_HEAT));
+        const float angle = randFloat(seed, -1.0f, 1.0f) * MACHINEGUN_SWAY * swayCoef;
+        return b2RotateVector(b2MakeRot(angle), normAim);
     }
     case SHOTGUN_WEAPON: {
-        const float maxOffset = 0.11f;
-        const float offsetX = randFloat(seed, -maxOffset, maxOffset);
-        const float offsetY = randFloat(seed, -maxOffset, maxOffset);
-        b2Vec2 shotgunAim = {.x = normAim.x + offsetX, .y = normAim.y + offsetY};
-        return b2Normalize(shotgunAim);
+        const float step = 2.0f * SHOTGUN_SPREAD / (SHOTGUN_PROJECTILES - 1);
+        const float angle = -SHOTGUN_SPREAD + projIdx * step + randFloat(seed, -SHOTGUN_SPREAD_JITTER, SHOTGUN_SPREAD_JITTER);
+        return b2RotateVector(b2MakeRot(angle), normAim);
     }
     default:
         return normAim;
@@ -785,22 +792,22 @@ static b2Vec2 weaponAdjustAim(unsigned int *seed, const enum weaponType type, co
 static void weaponExplosion(const enum weaponType type, b2ExplosionDef *explosionDef) {
     switch (type) {
     case IMPLODER_WEAPON:
-        explosionDef->radius = 15.0f;
-        explosionDef->impulsePerLength = -200.0f;
+        explosionDef->radius = IMPLODER_EXPLOSION_RADIUS;
+        explosionDef->impulsePerLength = IMPLODER_EXPLOSION_IMPULSE;
         return;
     case FLAK_CANNON_WEAPON:
-        explosionDef->radius = 7.5f;
+        explosionDef->radius = FLAK_CANNON_EXPLOSION_RADIUS;
         // will typically be closer to 45 with projectile velocity
         // factored in
-        explosionDef->impulsePerLength = 15.0f;
+        explosionDef->impulsePerLength = FLAK_CANNON_EXPLOSION_IMPULSE;
         return;
     case MINE_LAUNCHER_WEAPON:
-        explosionDef->radius = 15.0f;
-        explosionDef->impulsePerLength = 200.0f;
+        explosionDef->radius = MINE_LAUNCHER_EXPLOSION_RADIUS;
+        explosionDef->impulsePerLength = MINE_LAUNCHER_EXPLOSION_IMPULSE;
         return;
     case NUKE_WEAPON:
-        explosionDef->radius = 35.0f;
-        explosionDef->impulsePerLength = 350.0f;
+        explosionDef->radius = NUKE_EXPLOSION_RADIUS;
+        explosionDef->impulsePerLength = NUKE_EXPLOSION_IMPULSE;
         return;
     default:
         ERRORF("unknown weapon type %d for projectile explosion", type);

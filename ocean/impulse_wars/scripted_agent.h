@@ -1328,7 +1328,7 @@ bool defendAgainstProjectiles(botCtx *c, agentActions *actions) {
 
     // 1. shoot it away if the collision would happen far enough away
     bool shotAtThreat = false;
-    if (drone->weaponCooldown == 0.0f && drone->weaponInfo->charge == 0.0f && drone->weaponInfo->type != MINE_LAUNCHER_WEAPON) {
+    if (drone->weaponCooldown <= 0.0f && drone->weaponInfo->charge == 0.0f && drone->weaponInfo->type != MINE_LAUNCHER_WEAPON) {
         b2Vec2 aim;
         float distance;
         if (interceptAim(drone, threat->pos, threat->velocity, threat->weaponInfo->damping, &aim, &distance) && distance > threatBlast && safeToFire(e, drone, aim) && shotPathClear(c, aim, distance, NULL)) {
@@ -1545,7 +1545,7 @@ void burstBoost(botCtx *c, agentActions *actions) {
         return;
     }
     // release with the shot, keep charging until the weapon is ready
-    if (drone->weaponCooldown != 0.0f) {
+    if (drone->weaponCooldown > 0.0f) {
         actions->chargingBurst = true;
     } else {
         botEvent(c, BOT_EVENT_BOOST_RELEASE);
@@ -1560,7 +1560,7 @@ bool recoilBoost(botCtx *c, agentActions *actions, const b2Vec2 moveDir) {
     if (b2Equal(moveDir, b2Vec2_zero) || !b2Equal(actions->aim, b2Vec2_zero) || !weaponSafeForMovement(drone)) {
         return false;
     }
-    if (drone->weaponCooldown != 0.0f || drone->weaponCharge < drone->weaponInfo->charge - c->e->deltaTime) {
+    if (drone->weaponCooldown > 0.0f || drone->weaponCharge < drone->weaponInfo->charge - c->e->deltaTime) {
         return false;
     }
     if (b2Dot(drone->velocity, moveDir) >= BOOST_TOP_SPEED) {
@@ -2251,7 +2251,7 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
     }
 
     if (shoot) {
-        if (drone->weaponCooldown == 0.0f && drone->weaponCharge >= drone->weaponInfo->charge - e->deltaTime) {
+        if (drone->weaponCooldown <= 0.0f && drone->weaponCharge >= drone->weaponInfo->charge - e->deltaTime) {
             actions.move.x += enemyDroneDirection.x;
             actions.move.y += enemyDroneDirection.y;
             actions.move = b2Normalize(actions.move);

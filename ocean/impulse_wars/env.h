@@ -611,7 +611,7 @@ void computeObs(iwEnv *e) {
             continuousObs[continuousObsOffset++] = scaleValue(enemyShieldHealth, DRONE_SHIELD_HEALTH, true);
             continuousObs[continuousObsOffset++] = scaleValue(enemyShieldDuration, DRONE_SHIELD_RESPAWN_DURATION, true);
             continuousObs[continuousObsOffset++] = scaleAmmo(e, enemyDrone);
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->weaponCooldown, enemyDrone->weaponInfo->coolDown, true);
+            continuousObs[continuousObsOffset++] = scaleValue(max(enemyDrone->weaponCooldown, 0.0f), enemyDrone->weaponInfo->coolDown, true);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->weaponCharge, enemyDrone->weaponInfo->charge, true);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->energyLeft, DRONE_ENERGY_MAX, true);
             continuousObs[continuousObsOffset++] = (float)enemyDrone->energyFullyDepleted;
@@ -666,7 +666,7 @@ void computeObs(iwEnv *e) {
         continuousObs[continuousObsOffset++] = scaleValue(shieldHealth, DRONE_SHIELD_HEALTH, true);
         continuousObs[continuousObsOffset++] = scaleValue(shieldDuration, DRONE_SHIELD_RESPAWN_DURATION, true);
         continuousObs[continuousObsOffset++] = scaleAmmo(e, agentDrone);
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->weaponCooldown, agentDrone->weaponInfo->coolDown, true);
+        continuousObs[continuousObsOffset++] = scaleValue(max(agentDrone->weaponCooldown, 0.0f), agentDrone->weaponInfo->coolDown, true);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->weaponCharge, agentDrone->weaponInfo->charge, true);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->energyLeft, DRONE_ENERGY_MAX, true);
         continuousObs[continuousObsOffset++] = (float)agentDrone->energyFullyDepleted;

@@ -1490,8 +1490,7 @@ void createProjectile(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
     b2Vec2 forwardVel = b2MulSV(b2Dot(drone->velocity, normAim), normAim);
     b2Vec2 lateralVel = b2Sub(drone->velocity, forwardVel);
     lateralVel = b2MulSV(projectileShapeDef.density * DRONE_MOVE_AIM_COEF, lateralVel);
-    b2Vec2 aim = weaponAdjustAim(&e->rng, drone->weaponInfo->type, drone->heat, normAim);
-    b2Vec2 fire = b2MulAdd(lateralVel, weaponFire(&e->rng, drone->weaponInfo->type), aim);
+    b2Vec2 fire = b2MulAdd(lateralVel, weaponFire(&e->rng, drone->weaponInfo->type), normAim);
     b2Body_ApplyLinearImpulseToCenter(projectileBodyID, fire, true);
 
     projectileEntity *projectile = fastCalloc(1, sizeof(projectileEntity));
@@ -1690,13 +1689,9 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         return true;
     }
 
-    // don't explode the entity if it's behind a static or floating wall,
-    // but always consider floating walls for implosions
+    // don't explode the entity if it's behind a static wall
     const bool isImplosion = ctx->def->impulsePerLength < 0.0f;
     b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE};
-    if (!isImplosion) {
-        filter.maskBits |= FLOATING_WALL_SHAPE;
-    }
     if (posBehindWall(ctx->e, ctx->def->position, output.pointA, entity, filter, NULL)) {
         return true;
     }
@@ -1744,6 +1739,8 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         if (isImplosion) {
             parentSpeed *= -1.0f;
         }
+
+        parentVelocity = b2MulSV(0.75f, parentVelocity);
     } else {
         parentVelocity = ctx->parentDrone->lastVelocity;
         parentSpeed = b2Length(parentVelocity);
@@ -1756,6 +1753,15 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     // to prevent taking a log of a negative number
     if (!isStaticWall) {
         parentSpeed *= b2Dot(direction, parentDirection);
+    }
+    // never let the projectile's direction weaken or reverse the
+    // impulse, only strengthen it
+    if (ctx->projectile != NULL) {
+        if (isImplosion) {
+            parentSpeed = min(parentSpeed, 0.0f);
+        } else {
+            parentSpeed = max(parentSpeed, 0.0f);
+        }
     }
     // the parent entity's velocity affects the direction of the impulse
     // depending on the speed
@@ -2314,7 +2320,7 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
     ASSERT(drone->ammo != 0);
 
     drone->shotThisStep = true;
-    if (drone->weaponCooldown != 0.0f) {
+    if (drone->weaponCooldown > 0.0f) {
         return;
     }
     const bool weaponNeedsCharge = drone->weaponInfo->charge != 0.0f;
@@ -2336,7 +2342,7 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
     if (drone->ammo != INFINITE) {
         drone->ammo--;
     }
-    drone->weaponCooldown = drone->weaponInfo->coolDown;
+    drone->weaponCooldown += drone->weaponInfo->coolDown;
     drone->chargingWeapon = false;
     drone->weaponCharge = 0.0f;
 
@@ -2351,7 +2357,8 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
     applyTrackedImpulse(e, drone->bodyID, drone->physicsTracking, recoil, drone->idx, source);
 
     for (int i = 0; i < drone->weaponInfo->numProjectiles; i++) {
-        createProjectile(e, drone, normAim);
+        const b2Vec2 projAim = weaponAdjustAim(&e->rng, drone->weaponInfo->type, drone->heat, normAim, i);
+        createProjectile(e, drone, projAim);
 
         e->stats[drone->idx].shotsFired[drone->weaponInfo->type]++;
         e->stats[drone->idx].totalShotsFired++;
@@ -2508,9 +2515,10 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
     }
 
     // manage weapon charge and heat
-    if (drone->weaponCooldown != 0.0f) {
-        drone->weaponCooldown = max(drone->weaponCooldown - e->deltaTime, 0.0f);
+    if (drone->weaponCooldown > 0.0f) {
+        drone->weaponCooldown = max(drone->weaponCooldown - e->deltaTime, -e->deltaTime);
     } else {
+        drone->weaponCooldown = 0.0f;
         drone->heat = max(drone->heat - (120.0f * e->deltaTime), 0);
     }
     if (!drone->shotThisStep) {
@@ -2568,7 +2576,7 @@ void handleBlackHolePull(iwEnv *e, projectileEntity *projectile) {
             continue;
         }
         const b2DistanceOutput output = closestPoint(projectile->ent, ent);
-        const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE};
+        const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE};
         if (posBehindWall(e, projectile->pos, output.pointB, ent, filter, NULL)) {
             continue;
         }
