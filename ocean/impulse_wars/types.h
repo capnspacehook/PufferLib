@@ -25,6 +25,7 @@ static const uint8_t NUM_WALL_TYPES = 3;
 #define MAX_TRAIL_POINTS 20
 #define MAX_DRONE_TRAIL_POINTS 20
 #define MAX_PROJECTLE_TRAIL_POINTS 10
+#define MAX_BOOSTED_PROJECTLE_TRAIL_POINTS 15
 
 enum entityType {
     STANDARD_WALL_ENTITY,
@@ -223,9 +224,6 @@ typedef struct projectileEntity {
     uint8_t dronesBehindWalls[_MAX_DRONES];
     CC_Array *entsInBlackHole;
     bool needsToBeDestroyed;
-    // episode frame the projectile was fired on, and whether its owner
-    // burst on that same frame and boosted it
-    uint16_t spawnFrame;
     bool boosted;
 
     entity *ent;
@@ -499,7 +497,23 @@ typedef struct explosionInfo {
     uint8_t droneIdx;
     uint16_t renderSteps;
     uint16_t maxRenderSteps;
+    // drawn from renderRng on creation so sparks are random but
+    // stable across frames
+    unsigned int sparkSeed;
 } explosionInfo;
+
+// sparks shown where a projectile was boosted by its owner's burst,
+// purely visual
+typedef struct boostSparksInfo {
+    b2Vec2 pos;
+    b2Vec2 direction;
+    enum weaponType weapon;
+    uint16_t renderSteps;
+    uint16_t maxRenderSteps;
+    // drawn from renderRng on creation so sparks are random but
+    // stable across frames
+    unsigned int sparkSeed;
+} boostSparksInfo;
 
 typedef struct agentActions {
     b2Vec2 move;
@@ -710,7 +724,9 @@ struct Env {
     // used for rendering
     rayClient *client;
     float renderScale;
+    unsigned int renderRng;
     CC_Array *explosions;
+    CC_Array *boostSparks;
     CC_Array *debugPoints;
     enum roundState roundState;
     uint16_t tick_frames_left;

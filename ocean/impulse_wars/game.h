@@ -1495,7 +1495,6 @@ void createProjectile(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
 
     projectileEntity *projectile = fastCalloc(1, sizeof(projectileEntity));
     projectile->droneIdx = drone->idx;
-    projectile->spawnFrame = e->episodeLength;
     projectile->bodyID = projectileBodyID;
     projectile->shapeID = projectileShapeID;
     projectile->weaponInfo = drone->weaponInfo;
@@ -1568,6 +1567,7 @@ void createProjectileExplosion(iwEnv *e, projectileEntity *projectile, const boo
         explosionInfo *explInfo = fastCalloc(1, sizeof(explosionInfo));
         explInfo->def = explosion;
         explInfo->renderSteps = UINT16_MAX;
+        explInfo->sparkSeed = rand_r(&e->renderRng);
         cc_array_add(e->explosions, explInfo);
     }
     if (!initalProjectile) {
@@ -1623,7 +1623,7 @@ const float COS_85_DEGREES = 0.087155743f;
 // so we have to do it manually
 // mostly copied from box2d/src/world.c
 bool explodeCallback(b2ShapeId shapeID, void *context) {
-    if (!b2Shape_IsValid(shapeID)) {
+    if (!b2Shape_IsValid(shapeID) || b2Shape_IsSensor(shapeID)) {
         return true;
     }
 
@@ -1697,11 +1697,14 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     }
 
     const b2Vec2 closestPoint = output.pointA;
+    b2Vec2 distanceToEntity;
     b2Vec2 direction;
     if (isStaticWall) {
-        direction = b2Normalize(b2Sub(ctx->def->position, closestPoint));
+        distanceToEntity = b2Sub(ctx->def->position, closestPoint);
+        direction = b2Normalize(distanceToEntity);
     } else {
-        direction = b2Normalize(b2Sub(closestPoint, ctx->def->position));
+        distanceToEntity = b2Sub(closestPoint, ctx->def->position);
+        direction = b2Normalize(distanceToEntity);
     }
     // if the direction is zero, the magnitude cannot be calculated
     // correctly so set the direction randomly
@@ -1848,7 +1851,8 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         break;
     case PROJECTILE_ENTITY: {
         // a burst on the frame a projectile was fired boosts it
-        const bool boost = ctx->isBurst && !projectile->boosted && projectile->droneIdx == ctx->parentDrone->idx && projectile->spawnFrame == ctx->e->episodeLength;
+        const float distance = b2Length(distanceToEntity);
+        const bool boost = ctx->isBurst && !projectile->boosted && projectile->droneIdx == ctx->parentDrone->idx && distance <= DRONE_BURST_RADIUS_MIN + DRONE_BURST_RADIUS_BASE;
         const float speedBefore = projectile->speed;
         droneAnalysisStats *stats = &ctx->e->analysisStats[projectile->droneIdx];
         if (boost) {
@@ -1868,6 +1872,16 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         if (boost) {
             stats->boostedSpeedBefore[projectile->weaponInfo->type] += speedBefore;
             stats->boostedSpeedAfter[projectile->weaponInfo->type] += projectile->speed;
+
+            if (ctx->e->client != NULL) {
+                boostSparksInfo *sparks = fastCalloc(1, sizeof(boostSparksInfo));
+                sparks->pos = projectile->pos;
+                sparks->direction = b2Normalize(b2Body_GetLinearVelocity(bodyID));
+                sparks->weapon = projectile->weaponInfo->type;
+                sparks->renderSteps = UINT16_MAX;
+                sparks->sparkSeed = rand_r(&ctx->e->renderRng);
+                cc_array_add(ctx->e->boostSparks, sparks);
+            }
         }
 
         break;
@@ -2477,6 +2491,7 @@ void droneBurst(iwEnv *e, droneEntity *drone) {
         explInfo->isBurst = true;
         explInfo->droneIdx = drone->idx;
         explInfo->renderSteps = UINT16_MAX;
+        explInfo->sparkSeed = rand_r(&e->renderRng);
         cc_array_add(e->explosions, explInfo);
     }
 }
@@ -2954,7 +2969,7 @@ void handleBodyMoveEvents(iwEnv *e) {
             }
 
             if (proj->trailPoints != NULL) {
-                updateTrailPoints(proj->trailPoints, MAX_PROJECTLE_TRAIL_POINTS, newPos);
+                updateTrailPoints(proj->trailPoints, proj->boosted ? MAX_BOOSTED_PROJECTLE_TRAIL_POINTS : MAX_PROJECTLE_TRAIL_POINTS, newPos);
             }
             break;
         case DRONE_ENTITY:

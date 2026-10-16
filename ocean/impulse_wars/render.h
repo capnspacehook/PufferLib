@@ -58,6 +58,26 @@ static const float droneThrusterLength = 1.5f * DRONE_RADIUS;
 static const float aimGuideLength = 0.3f * DRONE_RADIUS;
 static const float chargedAimGuideLength = DRONE_RADIUS;
 
+// Sparks shown when a projectile is boosted by a burst (rebuild after tuning).
+static const float BOOST_SPARKS_FADE_TIME = 0.45f;
+#define BOOST_SPARKS_COUNT 10
+// sparks past this index fly backwards, the rest fly forwards
+#define BOOST_SPARKS_FORWARD_COUNT 7
+// spark thickness in projectile radii, clamped so tiny projectiles
+// still have visible sparks
+static const float BOOST_SPARKS_WIDTH_RADII = 0.8f;
+static const float BOOST_SPARKS_MIN_WIDTH = 0.15f;
+// length of each spark streak as a fraction of how far it travels
+static const float BOOST_SPARKS_STREAK_LENGTH = 0.5f;
+// half angle of the cone forward sparks fly in, in radians
+static const float BOOST_SPARKS_FORWARD_SPREAD = 0.6f;
+static const float BOOST_SPARKS_BACKWARD_SPREAD = 0.9f;
+// distance the furthest spark travels, in projectile radii; clamped
+// so tiny projectiles still have visible sparks
+static const float BOOST_SPARKS_REACH_RADII = 20.0f;
+static const float BOOST_SPARKS_MIN_REACH = 4.0f;
+static const float BOOST_SPARKS_MAX_REACH = 10.0f;
+
 // Explosion visual lifetime in seconds (rebuild after tuning).
 // Reference radius/impulse produce BASE_TIME. Exponents of 0 ignore that factor.
 // Uses world radius and absolute impulse, so zoom and implosion direction don't affect timing.
@@ -1408,12 +1428,13 @@ void renderExplosions(const iwEnv *e) {
             DrawCircleV(Vector2Zero(), explosion->def.radius * (0.12f + 0.3f * flash), Fade(color, flash * flash * 0.3f));
         }
 
-        // Stable variation without touching the simulation's random state.
-        const float phase = explosion->def.position.x * 0.73f + explosion->def.position.y * 1.17f;
+        // replay the same render rng sequence every frame so sparks don't flicker
+        unsigned int sparkRng = explosion->sparkSeed;
+        const float phase = randFloat(&sparkRng, 0.0f, 2.0f * PI);
         for (int i = 0; i < 7; i++) {
             const float angle = phase + i * (2.0f * PI / 7.0f);
             const Vector2 direction = {cosf(angle), sinf(angle)};
-            const float reach = radius * (0.6f + 0.1f * sinf(phase + i * 2.3f));
+            const float reach = radius * randFloat(&sparkRng, 0.5f, 0.7f);
             const float head = reach * (implosion ? 1.0f - travel : 0.15f + 0.85f * travel);
             const float tail = implosion ? head + reach * 0.18f * remaining : max(0.0f, head - reach * 0.18f * remaining);
             DrawLineEx(Vector2Scale(direction, tail), Vector2Scale(direction, head), max(0.08f, radius * 0.012f * remaining), Fade(color, remaining * remaining * 0.45f));
@@ -1637,7 +1658,7 @@ void renderDroneGuides(iwEnv *e, const droneEntity *drone, const bool ending) {
     if (!b2Equal(drone->lastMove, b2Vec2_zero) && !ending) {
         const float moveMagnitude = b2Length(drone->lastMove);
         const float thrusterAngle = RAD2DEG * b2Atan2(-drone->lastMove.y, -drone->lastMove.x);
-        const float flickerWidth = randFloat(&e->rng, -0.05f, 0.05f);
+        const float flickerWidth = randFloat(&e->renderRng, -0.05f, 0.05f);
         const float thrusterWidth = 2.5f * ((halfDroneRadius * moveMagnitude) + halfDroneRadius + flickerWidth);
         const b2Vec2 thrusterPos = b2MulAdd(drone->pos, -thrusterWidth / 2.0f, drone->lastMove);
         const Color thrusterColor = Fade(getDroneColor(drone->idx), 0.9);
@@ -1842,6 +1863,51 @@ void renderProjectileTrail(const projectileEntity *proj) {
     }
 }
 
+void renderBoostSparks(const iwEnv *e) {
+    CC_ArrayIter iter;
+    cc_array_iter_init(&iter, e->boostSparks);
+    boostSparksInfo *sparks;
+
+    while (cc_array_iter_next(&iter, (void **)&sparks) != CC_ITER_END) {
+        if (sparks->renderSteps == 0) {
+            continue;
+        }
+        float remaining = 1.0f;
+        if (sparks->renderSteps != UINT16_MAX && sparks->maxRenderSteps != 0) {
+            remaining = Clamp((float)sparks->renderSteps / sparks->maxRenderSteps, 0.0f, 1.0f);
+        }
+        // sparks shoot out fast then slow down
+        const float travel = 1.0f - remaining * remaining;
+
+        const float projRadius = weaponInfos[sparks->weapon]->radius;
+        const float reach = Clamp(projRadius * BOOST_SPARKS_REACH_RADII, BOOST_SPARKS_MIN_REACH, BOOST_SPARKS_MAX_REACH);
+        const float width = max(BOOST_SPARKS_MIN_WIDTH, projRadius * BOOST_SPARKS_WIDTH_RADII) * remaining;
+        const Color color = Fade(getProjectileColor(sparks->weapon), remaining);
+        const float baseAngle = atan2f(sparks->direction.y, sparks->direction.x);
+
+        // replay the same render rng sequence every frame so sparks don't flicker
+        unsigned int sparkRng = sparks->sparkSeed;
+
+        // put 2D shapes on the arena's XZ plane at projectile height
+        rlPushMatrix();
+        rlTranslatef(sparks->pos.x, 0.5f, sparks->pos.y);
+        rlRotatef(90.0f, 1.0f, 0.0f, 0.0f);
+        for (int i = 0; i < BOOST_SPARKS_COUNT; i++) {
+            const bool forward = i < BOOST_SPARKS_FORWARD_COUNT;
+            const float spread = forward ? BOOST_SPARKS_FORWARD_SPREAD : BOOST_SPARKS_BACKWARD_SPREAD;
+            const float angle = baseAngle + (forward ? 0.0f : PI) + randFloat(&sparkRng, -spread, spread);
+            const Vector2 dir = {cosf(angle), sinf(angle)};
+
+            // backward sparks are shorter so the boost reads as forward
+            const float sparkReach = reach * (forward ? 1.0f : 0.5f) * randFloat(&sparkRng, 0.5f, 1.0f);
+            const float head = sparkReach * travel;
+            const float tail = max(0.0f, head - sparkReach * BOOST_SPARKS_STREAK_LENGTH * remaining);
+            DrawLineEx(Vector2Scale(dir, tail), Vector2Scale(dir, head), width, color);
+        }
+        rlPopMatrix();
+    }
+}
+
 void renderProjectile(const projectileEntity *projectile) {
     DrawSphere(
         (Vector3){.x = projectile->pos.x, .y = 0.5f, .z = projectile->pos.y},
@@ -1973,6 +2039,10 @@ void renderEnv(iwEnv *e) {
         const projectileEntity *projectile = safe_array_get_at(e->projectiles, i);
         renderProjectile(projectile);
     }
+
+    BeginBlendMode(BLEND_ALPHA);
+    renderBoostSparks(e);
+    EndBlendMode();
 
     EndMode3D();
     EndTextureMode();

@@ -794,6 +794,7 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
 
     setEnvFrameRate(e);
     e->rng = seed;
+    e->renderRng = e->rng;
     e->needsReset = false;
 
     b2WorldDef worldDef = b2DefaultWorldDef();
@@ -813,6 +814,7 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     create_array(&e->pickups, MAX_WEAPON_PICKUPS);
     create_array(&e->projectiles, 64);
     create_array(&e->explosions, 8);
+    create_array(&e->boostSparks, 8);
     create_array(&e->explodingProjectiles, 8);
     create_array(&e->dronePieces, 16);
 
@@ -875,6 +877,11 @@ void clearEnv(iwEnv *e) {
         fastFree(explosion);
     }
 
+    for (size_t i = 0; i < cc_array_size(e->boostSparks); i++) {
+        boostSparksInfo *sparks = safe_array_get_at(e->boostSparks, i);
+        fastFree(sparks);
+    }
+
     for (size_t i = 0; i < cc_array_size(e->dronePieces); i++) {
         dronePieceEntity *piece = safe_array_get_at(e->dronePieces, i);
         destroyDronePiece(e, piece);
@@ -886,6 +893,7 @@ void clearEnv(iwEnv *e) {
     cc_array_remove_all(e->projectiles);
     cc_array_remove_all(e->explodingProjectiles);
     cc_array_remove_all(e->explosions);
+    cc_array_remove_all(e->boostSparks);
     cc_array_remove_all(e->dronePieces);
 }
 
@@ -914,6 +922,7 @@ void puf_close(iwEnv *e) {
     cc_array_destroy(e->pickups);
     cc_array_destroy(e->projectiles);
     cc_array_destroy(e->explosions);
+    cc_array_destroy(e->boostSparks);
     cc_array_destroy(e->explodingProjectiles);
     cc_array_destroy(e->dronePieces);
 
@@ -1201,6 +1210,24 @@ void updateExplosions(iwEnv *e) {
     }
 }
 
+void updateBoostSparks(iwEnv *e) {
+    CC_ArrayIter iter;
+    cc_array_iter_init(&iter, e->boostSparks);
+    boostSparksInfo *sparks;
+
+    while (cc_array_iter_next(&iter, (void **)&sparks) != CC_ITER_END) {
+        if (sparks->renderSteps == UINT16_MAX) {
+            sparks->maxRenderSteps = (uint16_t)max(1.0f, ceilf(BOOST_SPARKS_FADE_TIME * e->frameRate));
+            sparks->renderSteps = sparks->maxRenderSteps;
+        } else if (sparks->renderSteps == 0) {
+            fastFree(sparks);
+            cc_array_iter_remove(&iter, NULL);
+        } else {
+            sparks->renderSteps--;
+        }
+    }
+}
+
 void updateDronePieces(iwEnv *e) {
     CC_ArrayIter iter;
     cc_array_iter_init(&iter, e->dronePieces);
@@ -1248,6 +1275,7 @@ void updateDroneRespawnGuide(iwEnv *e, droneEntity *drone) {
 
 void updateVisuals(iwEnv *e) {
     updateExplosions(e);
+    updateBoostSparks(e);
     updateDronePieces(e);
 
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
