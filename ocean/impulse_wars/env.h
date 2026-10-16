@@ -848,6 +848,7 @@ void clearEnv(iwEnv *e) {
     // rewards get cleared in stepEnv every step
     // memset(e->masks, 1, e->numAgents * sizeof(uint8_t));
 
+    e->burstSerial = 0;
     e->episodeLength = 0;
     memset(e->stats, 0x0, sizeof(e->stats));
     memset(e->analysisStats, 0x0, sizeof(e->analysisStats));

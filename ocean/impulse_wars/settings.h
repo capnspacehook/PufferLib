@@ -200,6 +200,7 @@ static const float DRONE_BURST_RADIUS_MIN = 3.5f;
 static const float DRONE_BURST_IMPACT_BASE = 140.0f;
 static const float DRONE_BURST_IMPACT_MIN = 35.0f;
 static const float DRONE_BURST_COOLDOWN = 0.5f;
+static const float DRONE_BURST_ACTIVE_TIME = 0.1f;
 
 static const float DRONE_SHIELD_RADIUS = DRONE_RADIUS * 1.5f;
 static const float DRONE_SHIELD_HEALTH = 150.0f;

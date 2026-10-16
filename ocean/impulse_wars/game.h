@@ -27,6 +27,7 @@ entity *createEntity(iwEnv *e, enum entityType type, void *entityData) {
     ent->entity = entityData;
     ent->id->id = id + 1,
     ent->id->generation = ent->generation;
+    memset(ent->lastBurstHit, 0x0, sizeof(ent->lastBurstHit));
 
     return ent;
 }
@@ -1343,6 +1344,12 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     drone->braking = false;
     drone->chargingBurst = false;
     drone->burstCharge = 0.0f;
+    drone->burstChargeUsed = 0.0f;
+    drone->burstCooldown = 0.0f;
+    drone->burstRadius = 0.0f;
+    drone->burstImpulse = 0.0f;
+    drone->burstFramesLeft = 0;
+    drone->burstStaticWallsHit = false;
     drone->energyFullyDepleted = false;
     drone->shotThisStep = false;
     drone->velocity = b2Vec2_zero;
@@ -1628,7 +1635,16 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     }
 
     explosionCtx *ctx = context;
-    const entity *entity = b2Shape_GetUserData(shapeID);
+    entity *entity = b2Shape_GetUserData(shapeID);
+
+    // allow only a single burst to hit an entity one time
+    if (ctx->isBurst && ctx->parentDrone != NULL) {
+        const uint16_t lastBurstHit = entity->lastBurstHit[ctx->parentDrone->idx];
+        if (lastBurstHit == ctx->parentDrone->burstSerial) {
+            return true;
+        }
+    }
+
     projectileEntity *projectile = NULL;
     droneEntity *drone = NULL;
     wallEntity *wall = NULL;
@@ -1694,6 +1710,10 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE};
     if (posBehindWall(ctx->e, ctx->def->position, output.pointA, entity, filter, NULL)) {
         return true;
+    }
+
+    if (!isStaticWall && ctx->isBurst) {
+        entity->lastBurstHit[ctx->parentDrone->idx] = ctx->parentDrone->burstSerial;
     }
 
     const b2Vec2 closestPoint = output.pointA;
@@ -1797,7 +1817,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         }
 
         // reduce the magnitude when pushing a drone away from a wall
-        magnitude = log2f(fmaxf(magnitude, 1.0f)) * (5.0f + (25.0f * ctx->parentDrone->burstCharge));
+        magnitude = log2f(fmaxf(magnitude, 1.0f)) * (5.0f + (25.0f * ctx->parentDrone->burstChargeUsed));
 
         uint8_t idx = ctx->wallsHit;
         if (ctx->wallsHit == MAX_WALL_HITS) {
@@ -2037,6 +2057,7 @@ void createExplosion(iwEnv *e, droneEntity *drone, const projectileEntity *proje
     uint8_t wallsHit = ctx.wallsHit;
     if (isBurst && wallsHit != 0) {
         applyDroneBurstImpulse(e, &ctx, drone);
+        drone->burstStaticWallsHit = true;
     }
 }
 
@@ -2464,17 +2485,22 @@ void droneBurst(iwEnv *e, droneEntity *drone) {
         return;
     }
 
-    const float radius = (DRONE_BURST_RADIUS_BASE * drone->burstCharge) + DRONE_BURST_RADIUS_MIN;
+    drone->burstSerial = ++e->burstSerial;
+    drone->burstChargeUsed = drone->burstCharge;
+    drone->burstRadius = (DRONE_BURST_RADIUS_BASE * drone->burstCharge) + DRONE_BURST_RADIUS_MIN;
+    drone->burstImpulse = (DRONE_BURST_IMPACT_BASE * drone->burstCharge) + DRONE_BURST_IMPACT_MIN;
+    drone->burstStaticWallsHit = false;
     b2ExplosionDef explosion = {
         .position = drone->pos,
-        .radius = radius,
+        .radius = drone->burstRadius,
         .falloff = 0.0f,
-        .impulsePerLength = (DRONE_BURST_IMPACT_BASE * drone->burstCharge) + DRONE_BURST_IMPACT_MIN,
+        .impulsePerLength = drone->burstImpulse,
         .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | PROJECTILE_SHAPE | DRONE_SHAPE,
     };
     createExplosion(e, drone, NULL, &explosion);
     destroyExplodedProjectiles(e);
 
+    drone->burstFramesLeft = (uint8_t)roundf(DRONE_BURST_ACTIVE_TIME * e->frameRate) + 1;
     drone->chargingBurst = false;
     drone->burstCharge = 0.0f;
     drone->burstCooldown = DRONE_BURST_COOLDOWN;
@@ -2527,6 +2553,23 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
             }
         }
         return true;
+    }
+
+    // burst until the burst time is up
+    if (drone->burstFramesLeft > 0 && --drone->burstFramesLeft > 0) {
+        uint64_t mask = FLOATING_WALL_SHAPE | PROJECTILE_SHAPE | DRONE_SHAPE;
+        if (!drone->burstStaticWallsHit) {
+            mask |= WALL_SHAPE;
+        }
+        b2ExplosionDef explosion = {
+            .position = drone->pos,
+            .radius = drone->burstRadius,
+            .falloff = 0.0f,
+            .impulsePerLength = drone->burstImpulse,
+            .maskBits = mask,
+        };
+        createExplosion(e, drone, NULL, &explosion);
+        destroyExplodedProjectiles(e);
     }
 
     // manage weapon charge and heat

@@ -61,6 +61,7 @@ typedef struct entity {
     uint32_t generation;
     enum entityType type;
     void *entity;
+    uint16_t lastBurstHit[_MAX_DRONES];
 } entity;
 
 #define _NUM_WEAPONS 10
@@ -321,7 +322,13 @@ typedef struct droneEntity {
     bool braking;
     bool chargingBurst;
     float burstCharge;
+    float burstChargeUsed;
     float burstCooldown;
+    uint16_t burstSerial;
+    float burstRadius;
+    float burstImpulse;
+    bool burstStaticWallsHit;
+    uint8_t burstFramesLeft;
     bool energyFullyDepleted;
     bool energyFullyDepletedThisStep;
     float energyRefillWait;
@@ -695,6 +702,7 @@ struct Env {
     weaponInformation *defaultWeapon;
     b2IdPool idPool;
     CC_Array *entities;
+    uint16_t burstSerial;
     // flat, allocated once at MAX_CELLS; map layouts only ever shrink it
     mapCell *cells;
     uint16_t numCells;
