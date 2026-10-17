@@ -3186,19 +3186,17 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         if (projIsShapeA) {
             jointDef.base.bodyIdA = projectile->bodyID;
             jointDef.base.bodyIdB = wall->bodyID;
-            const b2Rot relativeRot = b2MakeRot(b2RelativeAngle(wall->rot, projRot));
-            jointDef.base.localFrameA.p = b2InvRotateVector(projRot, manifold.points[0].anchorB);
-            jointDef.base.localFrameA.q = relativeRot;
-            jointDef.base.localFrameB.p = b2InvRotateVector(wall->rot, manifold.points[0].anchorA);
-            jointDef.base.localFrameB.q = relativeRot;
+            jointDef.base.localFrameA.p = b2InvRotateVector(projRot, manifold.points[0].anchorA);
+            jointDef.base.localFrameA.q = b2InvMulRot(projRot, wall->rot);
+            jointDef.base.localFrameB.p = b2InvRotateVector(wall->rot, manifold.points[0].anchorB);
+            jointDef.base.localFrameB.q = b2Rot_identity;
         } else {
             jointDef.base.bodyIdA = wall->bodyID;
             jointDef.base.bodyIdB = projectile->bodyID;
-            const b2Rot relativeRot = b2MakeRot(b2RelativeAngle(projRot, wall->rot));
             jointDef.base.localFrameA.p = b2InvRotateVector(wall->rot, manifold.points[0].anchorA);
-            jointDef.base.localFrameA.q = relativeRot;
+            jointDef.base.localFrameA.q = b2InvMulRot(wall->rot, projRot);
             jointDef.base.localFrameB.p = b2InvRotateVector(projRot, manifold.points[0].anchorB);
-            jointDef.base.localFrameB.q = relativeRot;
+            jointDef.base.localFrameB.q = b2Rot_identity;
         }
         b2CreateWeldJoint(e->worldID, &jointDef);
         projectile->velocity = b2Vec2_zero;
