@@ -576,6 +576,9 @@ char *getWeaponAbreviation(const enum weaponType type) {
     case NUKE_WEAPON:
         name = "NUKE";
         break;
+    case GRAPPLE_WEAPON:
+        name = "GRAP";
+        break;
     default:
         ERRORF("unknown weapon pickup type %d", type);
     }
@@ -615,6 +618,9 @@ char *getWeaponName(const enum weaponType type) {
     case NUKE_WEAPON:
         name = "Tactical Nuke";
         break;
+    case GRAPPLE_WEAPON:
+        name = "Grapple Gun";
+        break;
     default:
         ERRORF("unknown weapon pickup type %d", type);
     }
@@ -627,6 +633,7 @@ float getWeaponAimGuideWidth(const enum weaponType type) {
     case IMPLODER_WEAPON:
     case ACCELERATOR_WEAPON:
     case NUKE_WEAPON:
+    case GRAPPLE_WEAPON:
         return 5.0f;
     case FLAK_CANNON_WEAPON:
     case BLACK_HOLE_WEAPON:
@@ -669,6 +676,9 @@ Color getProjectileColor(const enum weaponType type) {
         break;
     case NUKE_WEAPON:
         color = MAROON;
+        break;
+    case GRAPPLE_WEAPON:
+        color = LIGHTGRAY;
         break;
     default:
         ERRORF("unknown weapon when getting projectile color %d", type);

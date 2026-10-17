@@ -605,7 +605,7 @@ void findHazards(botCtx *c) {
         const projectileEntity *proj = safe_array_get_at(e->projectiles, i);
         // mines go off for their owner too
         const bool ownMine = proj->droneIdx == drone->idx;
-        if (!proj->setMine || ownMine || b2DistanceSquared(proj->pos, drone->pos) > SQUARED(HAZARD_CHECK_DISTANCE + MINE_LAUNCHER_PROXIMITY_RADIUS)) {
+        if (proj->weaponInfo->type != MINE_LAUNCHER_WEAPON || !proj->welded || ownMine || b2DistanceSquared(proj->pos, drone->pos) > SQUARED(HAZARD_CHECK_DISTANCE + MINE_LAUNCHER_PROXIMITY_RADIUS)) {
             continue;
         }
         c->hazards[c->numHazards++] = (hazard){.pos = proj->pos, .radius = MINE_LAUNCHER_PROXIMITY_RADIUS + MINE_HAZARD_MARGIN};
@@ -1939,7 +1939,7 @@ void turtleActions(botCtx *c, agentActions *actions) {
     const uint16_t step = botStep(e);
     for (uint8_t i = 0; i < cc_array_size(e->projectiles); i++) {
         const projectileEntity *proj = safe_array_get_at(e->projectiles, i);
-        if (proj->droneIdx == c->enemy->idx && !proj->setMine) {
+        if (proj->droneIdx == c->enemy->idx && proj->weaponInfo->type != MINE_LAUNCHER_WEAPON && !proj->welded) {
             state->lastEnemyShotStep = step;
             break;
         }

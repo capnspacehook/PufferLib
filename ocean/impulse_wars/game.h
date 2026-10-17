@@ -1301,6 +1301,15 @@ void recordDeathAnalysis(iwEnv *e, const droneEntity *drone, const int8_t killer
     }
 }
 
+void destroyGrapplesAttachedTo(iwEnv *e, const entity *ent) {
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (drone->grapple != NULL && drone->grapple->grappledEnt == ent) {
+            destroyProjectile(e, drone->grapple, false, true);
+        }
+    }
+}
+
 void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     if (drone->dead || drone->livesLeft == 0) {
         return;
@@ -1320,6 +1329,11 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     drone->dead = true;
     drone->diedThisStep = true;
     drone->respawnWait = DRONE_RESPAWN_WAIT;
+
+    if (drone->grapple != NULL) {
+        destroyProjectile(e, drone->grapple, false, true);
+    }
+    destroyGrapplesAttachedTo(e, drone->ent);
 
     for (uint8_t i = 0; i < DRONE_PIECE_COUNT; i++) {
         createDronePiece(e, drone, false);
@@ -2097,6 +2111,12 @@ void destroyProjectile(iwEnv *e, projectileEntity *projectile, const bool proces
         }
         cc_array_destroy(projectile->entsInBlackHole);
     }
+    if (projectile->weaponInfo->type == GRAPPLE_WEAPON) {
+        droneEntity *drone = safe_array_get_at(e->drones, projectile->droneIdx);
+        if (drone->grapple == projectile) {
+            drone->grapple = NULL;
+        }
+    }
 
     if (projectile->trailPoints != NULL) {
         fastFree(projectile->trailPoints);
@@ -2285,6 +2305,7 @@ void handleSuddenDeath(iwEnv *e) {
 
             const b2Vec2 wallPos = wall->pos;
             MAYBE_UNUSED(wallPos);
+            destroyGrapplesAttachedTo(e, wall->ent);
             destroyWall(e, wall, false);
             DEBUG_LOGF("destroyed floating wall at %f, %f", wallPos.x, wallPos.y);
             continue;
@@ -2357,6 +2378,11 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
     ASSERT(drone->ammo != 0);
 
     drone->shotThisStep = true;
+    if (drone->weaponInfo->type == GRAPPLE_WEAPON && drone->grapple != NULL) {
+        b2DistanceJoint_SetMaxMotorForce(drone->grappleJointID, GRAPPLE_MOTOR_FORCE);
+        return;
+    }
+
     if (drone->weaponCooldown > 0.0f) {
         return;
     }
@@ -2585,6 +2611,12 @@ void droneWeaponAction(iwEnv *e, droneEntity *drone) {
         destroyExplodedProjectiles(e);
         break;
     }
+    case GRAPPLE_WEAPON:
+        if (drone->grapple == NULL) {
+            break;
+        }
+        destroyProjectile(e, drone->grapple, false, true);
+        break;
     default:
         break;
     }
@@ -2631,6 +2663,10 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
     if (!drone->shotThisStep) {
         drone->weaponCharge = 0.0f;
         drone->fullChargeHoldTime = 0.0f;
+
+        if (drone->grapple != NULL) {
+            b2DistanceJoint_SetMaxMotorForce(drone->grappleJointID, 0.0f);
+        }
     } else {
         drone->shotThisStep = false;
     }
@@ -3032,6 +3068,7 @@ void handleBodyMoveEvents(iwEnv *e) {
             if (mapIdx == -1) {
                 DEBUG_LOGF("invalid position for floating wall: (%f, %f) destroying", newPos.x, newPos.y);
                 cc_array_remove_fast(e->floatingWalls, wall, NULL);
+                destroyGrapplesAttachedTo(e, wall->ent);
                 destroyWall(e, wall, false);
                 continue;
             }
@@ -3099,12 +3136,41 @@ void handleBodyMoveEvents(iwEnv *e) {
     }
 }
 
+void createProjectileWeldJoint(iwEnv *e, projectileEntity *projectile, const b2BodyId bodyID, const b2Rot rot, const b2ContactId contactID, const bool projIsShapeA) {
+    ASSERT(b2Contact_IsValid(contactID));
+    const b2Manifold manifold = b2Contact_GetData(contactID).manifold;
+    ASSERT(manifold.pointCount == 1);
+
+    b2WeldJointDef jointDef = b2DefaultWeldJointDef();
+    const b2Rot projRot = b2Body_GetRotation(projectile->bodyID);
+    if (projIsShapeA) {
+        jointDef.base.bodyIdA = projectile->bodyID;
+        jointDef.base.bodyIdB = bodyID;
+        jointDef.base.localFrameA.p = b2InvRotateVector(projRot, manifold.points[0].anchorA);
+        jointDef.base.localFrameA.q = b2InvMulRot(projRot, rot);
+        jointDef.base.localFrameB.p = b2InvRotateVector(rot, manifold.points[0].anchorB);
+        jointDef.base.localFrameB.q = b2Rot_identity;
+    } else {
+        jointDef.base.bodyIdA = bodyID;
+        jointDef.base.bodyIdB = projectile->bodyID;
+        jointDef.base.localFrameA.p = b2InvRotateVector(rot, manifold.points[0].anchorA);
+        jointDef.base.localFrameA.q = b2InvMulRot(rot, projRot);
+        jointDef.base.localFrameB.p = b2InvRotateVector(projRot, manifold.points[0].anchorB);
+        jointDef.base.localFrameB.q = b2Rot_identity;
+    }
+
+    b2CreateWeldJoint(e->worldID, &jointDef);
+    projectile->welded = true;
+}
+
 // destroy the projectile if it has traveled enough or has bounced enough
 // times, and update drone stats if a drone was hit
 uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity *ent, const b2ContactId contactID, const bool projIsShapeA) {
     projectileEntity *projectile = proj->entity;
     projectile->contacts++;
 
+    bool bodyIDSet = false;
+    b2BodyId bodyID = {0};
     const physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = projectile->weaponInfo->type, .boosted = projectile->boosted};
 
     // e (shape B in the collision) will be NULL if it's another
@@ -3129,6 +3195,9 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         return false;
     } else if (entityTypeIsWall(ent->type)) {
         wallEntity *wall = ent->entity;
+        bodyID = wall->bodyID;
+        bodyIDSet = true;
+
         if (wall->isFloating && b2Contact_IsValid(contactID)) {
             const b2Manifold manifold = b2Contact_GetData(contactID).manifold;
             ASSERT(manifold.pointCount == 1);
@@ -3171,6 +3240,9 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
     }
     if (ent->type == DRONE_ENTITY) {
         droneEntity *hitDrone = ent->entity;
+        bodyID = hitDrone->bodyID;
+        bodyIDSet = true;
+
         float hitStrength = 0.0f;
         if (b2Contact_IsValid(contactID)) {
             const b2Manifold manifold = b2Contact_GetData(contactID).manifold;
@@ -3212,49 +3284,50 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             destroyExplodedProjectiles(e);
             return 1;
         }
-    } else if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON && !projectile->setMine) {
-        // if the mine is in explosion proximity of a drone now,
-        // destroy it
-        const b2QueryFilter filter = {
-            .categoryBits = PROJECTILE_SHAPE,
-            .maskBits = DRONE_SHAPE,
-        };
-        if (isOverlappingCircleInLineOfSight(e, projectile->ent, projectile->pos, MINE_LAUNCHER_PROXIMITY_RADIUS, filter, NULL)) {
-            destroyProjectile(e, projectile, true, true);
-            destroyExplodedProjectiles(e);
-            return 1;
+    } else if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON && !projectile->welded) {
+        if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON) {
+            // if the mine is in explosion proximity of a drone now,
+            // destroy it
+            const b2QueryFilter filter = {
+                .categoryBits = PROJECTILE_SHAPE,
+                .maskBits = DRONE_SHAPE,
+            };
+            if (isOverlappingCircleInLineOfSight(e, projectile->ent, projectile->pos, MINE_LAUNCHER_PROXIMITY_RADIUS, filter, NULL)) {
+                destroyProjectile(e, projectile, true, true);
+                destroyExplodedProjectiles(e);
+                return 1;
+            }
         }
 
-        // create a weld joint to stick the mine to the wall
         ASSERT(entityTypeIsWall(ent->type));
         wallEntity *wall = ent->entity;
-        ASSERT(b2Contact_IsValid(contactID));
-        const b2Manifold manifold = b2Contact_GetData(contactID).manifold;
-        ASSERT(manifold.pointCount == 1);
 
-        b2WeldJointDef jointDef = b2DefaultWeldJointDef();
-        const b2Rot projRot = b2Body_GetRotation(projectile->bodyID);
-        if (projIsShapeA) {
-            jointDef.base.bodyIdA = projectile->bodyID;
-            jointDef.base.bodyIdB = wall->bodyID;
-            jointDef.base.localFrameA.p = b2InvRotateVector(projRot, manifold.points[0].anchorA);
-            jointDef.base.localFrameA.q = b2InvMulRot(projRot, wall->rot);
-            jointDef.base.localFrameB.p = b2InvRotateVector(wall->rot, manifold.points[0].anchorB);
-            jointDef.base.localFrameB.q = b2Rot_identity;
-        } else {
-            jointDef.base.bodyIdA = wall->bodyID;
-            jointDef.base.bodyIdB = projectile->bodyID;
-            jointDef.base.localFrameA.p = b2InvRotateVector(wall->rot, manifold.points[0].anchorA);
-            jointDef.base.localFrameA.q = b2InvMulRot(wall->rot, projRot);
-            jointDef.base.localFrameB.p = b2InvRotateVector(projRot, manifold.points[0].anchorB);
-            jointDef.base.localFrameB.q = b2Rot_identity;
-        }
-        b2CreateWeldJoint(e->worldID, &jointDef);
+        createProjectileWeldJoint(e, projectile, wall->bodyID, wall->rot, contactID, projIsShapeA);
         projectile->velocity = b2Vec2_zero;
         projectile->lastVelocity = b2Vec2_zero;
         projectile->speed = 0.0f;
         projectile->lastSpeed = 0.0f;
-        projectile->setMine = true;
+    }
+
+    if (projectile->weaponInfo->type == GRAPPLE_WEAPON && !projectile->welded && bodyIDSet) {
+        createProjectileWeldJoint(e, projectile, bodyID, b2Body_GetRotation(bodyID), contactID, projIsShapeA);
+        projectile->grappledEnt = ent;
+
+        droneEntity *drone = safe_array_get_at(e->drones, projectile->droneIdx);
+        b2DistanceJointDef def = b2DefaultDistanceJointDef();
+        def.base.bodyIdA = drone->bodyID;
+        def.base.bodyIdB = projectile->bodyID;
+        def.enableSpring = true; // must be true or the joint is rigid
+        def.hertz = 0.0f;        // no spring force -> slack allowed
+        def.enableLimit = true;
+        def.minLength = 0.0f;
+        def.maxLength = b2Distance(drone->pos, projectile->pos);
+        def.enableMotor = true;
+        def.maxMotorForce = 0.0f; // winch off until the trigger is pulled
+        def.motorSpeed = -GRAPPLE_MOTOR_SPEED;
+
+        drone->grapple = projectile;
+        drone->grappleJointID = b2CreateDistanceJoint(e->worldID, &def);
     }
 
     const uint8_t maxBounces = projectile->weaponInfo->maxBounces;
@@ -3436,7 +3509,7 @@ void handleProjectileBeginTouch(iwEnv *e, const entity *sensor, entity *visitor)
         destroyExplodedProjectiles(e);
         break;
     case MINE_LAUNCHER_WEAPON:
-        if (!projectile->setMine) {
+        if (!projectile->welded) {
             return;
         }
 

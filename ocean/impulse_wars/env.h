@@ -857,11 +857,6 @@ void clearEnv(iwEnv *e) {
     memset(e->stats, 0x0, sizeof(e->stats));
     memset(e->analysisStats, 0x0, sizeof(e->analysisStats));
 
-    for (size_t i = 0; i < cc_array_size(e->drones); i++) {
-        droneEntity *drone = safe_array_get_at(e->drones, i);
-        destroyDrone(e, drone);
-    }
-
     for (size_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
         wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
         destroyWall(e, wall, false);
@@ -887,18 +882,23 @@ void clearEnv(iwEnv *e) {
         fastFree(sparks);
     }
 
+    for (size_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        destroyDrone(e, drone);
+    }
+
     for (size_t i = 0; i < cc_array_size(e->dronePieces); i++) {
         dronePieceEntity *piece = safe_array_get_at(e->dronePieces, i);
         destroyDronePiece(e, piece);
     }
 
-    cc_array_remove_all(e->drones);
     cc_array_remove_all(e->floatingWalls);
     cc_array_remove_all(e->pickups);
     cc_array_remove_all(e->projectiles);
     cc_array_remove_all(e->explodingProjectiles);
     cc_array_remove_all(e->explosions);
     cc_array_remove_all(e->boostSparks);
+    cc_array_remove_all(e->drones);
     cc_array_remove_all(e->dronePieces);
 }
 

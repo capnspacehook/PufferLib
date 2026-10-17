@@ -64,7 +64,7 @@ typedef struct entity {
     uint16_t lastBurstHit[_MAX_DRONES];
 } entity;
 
-#define _NUM_WEAPONS 10
+#define _NUM_WEAPONS 11
 static const uint8_t NUM_WEAPONS = _NUM_WEAPONS;
 
 enum weaponType {
@@ -78,6 +78,7 @@ enum weaponType {
     MINE_LAUNCHER_WEAPON,
     BLACK_HOLE_WEAPON,
     NUKE_WEAPON,
+    GRAPPLE_WEAPON,
 };
 
 typedef struct mapBounds {
@@ -220,10 +221,11 @@ typedef struct projectileEntity {
     float distance;
     uint8_t bounces;
     uint8_t contacts;
-    bool setMine;
+    bool welded;
     uint8_t numDronesBehindWalls;
     uint8_t dronesBehindWalls[_MAX_DRONES];
     CC_Array *entsInBlackHole;
+    entity *grappledEnt;
     bool needsToBeDestroyed;
     bool boosted;
 
@@ -312,6 +314,7 @@ typedef struct physicsStepInfo {
 typedef struct droneEntity {
     b2BodyId bodyID;
     b2ShapeId shapeID;
+
     weaponInformation *weaponInfo;
     int8_t ammo;
     float weaponCooldown;
@@ -319,6 +322,10 @@ typedef struct droneEntity {
     bool chargingWeapon;
     float weaponCharge;
     float fullChargeHoldTime;
+
+    projectileEntity *grapple;
+    b2JointId grappleJointID;
+
     float energyLeft;
     bool braking;
     bool chargingBurst;
@@ -333,6 +340,7 @@ typedef struct droneEntity {
     bool energyFullyDepleted;
     bool energyFullyDepletedThisStep;
     float energyRefillWait;
+
     bool shotThisStep;
     bool diedThisStep;
 

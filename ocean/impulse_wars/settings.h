@@ -403,6 +403,23 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define NUKE_EXPLOSION_RADIUS 35.0f
 #define NUKE_EXPLOSION_IMPULSE 500.0f
 
+#define GRAPPLE_AMMO 3
+#define GRAPPLE_PROJECTILES 1
+#define GRAPPLE_RECOIL_MAGNITUDE 25.0f
+#define GRAPPLE_FIRE_MAGNITUDE 25.0f
+#define GRAPPLE_DAMPING 0.0f
+#define GRAPPLE_CHARGE 0.0f
+#define GRAPPLE_COOL_DOWN 0.5f
+#define GRAPPLE_MAX_DISTANCE INFINITE
+#define GRAPPLE_RADIUS 0.2f
+#define GRAPPLE_DENSITY 3.5f
+#define GRAPPLE_MASS MASS(GRAPPLE_DENSITY, GRAPPLE_RADIUS)
+#define GRAPPLE_INV_MASS INV_MASS(GRAPPLE_MASS)
+#define GRAPPLE_BOUNCE INFINITE // this is to avoid grapples getting destroyed before they can create a weld joint
+#define GRAPPLE_SPAWN_WEIGHT 10.0f
+#define GRAPPLE_MOTOR_SPEED 100.0f
+#define GRAPPLE_MOTOR_FORCE 150.0f
+
 static const weaponInformation standard = {
     .type = STANDARD_WEAPON,
     .isPhysicsBullet = true,
@@ -653,6 +670,31 @@ static const weaponInformation nuke = {
     .spawnWeight = NUKE_SPAWN_WEIGHT,
 };
 
+static const weaponInformation grapple = {
+    .type = GRAPPLE_WEAPON,
+    .isPhysicsBullet = true,
+    .canSleep = false,
+    .numProjectiles = GRAPPLE_PROJECTILES,
+    .fireMagnitude = GRAPPLE_FIRE_MAGNITUDE,
+    .recoilMagnitude = GRAPPLE_RECOIL_MAGNITUDE,
+    .damping = GRAPPLE_DAMPING,
+    .charge = GRAPPLE_CHARGE,
+    .coolDown = GRAPPLE_COOL_DOWN,
+    .maxDistance = GRAPPLE_MAX_DISTANCE,
+    .radius = GRAPPLE_RADIUS,
+    .density = GRAPPLE_DENSITY,
+    .mass = GRAPPLE_MASS,
+    .invMass = GRAPPLE_INV_MASS,
+    .initialSpeed = GRAPPLE_FIRE_MAGNITUDE * GRAPPLE_INV_MASS,
+    .maxBounces = GRAPPLE_BOUNCE + 1,
+    .explosive = false,
+    .destroyedOnDroneHit = false,
+    .explodesOnDroneHit = false,
+    .hasSensor = false,
+    .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF,
+    .spawnWeight = GRAPPLE_SPAWN_WEIGHT,
+};
+
 static weaponInformation *weaponInfos[] = {
     (weaponInformation *)&standard,
     (weaponInformation *)&machineGun,
@@ -664,6 +706,7 @@ static weaponInformation *weaponInfos[] = {
     (weaponInformation *)&mineLauncher,
     (weaponInformation *)&blackHole,
     (weaponInformation *)&nuke,
+    (weaponInformation *)&grapple,
 };
 
 static const char *weaponNames[] = {
@@ -677,6 +720,7 @@ static const char *weaponNames[] = {
     "mine_launcher",
     "black_hole",
     "tactical_nuke",
+    "grapple_gun",
 };
 
 // max ammo of weapon
@@ -705,6 +749,8 @@ static int8_t weaponAmmo(const enum weaponType defaultWep, const enum weaponType
         return BLACK_HOLE_AMMO;
     case NUKE_WEAPON:
         return NUKE_AMMO;
+    case GRAPPLE_WEAPON:
+        return GRAPPLE_AMMO;
     default:
         ERRORF("unknown weapon type %d", type);
     }
@@ -766,6 +812,8 @@ static float weaponFire(unsigned int *seed, const enum weaponType type) {
         return BLACK_HOLE_FIRE_MAGNITUDE;
     case NUKE_WEAPON:
         return NUKE_FIRE_MAGNITUDE;
+    case GRAPPLE_WEAPON:
+        return GRAPPLE_FIRE_MAGNITUDE;
     default:
         ERRORF("unknown weapon type %d", type);
         return 0;
