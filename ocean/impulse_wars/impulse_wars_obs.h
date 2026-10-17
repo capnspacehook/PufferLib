@@ -34,10 +34,10 @@
 #define IW_PROJECTILE_SIZE 6
 #define IW_RAY_SIZE 2
 // ray to the enemy, last in each enemy drone block
-#define IW_ENEMY_RAY_IDX 27
+#define IW_ENEMY_RAY_IDX 29
 #define IW_ENEMY_DRONE_SIZE (IW_ENEMY_RAY_IDX + IW_RAY_SIZE)
 // aim, velocity and recoil rays, last in the agent's drone block
-#define IW_DRONE_RAY_IDX 27
+#define IW_DRONE_RAY_IDX 29
 #define IW_NUM_DRONE_RAYS 3
 #define IW_DRONE_SIZE (IW_DRONE_RAY_IDX + IW_NUM_DRONE_RAYS * IW_RAY_SIZE)
 
@@ -47,7 +47,7 @@
 #define IW_PROJECTILE_OFFSET (IW_PICKUP_OFFSET + IW_NUM_PICKUPS * IW_PICKUP_SIZE)
 #define IW_ENEMY_DRONE_OFFSET (IW_PROJECTILE_OFFSET + IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE)
 // obs size with zero enemy drones; each enemy adds IW_ENEMY_DRONE_SIZE
-#define IW_BASE_OBS_SIZE 427
+#define IW_BASE_OBS_SIZE 429
 #define IW_NUM_ENEMIES ((OBS_SIZE - IW_BASE_OBS_SIZE) / IW_ENEMY_DRONE_SIZE)
 #define IW_DRONE_OFFSET (IW_ENEMY_DRONE_OFFSET + IW_NUM_ENEMIES * IW_ENEMY_DRONE_SIZE)
 

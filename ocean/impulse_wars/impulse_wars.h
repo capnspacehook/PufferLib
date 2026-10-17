@@ -4,8 +4,8 @@ typedef float obs_t;
 #endif
 
 // uncomment to use continuous actions
-// #define NUM_ATNS 7
-// #define ACT_SIZES {1, 1, 1, 1, 1, 1, 1}
+// #define NUM_ATNS 8
+// #define ACT_SIZES {1, 1, 1, 1, 1, 1, 1, 1}
 // #define CONTINUOUS_ACTIONS 1
 
 // actions:
@@ -15,11 +15,12 @@ typedef float obs_t;
 // 2: shoot or not
 // 2: brake or not
 // 2: burst or not
-#define NUM_ATNS 6
-#define ACT_SIZES {9, AIM_COARSE_SECTORS, AIM_FINE_STEPS, 2, 2, 2}
+// 2: weapon action or not
+#define NUM_ATNS 7
+#define ACT_SIZES {9, AIM_COARSE_SECTORS, AIM_FINE_STEPS, 2, 2, 2, 2}
 #define CONTINUOUS_ACTIONS 0
 
-#define OBS_SIZE 456 // for 2 drones (players)
+#define OBS_SIZE 460 // for 2 drones (players)
 
 #ifdef __cplusplus
 // Game/Box2D/collections-c are C (void* implicit conv); pufferl.cu is C++17.

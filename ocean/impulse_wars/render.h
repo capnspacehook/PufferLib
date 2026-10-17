@@ -316,17 +316,14 @@ agentActions getPlayerInputs(iwEnv *e, droneEntity *drone, uint8_t gamepadIdx) {
         } else if (drone->chargingWeapon && IsGamepadButtonUp(gamepadIdx, GAMEPAD_BUTTON_RIGHT_TRIGGER_2)) {
             actions.shoot = true;
         }
-
         if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_LEFT_TRIGGER_2)) {
             actions.brake = true;
         }
-
         if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) || IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) {
             actions.chargingBurst = true;
         }
-
-        if (IsGamepadButtonPressed(gamepadIdx, GAMEPAD_BUTTON_RIGHT_FACE_LEFT)) {
-            actions.discardWeapon = true;
+        if (IsGamepadButtonPressed(gamepadIdx, GAMEPAD_BUTTON_LEFT_TRIGGER_1)) {
+            actions.weaponAction = true;
         }
 
         actions.move = (b2Vec2){.x = lStickX, .y = lStickY};
@@ -1656,11 +1653,17 @@ void renderDroneAimGuide(const iwEnv *e, const droneEntity *drone) {
 void renderDroneGuides(iwEnv *e, const droneEntity *drone, const bool ending) {
     // render thruster move guide
     if (!b2Equal(drone->lastMove, b2Vec2_zero) && !ending) {
-        const float moveMagnitude = b2Length(drone->lastMove);
-        const float thrusterAngle = RAD2DEG * b2Atan2(-drone->lastMove.y, -drone->lastMove.x);
+        // movement is halved while energy is depleted and not refilling,
+        // see droneMove
+        b2Vec2 move = drone->lastMove;
+        if (drone->energyFullyDepleted && drone->energyRefillWait != 0.0f) {
+            move = b2MulSV(0.5f, move);
+        }
+        const float moveMagnitude = b2Length(move);
+        const float thrusterAngle = RAD2DEG * b2Atan2(-move.y, -move.x);
         const float flickerWidth = randFloat(&e->renderRng, -0.05f, 0.05f);
         const float thrusterWidth = 2.5f * ((halfDroneRadius * moveMagnitude) + halfDroneRadius + flickerWidth);
-        const b2Vec2 thrusterPos = b2MulAdd(drone->pos, -thrusterWidth / 2.0f, drone->lastMove);
+        const b2Vec2 thrusterPos = b2MulAdd(drone->pos, -thrusterWidth / 2.0f, move);
         const Color thrusterColor = Fade(getDroneColor(drone->idx), 0.9);
 
         rlPushMatrix();

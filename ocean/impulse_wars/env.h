@@ -613,8 +613,10 @@ void computeObs(iwEnv *e) {
             continuousObs[continuousObsOffset++] = scaleAmmo(e, enemyDrone);
             continuousObs[continuousObsOffset++] = scaleValue(max(enemyDrone->weaponCooldown, 0.0f), enemyDrone->weaponInfo->coolDown, true);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->weaponCharge, enemyDrone->weaponInfo->charge, true);
+            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->fullChargeHoldTime, MAX_OBS_DRONE_CHARGE_HOLD, true);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->energyLeft, DRONE_ENERGY_MAX, true);
             continuousObs[continuousObsOffset++] = (float)enemyDrone->energyFullyDepleted;
+            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->energyRefillWait, DRONE_ENERGY_REFILL_EMPTY_WAIT, true);
             continuousObs[continuousObsOffset++] = (float)enemyDrone->braking;
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->burstCooldown, DRONE_BURST_COOLDOWN, true);
             continuousObs[continuousObsOffset++] = (float)enemyDrone->chargingBurst;
@@ -668,8 +670,10 @@ void computeObs(iwEnv *e) {
         continuousObs[continuousObsOffset++] = scaleAmmo(e, agentDrone);
         continuousObs[continuousObsOffset++] = scaleValue(max(agentDrone->weaponCooldown, 0.0f), agentDrone->weaponInfo->coolDown, true);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->weaponCharge, agentDrone->weaponInfo->charge, true);
+        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->fullChargeHoldTime, MAX_OBS_DRONE_CHARGE_HOLD, true);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->energyLeft, DRONE_ENERGY_MAX, true);
         continuousObs[continuousObsOffset++] = (float)agentDrone->energyFullyDepleted;
+        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->energyRefillWait, DRONE_ENERGY_REFILL_EMPTY_WAIT, true);
         continuousObs[continuousObsOffset++] = (float)agentDrone->braking;
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->burstCooldown, DRONE_BURST_COOLDOWN, true);
         continuousObs[continuousObsOffset++] = (float)agentDrone->chargingBurst;
@@ -1059,6 +1063,7 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
             actions.chargingWeapon = envActions[4] > 0.0f;
             actions.brake = envActions[5] > 0.0f;
             actions.chargingBurst = envActions[6] > 0.0f;
+            actions.weaponAction = envActions[7] > 0.0f;
         } else {
             uint8_t move = envActions[0];
             // 0 is no-op for move
@@ -1082,6 +1087,7 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
             actions.chargingWeapon = envActions[3] > 0.0f;
             actions.brake = envActions[4] > 0.0f;
             actions.chargingBurst = envActions[5] > 0.0f;
+            actions.weaponAction = envActions[6] > 0.0f;
         }
 
         actions.shoot = actions.chargingWeapon;
@@ -1095,7 +1101,7 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
         actions.shoot = manualActions->shoot;
         actions.brake = manualActions->brake;
         actions.chargingBurst = manualActions->chargingBurst;
-        actions.discardWeapon = manualActions->discardWeapon;
+        actions.weaponAction = manualActions->weaponAction;
     }
 
     // cap movement magnitude to 1.0
@@ -1297,8 +1303,8 @@ bool stepPhysicsFrame(iwEnv *e, const agentActions stepActions[], int8_t *winner
         }
         agentActions actions = stepActions[i];
 
-        if (actions.discardWeapon) {
-            droneDiscardWeapon(e, drone);
+        if (actions.weaponAction) {
+            droneWeaponAction(e, drone);
         }
         if (actions.shoot) {
             droneShoot(e, drone, actions.aim, actions.chargingWeapon);

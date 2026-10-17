@@ -1080,6 +1080,7 @@ void droneChangeWeapon(const iwEnv *e, droneEntity *drone, const enum weaponType
         drone->weaponInfo = weaponInfos[newWeapon];
         drone->weaponCooldown = 0.0f;
         drone->weaponCharge = 0.0f;
+        drone->fullChargeHoldTime = 0.0f;
         drone->heat = 0;
     }
     drone->ammo = weaponAmmo(e->defaultWeapon->type, drone->weaponInfo->type);
@@ -2303,11 +2304,13 @@ void handleSuddenDeath(iwEnv *e) {
     }
 }
 
-void droneEmptyEnergy(droneEntity *drone) {
+void droneEmptyEnergy(iwEnv *e, droneEntity *drone) {
     drone->energyFullyDepleted = true;
     drone->energyFullyDepletedThisStep = true;
     drone->stepInfo.emptiedEnergy = true;
     drone->energyRefillWait = DRONE_ENERGY_REFILL_EMPTY_WAIT;
+
+    e->stats[drone->idx].energyEmptied++;
 }
 
 void droneMove(const iwEnv *e, droneEntity *drone, b2Vec2 direction) {
@@ -2317,7 +2320,6 @@ void droneMove(const iwEnv *e, droneEntity *drone, b2Vec2 direction) {
     // to refill again
     if (drone->energyFullyDepleted && drone->energyRefillWait != 0.0f) {
         direction = b2MulSV(0.5f, direction);
-        drone->lastMove = direction;
     }
     const b2Vec2 force = b2MulSV(DRONE_MOVE_MAGNITUDE, direction);
     const physicsSource source = {.type = MOVEMENT_PHYSICS};
@@ -2361,16 +2363,47 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
     const bool weaponNeedsCharge = drone->weaponInfo->charge != 0.0f;
     if (weaponNeedsCharge) {
         if (chargingWeapon) {
+            // charges cannot be held with no energy, and can't be started
+            // when energy is depleted
+            if (drone->energyFullyDepleted && (drone->energyRefillWait != 0.0f || drone->chargingBurst)) {
+                drone->weaponCharge = 0.0f;
+                drone->fullChargeHoldTime = 0.0f;
+                return;
+            }
+
             drone->chargingWeapon = true;
             drone->weaponCharge = min(drone->weaponCharge + e->deltaTime, drone->weaponInfo->charge);
         } else if (drone->weaponCharge < drone->weaponInfo->charge) {
             drone->chargingWeapon = false;
-            drone->weaponCharge = max(drone->weaponCharge - e->deltaTime, 0.0f);
+            drone->weaponCharge = 0.0f;
+            drone->fullChargeHoldTime = 0.0f;
         }
     }
     // if the weapon needs to be charged, only fire the weapon if it's
     // fully charged and the agent released the trigger
     if (weaponNeedsCharge && (chargingWeapon || drone->weaponCharge < drone->weaponInfo->charge)) {
+        // slowly drain energy if a charge is being held for a long time
+        if (drone->weaponCharge == drone->weaponInfo->charge) {
+            drone->fullChargeHoldTime += e->deltaTime;
+            if (drone->fullChargeHoldTime > DRONE_CHARGE_FULL_DRAIN_WAIT) {
+                const float holdTime = drone->fullChargeHoldTime - DRONE_CHARGE_FULL_DRAIN_WAIT;
+                const float drainRate = DRONE_CHARGE_HOLD_DRAIN_RATE * (1.0f + holdTime);
+                drone->energyLeft = max(drone->energyLeft - (drainRate * e->deltaTime), 0.0f);
+                // don't set the refill wait when depleted as that would
+                // block charging and cancel this charge before it drains
+                if (!drone->energyFullyDepleted) {
+                    drone->energyRefillWait = max(drone->energyRefillWait, DRONE_ENERGY_REFILL_WAIT);
+                }
+
+                if (drone->energyLeft == 0.0f) {
+                    drone->weaponCharge = 0.0f;
+                    drone->fullChargeHoldTime = 0.0f;
+                    if (!drone->chargingBurst) {
+                        droneEmptyEnergy(e, drone);
+                    }
+                }
+            }
+        }
         return;
     }
 
@@ -2380,6 +2413,7 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
     drone->weaponCooldown += drone->weaponInfo->coolDown;
     drone->chargingWeapon = false;
     drone->weaponCharge = 0.0f;
+    drone->fullChargeHoldTime = 0.0f;
 
     b2Vec2 normAim = drone->lastAim;
     if (!b2Equal(aim, b2Vec2_zero)) {
@@ -2447,8 +2481,7 @@ void droneBrake(iwEnv *e, droneEntity *drone, const bool brake) {
     // if energy is empty but burst is being charged, let burst functions
     // handle energy refill
     if (drone->energyLeft == 0.0f && !drone->chargingBurst) {
-        droneEmptyEnergy(drone);
-        e->stats[drone->idx].energyEmptied++;
+        droneEmptyEnergy(e, drone);
     }
 
     if (e->client != NULL) {
@@ -2474,9 +2507,10 @@ void droneChargeBurst(iwEnv *e, droneEntity *drone) {
         drone->chargingBurst = true;
     }
 
+    // droneEmptyEnergy is not used here as emptying energy while charging
+    // a burst shouldn't apply the penalties until after the burst is released
     if (drone->energyLeft == 0.0f) {
         drone->energyFullyDepleted = true;
-        e->stats[drone->idx].energyEmptied++;
     }
 }
 
@@ -2505,7 +2539,7 @@ void droneBurst(iwEnv *e, droneEntity *drone) {
     drone->burstCharge = 0.0f;
     drone->burstCooldown = DRONE_BURST_COOLDOWN;
     if (drone->energyLeft == 0.0f) {
-        droneEmptyEnergy(drone);
+        droneEmptyEnergy(e, drone);
     } else {
         drone->energyRefillWait = DRONE_ENERGY_REFILL_WAIT;
     }
@@ -2522,22 +2556,37 @@ void droneBurst(iwEnv *e, droneEntity *drone) {
     }
 }
 
-void droneDiscardWeapon(iwEnv *e, droneEntity *drone) {
-    if (drone->weaponInfo->type == e->defaultWeapon->type || (drone->energyFullyDepleted && !drone->chargingBurst)) {
-        return;
-    }
+void droneWeaponAction(iwEnv *e, droneEntity *drone) {
+    switch (drone->weaponInfo->type) {
+    case SNIPER_WEAPON:
+    case IMPLODER_WEAPON:
+    case BLACK_HOLE_WEAPON:
+    case NUKE_WEAPON:
+        drone->weaponCharge = 0.0f;
+        drone->fullChargeHoldTime = 0.0f;
+        break;
+    case MINE_LAUNCHER_WEAPON: {
+        // set off all mines from this drone
+        CC_ArrayIter projIter;
+        cc_array_iter_init(&projIter, e->projectiles);
+        projectileEntity *projectile;
+        while (cc_array_iter_next(&projIter, (void **)&projectile) != CC_ITER_END) {
+            if (projectile->needsToBeDestroyed || projectile->droneIdx != drone->idx) {
+                continue;
+            }
 
-    droneChangeWeapon(e, drone, e->defaultWeapon->type);
-    droneAddEnergy(drone, -WEAPON_DISCARD_COST);
-    if (drone->chargingBurst) {
-        return;
+            // we have to destroy the projectile using the iterator so
+            // we can continue to iterate correctly
+            destroyProjectile(e, projectile, true, false);
+            enum cc_stat res = cc_array_iter_remove_fast(&projIter, NULL);
+            MAYBE_UNUSED(res);
+            ASSERT(res == CC_OK);
+        }
+        destroyExplodedProjectiles(e);
+        break;
     }
-
-    if (drone->energyLeft == 0.0f) {
-        droneEmptyEnergy(drone);
-        e->stats[drone->idx].energyEmptied++;
-    } else {
-        drone->energyRefillWait = DRONE_ENERGY_REFILL_WAIT;
+    default:
+        break;
     }
 }
 
@@ -2580,7 +2629,8 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
         drone->heat = max(drone->heat - (120.0f * e->deltaTime), 0);
     }
     if (!drone->shotThisStep) {
-        drone->weaponCharge = max(drone->weaponCharge - e->deltaTime, 0);
+        drone->weaponCharge = 0.0f;
+        drone->fullChargeHoldTime = 0.0f;
     } else {
         drone->shotThisStep = false;
     }
@@ -2594,8 +2644,9 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
         drone->energyFullyDepletedThisStep = false;
     } else if (drone->energyRefillWait != 0.0f) {
         drone->energyRefillWait = max(drone->energyRefillWait - e->deltaTime, 0.0f);
-    } else if (drone->energyLeft != DRONE_ENERGY_MAX && !drone->chargingBurst) {
+    } else if (drone->energyLeft != DRONE_ENERGY_MAX && !drone->chargingBurst && drone->fullChargeHoldTime <= DRONE_CHARGE_FULL_DRAIN_WAIT) {
         // don't start recharging energy until the burst charge is used
+        // or while a held weapon charge is draining energy
         drone->energyLeft = min(drone->energyLeft + (DRONE_ENERGY_REFILL_RATE * e->deltaTime), DRONE_ENERGY_MAX);
     }
     if (drone->energyLeft == DRONE_ENERGY_MAX) {

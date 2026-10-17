@@ -104,11 +104,11 @@ static const float RAY_TIME_HORIZON = 2.0f;
 
 static const uint16_t ENEMY_DRONE_OBS_OFFSET = PROJECTILE_INFO_OBS_OFFSET + PROJECTILE_OBS_SIZE;
 // the ray to the enemy is last
-static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 27;
+static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 29;
 static const uint8_t ENEMY_DRONE_OBS_SIZE = ENEMY_DRONE_RAY_OBS_IDX + RAY_OBS_SIZE;
 
 // the rays are last
-static const uint8_t DRONE_RAY_OBS_IDX = 27;
+static const uint8_t DRONE_RAY_OBS_IDX = 29;
 static const uint8_t DRONE_OBS_SIZE = DRONE_RAY_OBS_IDX + (NUM_DRONE_RAY_OBS * RAY_OBS_SIZE);
 
 static const uint8_t MISC_OBS_SIZE = 1 + NUM_MAPS;
@@ -135,8 +135,6 @@ static const float MAX_OBS_ENTITY_SPEED = 75.0f;
 static const float MAX_OBS_PROJECTILE_SPEED = 150.0f;
 
 // action constants
-static const uint8_t CONTINUOUS_ACTION_SIZE = 7;
-static const uint8_t DISCRETE_ACTION_SIZE = 6;
 static const float ACTION_NOOP_MAGNITUDE = 0.1f;
 
 static const float discMoveToContMoveMap[2][8] = {
@@ -192,6 +190,10 @@ static const float DRONE_ENERGY_REFILL_WAIT = 1.0f;
 static const float DRONE_ENERGY_REFILL_EMPTY_WAIT = 3.0f;
 static const float DRONE_ENERGY_REFILL_RATE = 0.03f;
 static const float DRONE_ENERGY_RESPAWN_REFILL = 0.5f;
+static const float DRONE_CHARGE_FULL_DRAIN_WAIT = 2.0f;
+static const float DRONE_CHARGE_HOLD_DRAIN_RATE = 0.02;
+
+static const float MAX_OBS_DRONE_CHARGE_HOLD = DRONE_CHARGE_FULL_DRAIN_WAIT * 2.5f;
 
 static const float DRONE_BURST_BASE_COST = 0.1f;
 static const float DRONE_BURST_CHARGE_RATE = 0.6f;
@@ -214,7 +216,6 @@ static const float DRONE_SHIELD_BREAK_ENERGY_REFILL = 0.33f;
 
 #define PROJECTILE_ENERGY_REFILL_COEF 0.001f
 static const float EXPLOSION_ENERGY_REFILL_COEF = 1.75f;
-static const float WEAPON_DISCARD_COST = 0.2f;
 
 static const uint8_t DRONE_PIECE_COUNT = 5;
 static const float DRONE_PIECE_MIN_DISTANCE = 1.5f;
