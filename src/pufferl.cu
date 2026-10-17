@@ -1003,7 +1003,7 @@ static void env_setup(PuffeRL* p, VecEnv* vec, Dict* vk, Dict* ek) {
     Env* envs = (Env*)calloc(total_agents, sizeof(Env));
     int agents_created = 0;
     while (agents_created < total_agents) {
-        envs[num_envs].rng = num_envs;
+        envs[num_envs].rng = (unsigned int)(p->seed * total_agents + num_envs);
         puf_init(&envs[num_envs], ek);
         agents_created += envs[num_envs].num_agents;
         num_envs++;
@@ -2728,6 +2728,8 @@ void run_sweep(Ini* ini, const char* exe_path) {
     assert(train_gpus >= 1 && (float)sweep_gpus == fminf(
         fmaxf((float)sweep_gpus, (float)train_gpus), (float)total_gpus));
 
+    long sweep_seed = puf_ini_get(ini, "base", "seed");
+
     ProteinSweep* protein = protein_sweep_create((ProteinSweep){
         .space = space,
         .num_random_samples = 10,
@@ -2748,7 +2750,7 @@ void run_sweep(Ini* ini, const char* exe_path) {
         .success_cap = success_cap,
         .failure_cap = 1024,
         .top_k = 5,
-        .rng_seed = 73ULL,
+        .rng_seed = (unsigned long long)sweep_seed,
     });
 
     int parallel = sweep_gpus / train_gpus;
@@ -2808,7 +2810,13 @@ void run_sweep(Ini* ini, const char* exe_path) {
             snprintf(run_id, sizeof(run_id), "sweep_%ld_%04d",
                 (long)(1000.0 * wall_clock()), job.run);
             puf_ini_put(ini, "base.run_id", run_id);
-
+            // Stride by train_gpus: each DP rank adds its rank to the seed, so
+            // runs' seed ranges never overlap.
+            char seed_buf[32];
+            snprintf(seed_buf, sizeof(seed_buf), "%ld",
+                sweep_seed + (long)job.run * train_gpus);
+            puf_ini_put(ini, "base.seed", seed_buf);
+ 
             // Spawn train: result pipe + full ini as section.key=value argv.
             // Child may NCCL-fork again if train.gpus > 1.
             int pipefd[2];
@@ -3121,7 +3129,7 @@ TrainResult run_train(Ini* ini, TrainContext* ctx) {
         selfplay.pool = (char (*)[SELFPLAY_PATH_MAX])calloc(
             selfplay.max_size, sizeof(*selfplay.pool));
         selfplay.opp_timeout_steps = puf_ini_get(ini, "selfplay", "opp_timeout_steps");
-        selfplay.rng = puf_ini_get(ini, "selfplay", "seed") + pufferl->hypers.rank;
+        selfplay.rng = (unsigned int)pufferl->seed;
         long current_step = pufferl->global_step * pufferl->hypers.world_size;
 
         selfplay_add_checkpoint(&selfplay, initial_checkpoint);
@@ -3622,6 +3630,7 @@ int main(int argc, char** argv) {
     if (model) {
         puf_ini_put(&ini, "base.load_model_path", model);
     }
+    srand((unsigned int)puf_ini_get(&ini, "base", "seed"));
     TrainContext ctx = {.world_size = 1, .artifact_owner = 1};
     int render = !headless;
 
