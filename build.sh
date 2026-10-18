@@ -500,21 +500,10 @@ if [ "$MODE" = "native" ]; then
     OSRS_RENDER_OBJECT=""
     case "$ENV" in
         impulse_wars)
-            # build impulse_wars with LTO as it speeds up box2d
-            # emit LLVM bitcode first, then use clang to link it to a regular
-            # object that can be passed to nvcc
-            # IW_LTO_BITCODE="build/impulse_wars_api_lto.bc"
-            # IW_LTO_OBJECT="build/impulse_wars_api_lto.o"
-            # $CC -c $LINK_OPT -flto -fno-math-errno \
-            #     "${SIMD_FLAGS[@]}" -std=c11 \
-            #     -I. -Isrc -I$SRC_DIR -Ivendor \
-            #     "${INCLUDES[@]}" \
-            #     -DPLATFORM_DESKTOP -D_POSIX_C_SOURCE=200809L \
-            #     "${EXTRA_CFLAGS[@]}" \
-            #     ocean/impulse_wars/impulse_wars_api.c \
-            #     -o "$IW_LTO_BITCODE"
-            # $CC -r $LINK_OPT -flto "$IW_LTO_BITCODE" -o "$IW_LTO_OBJECT"
-            # EXTRA_SRC="$IW_LTO_OBJECT"
+            # env runs on the host, so pass SIMD/math flags to the host compiler
+            for flag in "${SIMD_FLAGS[@]}" -fno-math-errno -fno-trapping-math; do
+                EXTRA_CFLAGS+=(-Xcompiler=$flag)
+            done
             ;;
         osrs_*)
             OSRS_RENDER_OBJECT="build/osrs_puffer_render.o"
