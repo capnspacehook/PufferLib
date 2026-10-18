@@ -1086,6 +1086,11 @@ void droneChangeWeapon(const iwEnv *e, droneEntity *drone, const enum weaponType
     drone->ammo = weaponAmmo(e->defaultWeapon->type, drone->weaponInfo->type);
 }
 
+void droneEmptyCharge(droneEntity *drone) {
+    drone->weaponCharge = 0.0f;
+    drone->fullChargeHoldTime = 0.0f;
+}
+
 // contribution of a single drone from a single physics source; kept
 // separately so the source of a kill can be determined the same way
 // the killer is
@@ -2423,8 +2428,7 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
             // charges cannot be held with no energy, and can't be started
             // when energy is depleted
             if (drone->energyFullyDepleted && (drone->energyRefillWait != 0.0f || drone->chargingBurst)) {
-                drone->weaponCharge = 0.0f;
-                drone->fullChargeHoldTime = 0.0f;
+                droneEmptyCharge(drone);
                 return;
             }
 
@@ -2432,8 +2436,7 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
             drone->weaponCharge = min(drone->weaponCharge + e->deltaTime, drone->weaponInfo->charge);
         } else if (drone->weaponCharge < drone->weaponInfo->charge) {
             drone->chargingWeapon = false;
-            drone->weaponCharge = 0.0f;
-            drone->fullChargeHoldTime = 0.0f;
+            droneEmptyCharge(drone);
         }
     }
     // if the weapon needs to be charged, only fire the weapon if it's
@@ -2453,8 +2456,7 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
                 }
 
                 if (drone->energyLeft == 0.0f) {
-                    drone->weaponCharge = 0.0f;
-                    drone->fullChargeHoldTime = 0.0f;
+                    droneEmptyCharge(drone);
                     if (!drone->chargingBurst) {
                         droneEmptyEnergy(e, drone);
                     }
@@ -2469,8 +2471,7 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
     }
     drone->weaponCooldown += drone->weaponInfo->coolDown;
     drone->chargingWeapon = false;
-    drone->weaponCharge = 0.0f;
-    drone->fullChargeHoldTime = 0.0f;
+    droneEmptyCharge(drone);
 
     b2Vec2 normAim = drone->lastAim;
     if (!b2Equal(aim, b2Vec2_zero)) {
@@ -2619,8 +2620,7 @@ void droneWeaponAction(iwEnv *e, droneEntity *drone) {
     case IMPLODER_WEAPON:
     case BLACK_HOLE_WEAPON:
     case NUKE_WEAPON:
-        drone->weaponCharge = 0.0f;
-        drone->fullChargeHoldTime = 0.0f;
+        droneEmptyCharge(drone);
         break;
     case MINE_LAUNCHER_WEAPON: {
         // set off all mines from this drone
@@ -2692,8 +2692,7 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
         drone->heat = max(drone->heat - (120.0f * e->deltaTime), 0);
     }
     if (!drone->shotThisStep) {
-        drone->weaponCharge = 0.0f;
-        drone->fullChargeHoldTime = 0.0f;
+        droneEmptyCharge(drone);
 
         if (drone->grapple != NULL && drone->grapple->welded) {
             b2DistanceJoint_SetMaxMotorForce(drone->grappleJointID, 0.0f);
