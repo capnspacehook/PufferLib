@@ -1544,6 +1544,12 @@ void createProjectile(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
         projectile->sensorID = weaponSensor(projectile->bodyID, projectile->weaponInfo->type);
         b2Shape_SetUserData(projectile->sensorID, ent);
     }
+
+    if (projectile->weaponInfo->type == GRAPPLE_WEAPON) {
+        projectile->grappleHealth = GRAPPLE_HEALTH;
+        ASSERT(drone->grapple == NULL);
+        drone->grapple = projectile;
+    }
 }
 
 // simplified and copied from box2d/src/shape.c
@@ -1896,11 +1902,34 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         }
 
         b2Body_ApplyLinearImpulseToCenter(bodyID, impulse, true);
-        // mine launcher projectiles explode when caught in another
-        // explosion, explode this mine only once
-        if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON && ctx->def->impulsePerLength > 0.0f) {
-            createProjectileExplosion(ctx->e, projectile, false);
-            break;
+        if (!isImplosion) {
+            switch (projectile->weaponInfo->type) {
+            case MINE_LAUNCHER_WEAPON:
+                // mine launcher projectiles explode when caught in another
+                // explosion, explode this mine only once
+                createProjectileExplosion(ctx->e, projectile, false);
+                return true;
+            case GRAPPLE_WEAPON: {
+                if (!projectile->welded) {
+                    break;
+                }
+
+                // attached grapples take damage when hit by an explosion
+                float damage = (ctx->def->impulsePerLength + parentSpeed) * scale;
+                if (ctx->isBurst) {
+                    damage *= GRAPPLE_BURST_REDUCTION;
+                }
+
+                projectile->grappleHealth -= damage;
+                if (projectile->grappleHealth <= 0.0f && !projectile->needsToBeDestroyed) {
+                    projectile->needsToBeDestroyed = true;
+                    cc_array_add(ctx->e->explodingProjectiles, projectile);
+                }
+                return true;
+            }
+            default:
+                break;
+            }
         }
 
         fixProjectileSpeed(projectile);
@@ -2379,7 +2408,9 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool charg
 
     drone->shotThisStep = true;
     if (drone->weaponInfo->type == GRAPPLE_WEAPON && drone->grapple != NULL) {
-        b2DistanceJoint_SetMaxMotorForce(drone->grappleJointID, GRAPPLE_MOTOR_FORCE);
+        if (drone->grapple->welded) {
+            b2DistanceJoint_SetMaxMotorForce(drone->grappleJointID, GRAPPLE_MOTOR_FORCE);
+        }
         return;
     }
 
@@ -2664,11 +2695,17 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
         drone->weaponCharge = 0.0f;
         drone->fullChargeHoldTime = 0.0f;
 
-        if (drone->grapple != NULL) {
+        if (drone->grapple != NULL && drone->grapple->welded) {
             b2DistanceJoint_SetMaxMotorForce(drone->grappleJointID, 0.0f);
         }
     } else {
         drone->shotThisStep = false;
+        // shorten the grapple line as it's being reeled in
+        if (drone->grapple != NULL && drone->grapple->welded) {
+            const float curLen = b2DistanceJoint_GetCurrentLength(drone->grappleJointID);
+            const float maxLen = b2DistanceJoint_GetMaxLength(drone->grappleJointID);
+            b2DistanceJoint_SetLengthRange(drone->grappleJointID, 0.0f, fminf(curLen + GRAPPLE_SLACK, maxLen));
+        }
     }
     ASSERT(!drone->shotThisStep);
 
@@ -2815,8 +2852,10 @@ void projectilesStep(iwEnv *e) {
             continue;
         }
         const float maxDistance = projectile->weaponInfo->maxDistance;
-        const float distance = b2Distance(projectile->pos, projectile->lastPos);
-        projectile->distance += distance;
+        if (!projectile->welded) {
+            const float distance = b2Distance(projectile->pos, projectile->lastPos);
+            projectile->distance += distance;
+        }
 
         // if a drone is in a set mine's sensor range but behind a wall,
         // we need to check until the drone leaves the sensor range if
@@ -3310,9 +3349,18 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
     }
 
     if (projectile->weaponInfo->type == GRAPPLE_WEAPON && !projectile->welded && bodyIDSet) {
+        // don't let a grapple attach to the drone that shot it;
+        // destroy it instead
+        if (ent->type == DRONE_ENTITY) {
+            const droneEntity *hitDrone = ent->entity;
+            if (hitDrone->idx == projectile->droneIdx) {
+                destroyProjectile(e, projectile, false, true);
+                return 1;
+            }
+        }
+
         createProjectileWeldJoint(e, projectile, bodyID, b2Body_GetRotation(bodyID), contactID, projIsShapeA);
         projectile->grappledEnt = ent;
-
         droneEntity *drone = safe_array_get_at(e->drones, projectile->droneIdx);
         b2DistanceJointDef def = b2DefaultDistanceJointDef();
         def.base.bodyIdA = drone->bodyID;
@@ -3321,7 +3369,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         def.hertz = 0.0f;        // no spring force -> slack allowed
         def.enableLimit = true;
         def.minLength = 0.0f;
-        def.maxLength = b2Distance(drone->pos, projectile->pos);
+        def.maxLength = b2Distance(drone->pos, projectile->pos) + GRAPPLE_SLACK;
         def.enableMotor = true;
         def.maxMotorForce = 0.0f; // winch off until the trigger is pulled
         def.motorSpeed = -GRAPPLE_MOTOR_SPEED;
@@ -3347,8 +3395,9 @@ void handleProjectileEndContact(const entity *proj, const entity *ent) {
 
     // mines stick to walls, explode when hitting another projectile
     // and are destroyed when hitting a drone so no matter what we don't
-    // need to do anything here
-    if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON) {
+    // need to do anything here; any projectile with a weld joint doesn't
+    // need the velocity or speed messed with
+    if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON || projectile->welded) {
         return;
     }
 

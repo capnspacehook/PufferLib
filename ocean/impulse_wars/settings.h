@@ -410,15 +410,18 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define GRAPPLE_DAMPING 0.0f
 #define GRAPPLE_CHARGE 0.0f
 #define GRAPPLE_COOL_DOWN 0.5f
-#define GRAPPLE_MAX_DISTANCE INFINITE
+#define GRAPPLE_MAX_DISTANCE 150.0f
 #define GRAPPLE_RADIUS 0.2f
 #define GRAPPLE_DENSITY 3.5f
 #define GRAPPLE_MASS MASS(GRAPPLE_DENSITY, GRAPPLE_RADIUS)
 #define GRAPPLE_INV_MASS INV_MASS(GRAPPLE_MASS)
 #define GRAPPLE_BOUNCE INFINITE // this is to avoid grapples getting destroyed before they can create a weld joint
-#define GRAPPLE_SPAWN_WEIGHT 10.0f
+#define GRAPPLE_SPAWN_WEIGHT 2.0f
 #define GRAPPLE_MOTOR_SPEED 100.0f
-#define GRAPPLE_MOTOR_FORCE 150.0f
+#define GRAPPLE_MOTOR_FORCE 200.0f
+#define GRAPPLE_SLACK 3.0f
+#define GRAPPLE_HEALTH 100.0f
+#define GRAPPLE_BURST_REDUCTION 0.8f
 
 static const weaponInformation standard = {
     .type = STANDARD_WEAPON,

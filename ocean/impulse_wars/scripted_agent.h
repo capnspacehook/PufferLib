@@ -707,6 +707,7 @@ bool weaponSafeForMovement(const droneEntity *drone) {
     case MINE_LAUNCHER_WEAPON:
     case BLACK_HOLE_WEAPON:
     case NUKE_WEAPON:
+    case GRAPPLE_WEAPON:
         return false;
     default:
         return true;
@@ -1073,6 +1074,7 @@ float weaponIdealRangeSquared(const droneEntity *drone) {
     case MINE_LAUNCHER_WEAPON:
     case BLACK_HOLE_WEAPON:
     case NUKE_WEAPON:
+    case GRAPPLE_WEAPON:
         return FLT_MAX;
 
     default:

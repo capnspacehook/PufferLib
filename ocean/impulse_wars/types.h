@@ -226,6 +226,7 @@ typedef struct projectileEntity {
     uint8_t dronesBehindWalls[_MAX_DRONES];
     CC_Array *entsInBlackHole;
     entity *grappledEnt;
+    float grappleHealth;
     bool needsToBeDestroyed;
     bool boosted;
 
@@ -720,6 +721,7 @@ struct Env {
     CC_Array *drones;
     CC_Array *pickups;
     CC_Array *projectiles;
+    // TODO: rename to deferred destroyed or something?
     CC_Array *explodingProjectiles;
     CC_Array *dronePieces;
 
