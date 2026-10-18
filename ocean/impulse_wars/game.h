@@ -2114,6 +2114,10 @@ void createExplosion(iwEnv *e, droneEntity *drone, const projectileEntity *proje
 }
 
 void destroyProjectile(iwEnv *e, projectileEntity *projectile, const bool processExplosions, const bool full) {
+    if (projectile->needsToBeDestroyed && full) {
+        return;
+    }
+
     if (e->client != NULL && projectile->weaponInfo->type == BLACK_HOLE_WEAPON && BLACK_HOLE_DISTORTION_FADE_TIME > 0.0f) {
         // Keep only a visual field at the final position; gameplay pull ends now.
         explosionInfo *field = fastCalloc(1, sizeof(explosionInfo));
@@ -3263,12 +3267,11 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
                 }
             }
             destroyProjectile(e, projectile, true, true);
-            destroyExplodedProjectiles(e);
             return numDestroyed;
         }
 
         // always allow all other projectiles to bounce off each other
-        return false;
+        return 0;
     } else if (entityTypeIsWall(ent->type)) {
         wallEntity *wall = ent->entity;
         bodyID = wall->bodyID;
@@ -3287,13 +3290,13 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
 
         if (ent->type == BOUNCY_WALL_ENTITY) {
             // always allow projectiles to bounce off bouncy walls
-            return false;
+            return 0;
         }
     } else if (ent->type == SHIELD_ENTITY) {
         // always allow projectiles to bounce off shields, and update shield health
         shieldEntity *shield = ent->entity;
         if (shield->health <= 0.0f) {
-            return false;
+            return 0;
         }
 
         const float damage = projectile->lastSpeed * projectile->weaponInfo->mass * DRONE_SHIELD_HEALTH_IMPULSE_COEF;
@@ -3308,7 +3311,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             e->stats[parentDrone->idx].shieldsBroken++;
         }
 
-        return false;
+        return 0;
     }
 
     if (projectile->weaponInfo->type != BLACK_HOLE_WEAPON || ent->type != DRONE_ENTITY) {
@@ -3327,10 +3330,10 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             if (!projIsShapeA) {
                 hitImpulse = b2Neg(hitImpulse);
             }
+            hitStrength = b2AbsFloat(b2Length(hitImpulse));
 
             b2Body_ApplyLinearImpulseToCenter(hitDrone->bodyID, hitImpulse, true);
             trackImpulse(e, hitDrone->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), projectile->droneIdx, source);
-            hitStrength = b2AbsFloat(b2Length(hitImpulse));
         }
 
         if (projectile->droneIdx != hitDrone->idx) {
@@ -3357,7 +3360,6 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
 
         if (projectile->weaponInfo->destroyedOnDroneHit) {
             destroyProjectile(e, projectile, projectile->weaponInfo->explodesOnDroneHit, true);
-            destroyExplodedProjectiles(e);
             return 1;
         }
     } else if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON && !projectile->welded) {
@@ -3370,7 +3372,6 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             };
             if (isOverlappingCircleInLineOfSight(e, projectile->ent, projectile->pos, MINE_LAUNCHER_PROXIMITY_RADIUS, filter, NULL)) {
                 destroyProjectile(e, projectile, true, true);
-                destroyExplodedProjectiles(e);
                 return 1;
             }
         }
@@ -3386,6 +3387,11 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
     }
 
     if (projectile->weaponInfo->type == GRAPPLE_WEAPON && !projectile->welded && bodyIDSet) {
+        if (!b2Contact_IsValid(contactID)) {
+            destroyProjectile(e, projectile, false, true);
+            return 1;
+        }
+
         // don't let a grapple attach to the drone that shot it;
         // destroy it instead
         if (ent->type == DRONE_ENTITY) {
@@ -3404,15 +3410,15 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         b2DistanceJointDef def = b2DefaultDistanceJointDef();
         def.base.bodyIdA = drone->bodyID;
         def.base.bodyIdB = projectile->bodyID;
-        def.enableSpring = true; 
-        def.hertz = 0.0f;      
-        def.dampingRatio = GRAPPLE_DAMPING_RATIO;  
+        def.enableSpring = true;
+        def.hertz = 0.0f;
+        def.dampingRatio = GRAPPLE_DAMPING_RATIO;
         def.enableLimit = true;
         def.minLength = 0.0f;
         def.maxLength = drone->grappleLength + GRAPPLE_MAX_STRETCH;
         def.length = drone->grappleLength;
         def.enableMotor = true;
-        def.maxMotorForce = 0.0f; 
+        def.maxMotorForce = 0.0f;
         def.motorSpeed = -GRAPPLE_MOTOR_SPEED;
 
         drone->grapple = projectile;
@@ -3422,7 +3428,6 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
     const uint8_t maxBounces = projectile->weaponInfo->maxBounces;
     if (projectile->bounces == maxBounces) {
         destroyProjectile(e, projectile, true, true);
-        destroyExplodedProjectiles(e);
         return 1;
     }
 
@@ -3482,6 +3487,13 @@ void handleProjectileEndContact(const entity *proj, const entity *ent) {
     projectile->lastSpeed = newSpeed;
 }
 
+static inline bool entityLive(const entity *ent) {
+    if (ent == NULL || (ent->type == PROJECTILE_ENTITY && ((projectileEntity *)ent->entity)->needsToBeDestroyed)) {
+        return false;
+    }
+    return true;
+}
+
 void handleContactEvents(iwEnv *e) {
     b2ContactEvents events = b2World_GetContactEvents(e->worldID);
     for (int i = 0; i < events.beginCount; ++i) {
@@ -3496,6 +3508,14 @@ void handleContactEvents(iwEnv *e) {
         if (b2Shape_IsValid(event->shapeIdB)) {
             e2 = b2Shape_GetUserData(event->shapeIdB);
             ASSERT(e2 != NULL);
+        }
+        // projectiles destroyed by an earlier explosion this step are
+        // destroyed after all begin events are handled
+        if (!entityLive(e1)) {
+            e1 = NULL;
+        }
+        if (!entityLive(e2)) {
+            e2 = NULL;
         }
 
         if (e1 != NULL && e1->type == DRONE_ENTITY && e2 != NULL && e2->type == DRONE_ENTITY) {
@@ -3528,6 +3548,9 @@ void handleContactEvents(iwEnv *e) {
                     continue;
                 } else if (numDestroyed == 1) {
                     e1 = NULL;
+                    if (!entityLive(e2)) {
+                        e2 = NULL;
+                    }
                 }
             } else if (entityTypeIsWall(e1->type) && e2 != NULL) {
                 if (e1->type == DEATH_WALL_ENTITY) {
@@ -3544,6 +3567,7 @@ void handleContactEvents(iwEnv *e) {
                 }
             }
         }
+
         if (e2 != NULL) {
             if (e2->type == PROJECTILE_ENTITY) {
                 handleProjectileBeginContact(e, e2, e1, event->contactId, false);
@@ -3562,6 +3586,8 @@ void handleContactEvents(iwEnv *e) {
             }
         }
     }
+
+    destroyExplodedProjectiles(e);
 
     for (int i = 0; i < events.endCount; ++i) {
         const b2ContactEndTouchEvent *event = events.endEvents + i;
