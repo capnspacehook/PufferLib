@@ -276,10 +276,11 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
         continuousObs[offset] = scaleValue(wallRelPos.y, MAX_OBS_WALL_POS, false);
     }
 
-    if (cc_array_size(e->floatingWalls) != 0) {
+    const size_t numFloatingWalls = cc_array_size(e->floatingWalls);
+    if (numFloatingWalls != 0) {
         // find N nearest floating walls
         nearEntity nearFloatingWalls[MAX_FLOATING_WALLS] = {0};
-        for (uint8_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
+        for (uint8_t i = 0; i < numFloatingWalls; i++) {
             wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
             const nearEntity nearEnt = {
                 .entity = wall,
@@ -287,7 +288,9 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
             };
             nearFloatingWalls[i] = nearEnt;
         }
-        insertionSortEntities(nearFloatingWalls, cc_array_size(e->floatingWalls));
+        if (numFloatingWalls > NUM_FLOATING_WALL_OBS) {
+            insertionSortEntities(nearFloatingWalls, numFloatingWalls);
+        }
 
         // compute type, position, angle and velocity of N nearest floating walls
         for (uint8_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
@@ -317,11 +320,12 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
         }
     }
 
-    if (cc_array_size(e->pickups) != 0) {
+    const size_t numPickups = cc_array_size(e->pickups);
+    if (numPickups != 0) {
         // find N nearest weapon pickups
         nearEntity nearPickups[MAX_WEAPON_PICKUPS] = {0};
         uint8_t numActivePickups = 0;
-        for (uint8_t i = 0; i < cc_array_size(e->pickups); i++) {
+        for (uint8_t i = 0; i < numPickups; i++) {
             weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
             if (pickup->floatingWallsTouching > 0 || pickup->respawnWait > 0.0f) {
                 continue;
@@ -333,7 +337,9 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
             };
             nearPickups[numActivePickups++] = nearEnt;
         }
-        insertionSortEntities(nearPickups, numActivePickups);
+        if (numActivePickups > NUM_WEAPON_PICKUP_OBS) {
+            insertionSortEntities(nearPickups, numActivePickups);
+        }
 
         // compute type and location of N nearest weapon pickups
         for (uint8_t i = 0; i < numActivePickups; i++) {
@@ -424,7 +430,10 @@ static void computeVelocityRayObs(const iwEnv *e, const droneEntity *drone, cons
         return;
     }
 
-    const float damping = b2Body_GetLinearDamping(drone->bodyID);
+    float damping = DRONE_LINEAR_DAMPING;
+    if (drone->braking) {
+        damping = DRONE_BRAKE_DAMPING_COEF;
+    }
     // with linear damping k, distance travelled after t seconds is
     // speed * (1 - e^(-kt)) / k
     float pathScale = RAY_TIME_HORIZON;
@@ -455,6 +464,13 @@ static void computeVelocityRayObs(const iwEnv *e, const droneEntity *drone, cons
 // writes ray observations for what the drone's shot, movement and recoil
 // would hit
 static void computeDroneRayObs(const iwEnv *e, const droneEntity *drone, float *obs) {
+    float distance = drone->weaponInfo->maxDistance;
+    if (distance == INFINITE) {
+        distance = MAX_DISTANCE;
+    } else {
+        distance = fminf(distance, MAX_DISTANCE);
+    }
+
     // what a shot fired now would hit first, walls or drones
     const b2Vec2 aimTranslation = b2MulSV(MAX_DISTANCE, drone->lastAim);
     const b2QueryFilter aimFilter = {
@@ -469,7 +485,7 @@ static void computeDroneRayObs(const iwEnv *e, const droneEntity *drone, float *
     computeVelocityRayObs(e, drone, drone->velocity, obs + RAY_OBS_SIZE);
 
     // where the drone would drift to if it fired now
-    const b2Vec2 recoilVelocity = b2MulSV(-drone->weaponInfo->recoilMagnitude / b2Body_GetMass(drone->bodyID), drone->lastAim);
+    const b2Vec2 recoilVelocity = b2MulSV(-drone->weaponInfo->recoilMagnitude / DRONE_MASS, drone->lastAim);
     computeVelocityRayObs(e, drone, b2Add(drone->velocity, recoilVelocity), obs + (2 * RAY_OBS_SIZE));
 }
 
@@ -524,17 +540,21 @@ void computeObs(iwEnv *e) {
             projectileEntity *sortedProjectiles[numProjectiles];
             memcpy(sortedProjectiles, e->projectiles->buffer, numProjectiles * sizeof(projectileEntity *));
 
-            for (int16_t i = 1; i < (int64_t)numProjectiles; i++) {
-                projectileEntity *key = sortedProjectiles[i];
-                const float keyDistance = b2DistanceSquared(agentPos, key->pos);
-                int16_t j = i - 1;
+            // we don't need to sort the projectiles if there's less than
+            // NUM_PROJECTILE_OBS, all will go in the obs
+            if (numProjectiles > NUM_PROJECTILE_OBS) {
+                for (int16_t i = 1; i < (int64_t)numProjectiles; i++) {
+                    projectileEntity *key = sortedProjectiles[i];
+                    const float keyDistance = b2DistanceSquared(agentPos, key->pos);
+                    int16_t j = i - 1;
 
-                while (j >= 0 && b2DistanceSquared(agentPos, sortedProjectiles[j]->pos) > keyDistance) {
-                    sortedProjectiles[j + 1] = sortedProjectiles[j];
-                    j = j - 1;
+                    while (j >= 0 && b2DistanceSquared(agentPos, sortedProjectiles[j]->pos) > keyDistance) {
+                        sortedProjectiles[j + 1] = sortedProjectiles[j];
+                        j = j - 1;
+                    }
+
+                    sortedProjectiles[j + 1] = key;
                 }
-
-                sortedProjectiles[j + 1] = key;
             }
 
             // compute owner, type, location and velocity of N projectiles
