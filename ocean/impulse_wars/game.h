@@ -2705,14 +2705,25 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
         // shorten the grapple line as it's being reeled in
         if (drone->grapple != NULL && drone->grapple->welded) {
             const float curLen = b2DistanceJoint_GetCurrentLength(drone->grappleJointID);
-            const float maxLen = b2DistanceJoint_GetMaxLength(drone->grappleJointID);
-            b2DistanceJoint_SetLengthRange(drone->grappleJointID, 0.0f, fminf(curLen + GRAPPLE_SLACK, maxLen));
+            drone->grappleLength = fminf(curLen + GRAPPLE_SLACK, drone->grappleLength);
+            b2DistanceJoint_SetLength(drone->grappleJointID, drone->grappleLength);
+            b2DistanceJoint_SetLengthRange(drone->grappleJointID, 0.0f, drone->grappleLength + GRAPPLE_MAX_STRETCH);
         }
     }
     ASSERT(!drone->shotThisStep);
 
-    // track applied force to the owning drone and attached entity
     if (drone->grapple != NULL && drone->grapple->welded) {
+        const bool stretched = b2DistanceJoint_GetCurrentLength(drone->grappleJointID) > drone->grappleLength;
+        const bool springOn = b2DistanceJoint_GetSpringHertz(drone->grappleJointID) > 0.0f;
+        if (stretched != springOn) {
+            b2DistanceJoint_SetSpringHertz(drone->grappleJointID, stretched ? GRAPPLE_SPRING_HERTZ : 0.0f);
+            if (!stretched) {
+                // prevent yo-yo'ing/oscillating when the spring is activated
+                b2DistanceJoint_SetLength(drone->grappleJointID, drone->grappleLength);
+            }
+        }
+
+        // track applied force to the owning drone and attached entity
         const b2Vec2 pullForce = b2Joint_GetConstraintForce(drone->grappleJointID);
         const physicsSource source = {.type = GRAPPLE_PHYSICS, .weapon = GRAPPLE_WEAPON};
 
@@ -3388,16 +3399,20 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         createProjectileWeldJoint(e, projectile, bodyID, b2Body_GetRotation(bodyID), contactID, projIsShapeA);
         projectile->grappledEnt = ent;
         droneEntity *drone = safe_array_get_at(e->drones, projectile->droneIdx);
+        drone->grappleLength = b2Distance(drone->pos, projectile->pos) + GRAPPLE_SLACK;
+
         b2DistanceJointDef def = b2DefaultDistanceJointDef();
         def.base.bodyIdA = drone->bodyID;
         def.base.bodyIdB = projectile->bodyID;
-        def.enableSpring = true; // must be true or the joint is rigid
-        def.hertz = 0.0f;        // no spring force -> slack allowed
+        def.enableSpring = true; 
+        def.hertz = 0.0f;      
+        def.dampingRatio = GRAPPLE_DAMPING_RATIO;  
         def.enableLimit = true;
         def.minLength = 0.0f;
-        def.maxLength = b2Distance(drone->pos, projectile->pos) + GRAPPLE_SLACK;
+        def.maxLength = drone->grappleLength + GRAPPLE_MAX_STRETCH;
+        def.length = drone->grappleLength;
         def.enableMotor = true;
-        def.maxMotorForce = 0.0f; // winch off until the trigger is pulled
+        def.maxMotorForce = 0.0f; 
         def.motorSpeed = -GRAPPLE_MOTOR_SPEED;
 
         drone->grapple = projectile;
@@ -3603,6 +3618,7 @@ void handleProjectileBeginTouch(iwEnv *e, const entity *sensor, entity *visitor)
     case BLACK_HOLE_WEAPON:
         if (visitor->type == DRONE_ENTITY) {
             const droneEntity *drone = visitor->entity;
+            // TODO: does this work?
             if (projectile->droneIdx == drone->idx && projectile->distance < BLACK_HOLE_PARENT_IGNORE_DISTANCE) {
                 return;
             }

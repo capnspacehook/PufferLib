@@ -78,6 +78,22 @@ static const float BOOST_SPARKS_REACH_RADII = 20.0f;
 static const float BOOST_SPARKS_MIN_REACH = 4.0f;
 static const float BOOST_SPARKS_MAX_REACH = 10.0f;
 
+// Grapple line; bloom makes it look wider than it is so keep it thin.
+static const float GRAPPLE_LINE_WIDTH = 0.08f;
+// lines are dim while slack and brighten as they go taut
+static const float GRAPPLE_LINE_SLACK_ALPHA = 0.45f;
+// lines are dimmer while the hook is still in flight
+static const float GRAPPLE_LINE_FLIGHT_ALPHA = 0.35f;
+// damaged hooks flicker, faster as health drops (flickers per second)
+static const float GRAPPLE_LINE_FLICKER_MIN_RATE = 6.0f;
+static const float GRAPPLE_LINE_FLICKER_MAX_RATE = 30.0f;
+static const float GRAPPLE_LINE_FLICKER_MIN_ALPHA = 0.4f;
+// dashes that travel toward the drone while it's reeling in
+static const float GRAPPLE_DASH_WIDTH = 1.8f * GRAPPLE_LINE_WIDTH;
+static const float GRAPPLE_DASH_LENGTH = 0.6f;
+static const float GRAPPLE_DASH_SPACING = 2.0f;
+static const float GRAPPLE_DASH_SPEED = 12.0f;
+
 // Explosion visual lifetime in seconds (rebuild after tuning).
 // Reference radius/impulse produce BASE_TIME. Exponents of 0 ignore that factor.
 // Uses world radius and absolute impulse, so zoom and implosion direction don't affect timing.
@@ -1879,6 +1895,66 @@ void renderProjectileTrail(const projectileEntity *proj) {
     }
 }
 
+void renderGrappleLine(const iwEnv *e, const droneEntity *drone) {
+    const projectileEntity *grapple = drone->grapple;
+    if (drone->dead || grapple == NULL) {
+        return;
+    }
+
+    // the distance joint is anchored at body centers, but start the line
+    // at the drone's edge so it isn't drawn over the drone
+    const b2Vec2 toGrapple = b2Sub(grapple->pos, drone->pos);
+    const float grappleDist = b2Length(toGrapple);
+    if (grappleDist <= DRONE_RADIUS) {
+        return;
+    }
+    const b2Vec2 lineStart = b2MulAdd(drone->pos, DRONE_RADIUS / grappleDist, toGrapple);
+    const Vector3 start = {.x = lineStart.x, .y = 0.5f, .z = lineStart.y};
+    const Vector3 end = {.x = grapple->pos.x, .y = 0.5f, .z = grapple->pos.y};
+    const Color color = getDroneColor(drone->idx);
+
+    // the line is paying out while the hook is in flight
+    if (!grapple->welded) {
+        DrawCylinderEx(start, end, GRAPPLE_LINE_WIDTH * 0.5f, GRAPPLE_LINE_WIDTH * 0.5f, 4, Fade(color, GRAPPLE_LINE_FLIGHT_ALPHA));
+        return;
+    }
+
+    // brighten the line as it goes taut
+    const float curLen = b2DistanceJoint_GetCurrentLength(drone->grappleJointID);
+    const float maxLen = b2DistanceJoint_GetMaxLength(drone->grappleJointID);
+    const float tautness = Clamp((curLen - (maxLen - GRAPPLE_SLACK)) / GRAPPLE_SLACK, 0.0f, 1.0f);
+    float alpha = Lerp(GRAPPLE_LINE_SLACK_ALPHA, 1.0f, tautness);
+
+    // use game time so animations follow the game speed
+    const float time = (float)e->episodeLength / e->frameRate;
+
+    // flicker faster as the hook takes damage
+    const float health = Clamp(grapple->grappleHealth / GRAPPLE_HEALTH, 0.0f, 1.0f);
+    if (health < 1.0f) {
+        const float rate = Lerp(GRAPPLE_LINE_FLICKER_MAX_RATE, GRAPPLE_LINE_FLICKER_MIN_RATE, health);
+        const float flicker = 0.5f + 0.5f * sinf(2.0f * PI * rate * time);
+        alpha *= Lerp(GRAPPLE_LINE_FLICKER_MIN_ALPHA, 1.0f, flicker);
+    }
+    DrawCylinderEx(start, end, GRAPPLE_LINE_WIDTH, GRAPPLE_LINE_WIDTH, 4, Fade(color, alpha));
+
+    // dashes travel toward the drone while it's reeling in
+    if (b2DistanceJoint_GetMaxMotorForce(drone->grappleJointID) == 0.0f) {
+        return;
+    }
+    const Vector3 toDrone = Vector3Subtract(start, end);
+    const float len = Vector3Length(toDrone);
+    if (len < GRAPPLE_DASH_LENGTH) {
+        return;
+    }
+    const Vector3 dir = Vector3Scale(toDrone, 1.0f / len);
+    const float offset = fmodf(time * GRAPPLE_DASH_SPEED, GRAPPLE_DASH_SPACING);
+    for (float t = offset; t < len; t += GRAPPLE_DASH_SPACING) {
+        const Vector3 dashStart = Vector3Add(end, Vector3Scale(dir, t));
+        const Vector3 dashEnd = Vector3Add(end, Vector3Scale(dir, min(t + GRAPPLE_DASH_LENGTH, len)));
+        DrawCylinderEx(dashStart, dashEnd, GRAPPLE_DASH_WIDTH, GRAPPLE_DASH_WIDTH, 4, Fade(color, alpha));
+    }
+}
+
 void renderBoostSparks(const iwEnv *e) {
     CC_ArrayIter iter;
     cc_array_iter_init(&iter, e->boostSparks);
@@ -2048,6 +2124,11 @@ void renderEnv(iwEnv *e) {
     for (size_t i = 0; i < cc_array_size(e->projectiles); i++) {
         const projectileEntity *projectile = safe_array_get_at(e->projectiles, i);
         renderProjectileTrail(projectile);
+    }
+    // render grapple lines before projectiles so the hooks are on top
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        const droneEntity *drone = safe_array_get_at(e->drones, i);
+        renderGrappleLine(e, drone);
     }
     EndBlendMode();
 

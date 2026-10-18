@@ -326,6 +326,7 @@ typedef struct droneEntity {
     float fullChargeHoldTime;
 
     projectileEntity *grapple;
+    float grappleLength;
     b2JointId grappleJointID;
 
     float energyLeft;
