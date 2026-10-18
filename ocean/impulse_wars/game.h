@@ -963,15 +963,18 @@ void destroyDrone(iwEnv *e, droneEntity *drone) {
     fastFree(drone);
 }
 
-void applyTrackedForce(const iwEnv *e, const b2BodyId bodyID, CC_Array *physicsTracking, const b2Vec2 force, const uint8_t srcIdx, const physicsSource source) {
-    b2Body_ApplyForceToCenter(bodyID, force, true);
-
+void trackForce(const iwEnv *e, CC_Array *physicsTracking, const b2Vec2 force, const uint8_t srcIdx, const physicsSource source) {
     physicsStepInfo *physicsStep = fastCalloc(1, sizeof(physicsStepInfo));
     physicsStep->srcIdx = srcIdx;
     physicsStep->force = force;
     physicsStep->source = source;
     physicsStep->step = e->episodeLength;
     cc_array_add(physicsTracking, physicsStep);
+}
+
+void applyTrackedForce(const iwEnv *e, const b2BodyId bodyID, CC_Array *physicsTracking, const b2Vec2 force, const uint8_t srcIdx, const physicsSource source) {
+    b2Body_ApplyForceToCenter(bodyID, force, true);
+    trackForce(e, physicsTracking, force, srcIdx, source);
 }
 
 void trackImpulse(const iwEnv *e, CC_Array *physicsTracking, const b2Vec2 impulse, const uint8_t srcIdx, const physicsSource source) {
@@ -1274,7 +1277,7 @@ int8_t findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall)
 }
 
 static inline bool physicsSourceIsWeapon(const physicsSource source) {
-    return source.type == RECOIL_PHYSICS || source.type == PROJECTILE_PHYSICS || source.type == EXPLOSION_PHYSICS;
+    return source.type == RECOIL_PHYSICS || source.type == PROJECTILE_PHYSICS || source.type == EXPLOSION_PHYSICS || source.type == GRAPPLE_PHYSICS;
 }
 
 void recordDeathAnalysis(iwEnv *e, const droneEntity *drone, const int8_t killer, const wallEntity *killWall) {
@@ -2707,6 +2710,30 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
         }
     }
     ASSERT(!drone->shotThisStep);
+
+    // track applied force to the owning drone and attached entity
+    if (drone->grapple != NULL && drone->grapple->welded) {
+        const b2Vec2 pullForce = b2Joint_GetConstraintForce(drone->grappleJointID);
+        const physicsSource source = {.type = GRAPPLE_PHYSICS, .weapon = GRAPPLE_WEAPON};
+
+        CC_Array *attachedPhysics = NULL;
+        const entity *attachedEnt = drone->grapple->grappledEnt;
+        if (entityTypeIsWall(attachedEnt->type)) {
+            const wallEntity *wall = attachedEnt->entity;
+            if (wall->isFloating) {
+                attachedPhysics = wall->physicsTracking;
+            }
+        } else if (attachedEnt->type == DRONE_ENTITY) {
+            const droneEntity *attachedDrone = attachedEnt->entity;
+            attachedPhysics = attachedDrone->physicsTracking;
+        }
+
+        // impulses and forces applied to static walls are not tracked
+        if (attachedPhysics != NULL) {
+            trackForce(e, attachedPhysics, pullForce, drone->idx, source);
+        }
+        trackForce(e, drone->physicsTracking, b2Neg(pullForce), drone->idx, source);
+    }
 
     // manage drone energy
     if (drone->burstCooldown != 0.0f) {

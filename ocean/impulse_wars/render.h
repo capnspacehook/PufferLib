@@ -1084,6 +1084,9 @@ void renderUI(const iwEnv *e, const bool starting) {
             case PROJECTILE_PHYSICS:
                 killDetails1 = TextFormat("with %s", getWeaponName(drone->killSource.weapon));
                 break;
+            case GRAPPLE_PHYSICS:
+                killDetails1 = "with a grapple line";
+                break;
             case DRONE_PHYSICS:
                 killDetails1 = "via a collision";
                 break;
