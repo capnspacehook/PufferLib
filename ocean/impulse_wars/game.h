@@ -3421,7 +3421,6 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         def.maxMotorForce = 0.0f;
         def.motorSpeed = -GRAPPLE_MOTOR_SPEED;
 
-        drone->grapple = projectile;
         drone->grappleJointID = b2CreateDistanceJoint(e->worldID, &def);
     }
 

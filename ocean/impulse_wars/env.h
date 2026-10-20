@@ -301,7 +301,7 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
 
             const b2Transform wallTransform = b2Body_GetTransform(wall->bodyID);
             const b2Vec2 wallRelPos = b2Sub(wallTransform.p, drone->pos);
-            const b2Vec2 wallRelVel = squashVelocity(b2Sub(wall->velocity, drone->velocity), MAX_OBS_ENTITY_SPEED);
+            const b2Vec2 wallRelVel = squashVec(b2Sub(wall->velocity, drone->velocity), MAX_OBS_WALL_SPEED);
             // floating walls are squares, so 4x the angle makes all 4
             // orientations that look the same have the same obs
             const float angle = 4.0f * b2Rot_GetAngle(wallTransform.q);
@@ -358,6 +358,39 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
             continuousObs[offset] = scaleValue(pickupRelPos.y, MAX_OBS_RELATIVE_POS, false);
         }
     }
+}
+
+static inline void computeDroneGrappleObs(const droneEntity *drone, const b2Vec2 pos, float *obs, uint16_t offset) {
+    if (drone->grapple == NULL || !drone->grapple->welded) {
+        return;
+    }
+
+    const b2Vec2 grappleRelPos = b2Sub(drone->grapple->pos, pos);
+    const float grappleTension = b2DistanceJoint_GetCurrentLength(drone->grappleJointID) - drone->grappleLength;
+    bool grappleReeling = false;
+    if (drone->weaponInfo->type == GRAPPLE_WEAPON) {
+        grappleReeling = b2DistanceJoint_GetMotorForce(drone->grappleJointID) > 0.0f;
+    }
+
+    uint8_t grappleAttachedTo = 0;
+    const enum entityType attachedType = drone->grapple->grappledEnt->type;
+    if (entityTypeIsWall(attachedType)) {
+        grappleAttachedTo = 1;
+        const wallEntity *attachedWall = drone->grapple->grappledEnt->entity;
+        if (attachedWall->isFloating) {
+            grappleAttachedTo = 2;
+        }
+    } else if (attachedType == DRONE_ENTITY) {
+        grappleAttachedTo = 3;
+    }
+
+    obs[offset++] = true;
+    obs[offset++] = scaleValue(grappleRelPos.x, MAX_OBS_RELATIVE_POS, false);
+    obs[offset++] = scaleValue(grappleRelPos.y, MAX_OBS_RELATIVE_POS, false);
+    obs[offset++] = scaleValue(grappleTension, GRAPPLE_MAX_STRETCH, true);
+    obs[offset++] = grappleReeling;
+    obs[offset++] = scaleValue(drone->grapple->grappleHealth, GRAPPLE_HEALTH, true);
+    oneHotEncode(obs, offset, grappleAttachedTo, 4);
 }
 
 static inline float rayHitType(const entity *ent) {
@@ -461,8 +494,7 @@ static void computeVelocityRayObs(const iwEnv *e, const droneEntity *drone, cons
     obs[1] = scaleValue(fminf(hitTime, RAY_TIME_HORIZON), RAY_TIME_HORIZON, true);
 }
 
-// writes ray observations for what the drone's shot, movement and recoil
-// would hit
+// writes ray observations for what the drone's shot and movement would hit
 static void computeDroneRayObs(const iwEnv *e, const droneEntity *drone, float *obs) {
     float distance = drone->weaponInfo->maxDistance;
     if (distance == INFINITE) {
@@ -482,18 +514,20 @@ static void computeDroneRayObs(const iwEnv *e, const droneEntity *drone, float *
     obs[1] = fraction;
 
     // where the drone is drifting to
-    computeVelocityRayObs(e, drone, drone->velocity, obs + RAY_OBS_SIZE);
+    computeVelocityRayObs(e, drone, drone->velocity, obs + RAY_OBS_SIZE); 
+}
+
+static void computeAgentRayObs(const iwEnv *e, const droneEntity *drone, float *obs) {
+    computeDroneRayObs(e, drone, obs);
 
     // where the drone would drift to if it fired now
     const b2Vec2 recoilVelocity = b2MulSV(-drone->weaponInfo->recoilMagnitude / DRONE_MASS, drone->lastAim);
     computeVelocityRayObs(e, drone, b2Add(drone->velocity, recoilVelocity), obs + (2 * RAY_OBS_SIZE));
 }
 
-// writes the type of the first wall or other drone between the drone and
-// the enemy and the distance to it; the ray ends at the enemy's center, so
-// if nothing is hit the enemy is in line of sight and RAY_HIT_DRONE and the
-// distance to the enemy are written
 static void computeEnemyRayObs(const iwEnv *e, const droneEntity *drone, const droneEntity *enemyDrone, float *obs) {
+    // writes the type of the first wall or other drone between the 
+    // drone and the enemy and the distance to it
     const b2Vec2 translation = b2Sub(enemyDrone->pos, drone->pos);
     const float distance = b2Length(translation);
     const b2QueryFilter filter = {
@@ -504,11 +538,11 @@ static void computeEnemyRayObs(const iwEnv *e, const droneEntity *drone, const d
     b2World_CastRay(e->worldID, drone->pos, translation, filter, rayObsCallback, &ctx);
     if (ctx.hitEnt == NULL) {
         obs[0] = (float)RAY_HIT_DRONE;
-        obs[1] = scaleValue(distance, MAX_OBS_DRONE_DISTANCE, true);
+        obs[1] = squashValue(distance, MAX_OBS_DRONE_DISTANCE);
         return;
     }
     obs[0] = rayHitType(ctx.hitEnt);
-    obs[1] = scaleValue(ctx.fraction * distance, MAX_OBS_DRONE_DISTANCE, true);
+    obs[1] = squashValue(ctx.fraction * distance, MAX_OBS_DRONE_DISTANCE);
 }
 
 void computeObs(iwEnv *e) {
@@ -564,7 +598,7 @@ void computeObs(iwEnv *e) {
                 }
                 const projectileEntity *projectile = sortedProjectiles[i];
                 const b2Vec2 projectileRelPos = b2Sub(projectile->pos, agentDrone->pos);
-                const b2Vec2 projectileRelVel = squashVelocity(b2Sub(projectile->velocity, agentDrone->velocity), MAX_OBS_PROJECTILE_SPEED);
+                const b2Vec2 projectileRelVel = squashVec(b2Sub(projectile->velocity, agentDrone->velocity), MAX_OBS_PROJECTILE_SPEED);
 
                 continuousObsOffset = PROJECTILE_INFO_OBS_OFFSET + (i * PROJECTILE_INFO_OBS_SIZE);
                 ASSERTF(continuousObsOffset + PROJECTILE_INFO_OBS_SIZE <= ENEMY_DRONE_OBS_OFFSET, "offset: %d", continuousObsOffset);
@@ -606,7 +640,7 @@ void computeObs(iwEnv *e) {
 
             const b2Vec2 enemyDroneRelPos = b2Sub(enemyDrone->pos, agentDrone->pos);
             const float enemyDroneDistance = b2Distance(enemyDrone->pos, agentDrone->pos);
-            const b2Vec2 enemyDroneRelVel = squashVelocity(b2Sub(enemyDrone->velocity, agentDrone->velocity), MAX_OBS_ENTITY_SPEED);
+            const b2Vec2 enemyDroneRelVel = squashVec(b2Sub(enemyDrone->velocity, agentDrone->velocity), MAX_OBS_ENTITY_SPEED);
             const b2Vec2 enemyDroneRelNormPos = b2Normalize(b2Sub(enemyDrone->pos, agentDrone->pos));
 
             float enemyShieldHealth = 0.0f;
@@ -617,11 +651,10 @@ void computeObs(iwEnv *e) {
             }
 
             continuousObsOffset = ENEMY_DRONE_OBS_OFFSET + (processedDrones * ENEMY_DRONE_OBS_SIZE);
-            continuousObs[continuousObsOffset++] = enemyDrone->team == agentDrone->team;
             continuousObs[continuousObsOffset++] = (float)(enemyDrone->weaponInfo->type + 1);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDroneRelPos.x, MAX_OBS_RELATIVE_POS, false);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDroneRelPos.y, MAX_OBS_RELATIVE_POS, false);
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDroneDistance, MAX_OBS_DRONE_DISTANCE, true);
+            continuousObs[continuousObsOffset++] = squashValue(enemyDroneDistance, MAX_OBS_DRONE_DISTANCE);
             continuousObs[continuousObsOffset++] = enemyDroneRelVel.x;
             continuousObs[continuousObsOffset++] = enemyDroneRelVel.y;
             continuousObs[continuousObsOffset++] = scaleValue(enemyDroneRelNormPos.x, 1.0f, false);
@@ -635,12 +668,18 @@ void computeObs(iwEnv *e) {
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->weaponCharge, enemyDrone->weaponInfo->charge, true);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->fullChargeHoldTime, MAX_OBS_DRONE_CHARGE_HOLD, true);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->energyLeft, DRONE_ENERGY_MAX, true);
-            continuousObs[continuousObsOffset++] = (float)enemyDrone->energyFullyDepleted;
+            continuousObs[continuousObsOffset++] = enemyDrone->energyFullyDepleted;
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->energyRefillWait, DRONE_ENERGY_REFILL_EMPTY_WAIT, true);
-            continuousObs[continuousObsOffset++] = (float)enemyDrone->braking;
+            continuousObs[continuousObsOffset++] = enemyDrone->braking;
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->burstCooldown, DRONE_BURST_COOLDOWN, true);
-            continuousObs[continuousObsOffset++] = (float)enemyDrone->chargingBurst;
+            continuousObs[continuousObsOffset++] = enemyDrone->chargingBurst;
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->burstCharge, DRONE_ENERGY_MAX, true);
+
+            computeDroneGrappleObs(enemyDrone, agentDrone->pos, continuousObs, continuousObsOffset);
+            continuousObsOffset += GRAPPLE_OBS_SIZE;
+
+            continuousObs[continuousObsOffset++] = tookShot;
+            continuousObs[continuousObsOffset++] = hitShot;
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->livesLeft, DRONE_LIVES, true);
             continuousObs[continuousObsOffset++] = !enemyDrone->dead;
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
@@ -669,7 +708,7 @@ void computeObs(iwEnv *e) {
             aimVelSin = b2Cross(agentDrone->lastAim, velDir);
             aimVelCos = b2Dot(agentDrone->lastAim, velDir);
         }
-        const b2Vec2 agentSquashedVel = squashVelocity(agentDrone->velocity, MAX_OBS_ENTITY_SPEED);
+        const b2Vec2 agentSquashedVel = squashVec(agentDrone->velocity, MAX_OBS_AGENT_SPEED);
 
         float shieldHealth = 0.0f;
         float shieldDuration = 0.0f;
@@ -685,6 +724,8 @@ void computeObs(iwEnv *e) {
         continuousObs[continuousObsOffset++] = agentSquashedVel.y;
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->lastAim.x, 1.0f, false);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->lastAim.y, 1.0f, false);
+        continuousObs[continuousObsOffset++] = aimVelSin;
+        continuousObs[continuousObsOffset++] = aimVelCos;
         continuousObs[continuousObsOffset++] = scaleValue(shieldHealth, DRONE_SHIELD_HEALTH, true);
         continuousObs[continuousObsOffset++] = scaleValue(shieldDuration, DRONE_SHIELD_RESPAWN_DURATION, true);
         continuousObs[continuousObsOffset++] = scaleAmmo(e, agentDrone);
@@ -692,30 +733,34 @@ void computeObs(iwEnv *e) {
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->weaponCharge, agentDrone->weaponInfo->charge, true);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->fullChargeHoldTime, MAX_OBS_DRONE_CHARGE_HOLD, true);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->energyLeft, DRONE_ENERGY_MAX, true);
-        continuousObs[continuousObsOffset++] = (float)agentDrone->energyFullyDepleted;
+        continuousObs[continuousObsOffset++] = agentDrone->energyFullyDepleted;
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->energyRefillWait, DRONE_ENERGY_REFILL_EMPTY_WAIT, true);
-        continuousObs[continuousObsOffset++] = (float)agentDrone->braking;
+        continuousObs[continuousObsOffset++] = agentDrone->braking;
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->burstCooldown, DRONE_BURST_COOLDOWN, true);
-        continuousObs[continuousObsOffset++] = (float)agentDrone->chargingBurst;
+        continuousObs[continuousObsOffset++] = agentDrone->chargingBurst;
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->burstCharge, DRONE_ENERGY_MAX, true);
+
+        computeDroneGrappleObs(agentDrone, agentDrone->pos, continuousObs, continuousObsOffset);
+        continuousObsOffset += GRAPPLE_OBS_SIZE;
+
         continuousObs[continuousObsOffset++] = hitShot;
         continuousObs[continuousObsOffset++] = tookShot;
         continuousObs[continuousObsOffset++] = agentDrone->stepInfo.ownShotTaken;
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->livesLeft, DRONE_LIVES, true);
         continuousObs[continuousObsOffset++] = !agentDrone->dead;
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
-        continuousObs[continuousObsOffset++] = aimVelSin;
-        continuousObs[continuousObsOffset++] = aimVelCos;
-        continuousObs[continuousObsOffset++] = (float)!e->easyEp;
+
         ASSERT(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + ((e->numDrones - 1) * ENEMY_DRONE_OBS_SIZE) + DRONE_RAY_OBS_IDX);
         if (!agentDrone->dead) {
-            computeDroneRayObs(e, agentDrone, continuousObs + continuousObsOffset);
+            computeAgentRayObs(e, agentDrone, continuousObs + continuousObsOffset);
         }
         continuousObsOffset += NUM_DRONE_RAY_OBS * RAY_OBS_SIZE;
 
         ASSERTF(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + ((e->numDrones - 1) * ENEMY_DRONE_OBS_SIZE) + DRONE_OBS_SIZE, "offset: %d", continuousObsOffset);
+
+        continuousObs[continuousObsOffset++] = !e->easyEp;
         continuousObs[continuousObsOffset++] = scaleValue(e->stepsLeft, e->totalSteps, true);
-        oneHotEncode(continuousObs, continuousObsOffset, e->mapIdx, NUM_MAPS);
+        continuousObs[continuousObsOffset++] = scaleValue(e->suddenDeathSteps, e->totalSuddenDeathSteps, true);
     }
 }
 

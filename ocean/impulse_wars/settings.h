@@ -102,16 +102,19 @@ static const uint8_t NUM_DRONE_RAY_OBS = 3;
 // many seconds
 static const float RAY_TIME_HORIZON = 2.0f;
 
+static const uint8_t GRAPPLE_OBS_SIZE = 10;
+
 static const uint16_t ENEMY_DRONE_OBS_OFFSET = PROJECTILE_INFO_OBS_OFFSET + PROJECTILE_OBS_SIZE;
 // the ray to the enemy is last
-static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 29;
+static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 40;
 static const uint8_t ENEMY_DRONE_OBS_SIZE = ENEMY_DRONE_RAY_OBS_IDX + RAY_OBS_SIZE;
 
 // the rays are last
-static const uint8_t DRONE_RAY_OBS_IDX = 29;
+static const uint8_t DRONE_RAY_OBS_IDX = 38;
 static const uint8_t DRONE_OBS_SIZE = DRONE_RAY_OBS_IDX + (NUM_DRONE_RAY_OBS * RAY_OBS_SIZE);
 
-static const uint8_t MISC_OBS_SIZE = 1 + NUM_MAPS;
+// easy episode flag, steps left and sudden death steps left
+static const uint8_t MISC_OBS_SIZE = 3;
 
 static const uint16_t DISCRETE_OBS_SIZE = MAP_OBS_SIZE;
 static const uint16_t _CONTINUOUS_OBS_SIZE = NEAR_WALL_OBS_SIZE + FLOATING_WALL_OBS_SIZE + WEAPON_PICKUP_OBS_SIZE + PROJECTILE_OBS_SIZE + DRONE_OBS_SIZE + MISC_OBS_SIZE;
@@ -128,9 +131,11 @@ static const float MAX_DISTANCE = 200.0f;
 static const float MAX_SPEED = 500.0f;
 
 static const float MAX_OBS_AGENT_POS = 50.0f;
+static const float MAX_OBS_AGENT_SPEED = 45.0f;
 static const float MAX_OBS_RELATIVE_POS = 100.0f;
-static const float MAX_OBS_DRONE_DISTANCE = 150.0f;
+static const float MAX_OBS_DRONE_DISTANCE = 85.0f;
 static const float MAX_OBS_WALL_POS = 50.0f;
+static const float MAX_OBS_WALL_SPEED = 30.0f;
 static const float MAX_OBS_ENTITY_SPEED = 75.0f;
 static const float MAX_OBS_PROJECTILE_SPEED = 150.0f;
 

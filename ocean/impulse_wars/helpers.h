@@ -208,12 +208,16 @@ static inline float scaleValue(const float v, const float maxVal, const bool min
     }
 }
 
-static inline b2Vec2 squashVelocity(const b2Vec2 v, const float max) {
-    const float speed = b2Length(v);
-    if (speed < 1e-6f) {
+static inline float squashValue(const float v, const float knee) {
+    return tanhf(v / knee);
+}
+
+static inline b2Vec2 squashVec(const b2Vec2 v, const float knee) {
+    const float mag = b2Length(v);
+    if (mag < 1e-6f) {
         return b2Vec2_zero;
     }
-    return b2MulSV(tanhf(speed / max) / speed, v);
+    return b2MulSV(squashValue(mag, knee) / mag, v);
 }
 
 // signed angle in radians to rotate from a to b, in [-PI, PI];
