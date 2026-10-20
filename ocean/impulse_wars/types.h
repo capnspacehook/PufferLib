@@ -11,7 +11,7 @@
 
 #include "include/cc_array.h"
 
-#define _MAX_DRONES 4
+#define _MAX_DRONES 2
 
 // discrete aim is split into a coarse sector and a fine offset within
 // it, giving AIM_COARSE_SECTORS * AIM_FINE_STEPS evenly spaced directions
@@ -64,10 +64,11 @@ typedef struct entity {
     uint16_t lastBurstHit[_MAX_DRONES];
 } entity;
 
-#define _NUM_WEAPONS 11
+#define _NUM_WEAPONS 12
 static const uint8_t NUM_WEAPONS = _NUM_WEAPONS;
 
 enum weaponType {
+    UNSET_WEAPON,
     STANDARD_WEAPON,
     MACHINEGUN_WEAPON,
     SNIPER_WEAPON,
@@ -114,7 +115,6 @@ typedef struct mapEntry {
     // are there any floating walls that have consistent starting positions
     const bool hasSetFloatingWalls;
     const uint16_t weaponPickups;
-    const enum weaponType defaultWeapon;
     const uint8_t maxSuddenDeathWalls;
 
     mapBounds bounds;
@@ -165,8 +165,8 @@ typedef struct weaponInformation {
     const float fireMagnitude;
     const float recoilMagnitude;
     const float damping;
-    const float charge;
-    const float coolDown;
+    const float maxCharge;
+    const float cooldown;
     const float maxDistance;
     const float radius;
     const float density;
@@ -240,7 +240,9 @@ typedef struct droneStepInfo {
     bool firedShot;
     bool pickedUpWeapon;
     bool emptiedEnergy;
-    enum weaponType prevWeapon;
+    // the picked up weapon filled an unset slot or replaced the
+    // standard weapon
+    bool pickupFilledSlot;
     float shotHit[_MAX_DRONES];
     float explosionHit[_MAX_DRONES];
     float shotTaken[_MAX_DRONES];
@@ -313,17 +315,25 @@ typedef struct physicsStepInfo {
     uint16_t step;
 } physicsStepInfo;
 
+typedef struct weaponSlot {
+    weaponInformation *weaponInfo;
+
+    int8_t ammo;
+    float cooldown;
+    uint16_t heat;
+    float charge;
+    float fullChargeHoldTime;
+} weaponSlot;
+
 typedef struct droneEntity {
     b2BodyId bodyID;
     b2ShapeId shapeID;
 
-    weaponInformation *weaponInfo;
-    int8_t ammo;
-    float weaponCooldown;
-    uint16_t heat;
-    bool chargingWeapon;
-    float weaponCharge;
-    float fullChargeHoldTime;
+    weaponSlot activeWeapon;
+    weaponSlot inactiveWeapon;
+    float swapCooldown;
+    bool triggerHeld;
+    bool triggerSuppressed;
 
     projectileEntity *grapple;
     float grappleLength;
@@ -422,7 +432,8 @@ typedef struct droneAnalysisStats {
     float selfKillsBySource[NUM_PHYSICS_TYPES];
     float floatingWallDeaths;
     float floatingWallSelfKills;
-    float diedHolding[_NUM_WEAPONS];
+    float diedHoldingActive[_NUM_WEAPONS];
+    float diedHoldingInactive[_NUM_WEAPONS];
     // pickups by the weapon held before and the weapon picked up
     float pickupsFrom[_NUM_WEAPONS][_NUM_WEAPONS];
     // projectiles boosted by their owner's burst on the frame they were fired
@@ -537,10 +548,10 @@ typedef struct boostSparksInfo {
 typedef struct agentActions {
     b2Vec2 move;
     b2Vec2 aim;
-    bool chargingWeapon;
-    bool shoot;
+    bool trigger;
     bool brake;
     bool chargingBurst;
+    bool swapWeapon;
     bool weaponAction;
 } agentActions;
 
@@ -677,6 +688,10 @@ struct Env {
     float easyEpHitRate;
     bool easyEp;
 
+    // with probability comboTrainingProb a training episode starts every
+    // drone with a random two weapon loadout, symmetric half of the time
+    float comboTrainingProb;
+
     float winReward;
     float lifeReward;
     float killReward;
@@ -711,10 +726,8 @@ struct Env {
     mapEntry *map;
     int8_t lastSpawnQuad;
     uint8_t spawnedWeaponPickups[_NUM_WEAPONS];
-    weaponInformation *defaultWeapon;
     b2IdPool idPool;
     CC_Array *entities;
-    uint16_t burstSerial;
     // flat, allocated once at MAX_CELLS; map layouts only ever shrink it
     mapCell *cells;
     uint16_t numCells;
@@ -726,6 +739,9 @@ struct Env {
     // TODO: rename to deferred destroyed or something?
     CC_Array *explodingProjectiles;
     CC_Array *dronePieces;
+
+    uint16_t burstSerial;
+    uint8_t minesCreated[_MAX_DRONES];
 
     uint16_t totalSteps;
     uint16_t totalSuddenDeathSteps;

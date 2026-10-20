@@ -82,7 +82,7 @@ static inline float forcedDistance(const float accel, const float linearDamping,
 bool safeToFireMoving(iwEnv *e, const droneEntity *drone, const b2Vec2 direction, const b2Vec2 move) {
     // don't shoot shotgun point blank at walls, the shots will immediately
     // bounce back and send the drone flying uncontrollably
-    if (drone->weaponInfo->type == SHOTGUN_WEAPON) {
+    if (drone->activeWeapon.weaponInfo->type == SHOTGUN_WEAPON) {
         const b2Vec2 rayEnd = b2MulAdd(drone->pos, SHOTGUN_DANGER_DISTANCE, direction);
         const b2Vec2 translation = b2Sub(rayEnd, drone->pos);
         const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE};
@@ -93,12 +93,13 @@ bool safeToFireMoving(iwEnv *e, const droneEntity *drone, const b2Vec2 direction
     }
 
     float shotWait;
-    if (drone->ammo > 1) {
-        shotWait = ((drone->weaponInfo->coolDown + drone->weaponInfo->charge) / e->deltaTime) * 1.5f;
+    if (drone->activeWeapon.ammo > 1) {
+        shotWait = ((drone->activeWeapon.weaponInfo->cooldown + drone->activeWeapon.weaponInfo->maxCharge) / e->deltaTime) * 1.5f;
     } else {
-        shotWait = ((e->defaultWeapon->coolDown + e->defaultWeapon->charge) / e->deltaTime) * 1.5f;
+        const weaponInformation *standardInfo = weaponInfos[STANDARD_WEAPON];
+        shotWait = (standardInfo->cooldown / e->deltaTime) * 1.5f;
     }
-    const float recoilSpeed = -drone->weaponInfo->recoilMagnitude * DRONE_INV_MASS;
+    const float recoilSpeed = -drone->activeWeapon.weaponInfo->recoilMagnitude * DRONE_INV_MASS;
     const b2Vec2 recoil = b2MulSV(recoilSpeed, direction);
     b2Vec2 recoilPos = positionWithDamping(e, drone, recoil, DRONE_LINEAR_DAMPING, shotWait);
     if (!b2Equal(move, b2Vec2_zero)) {
@@ -489,7 +490,7 @@ float interceptTime(const b2Vec2 relPos, const b2Vec2 relVel, const float speed)
 // form intercept can't handle, so this iterates on the impact time starting
 // from the undamped solution. Returns false if the target can't be reached.
 bool interceptAim(const droneEntity *drone, const b2Vec2 targetPos, const b2Vec2 targetVel, const float targetDamping, b2Vec2 *aim, float *distance) {
-    const weaponInformation *weapon = drone->weaponInfo;
+    const weaponInformation *weapon = drone->activeWeapon.weaponInfo;
     const float speed = weapon->initialSpeed;
     // lateral velocity is added as an impulse scaled by density, so the
     // resulting velocity only depends on the projectile's area
@@ -535,7 +536,7 @@ bool interceptAim(const droneEntity *drone, const b2Vec2 targetPos, const b2Vec2
 bool shotPathClear(const botCtx *c, const b2Vec2 aim, const float distance, const droneEntity *target) {
     const droneEntity *drone = c->drone;
     const b2Vec2 translation = b2MulSV(distance, aim);
-    const b2ShapeProxy cirProxy = b2MakeProxy(&drone->pos, 1, drone->weaponInfo->radius);
+    const b2ShapeProxy cirProxy = b2MakeProxy(&drone->pos, 1, drone->activeWeapon.weaponInfo->radius);
     uint64_t mask = WALL_SHAPE | FLOATING_WALL_SHAPE;
     if (target != NULL) {
         mask |= DRONE_SHAPE;
@@ -702,7 +703,7 @@ bool killGeometryGood(botCtx *c, const float maxWallDistance) {
 }
 
 bool weaponSafeForMovement(const droneEntity *drone) {
-    switch (drone->weaponInfo->type) {
+    switch (drone->activeWeapon.weaponInfo->type) {
     case IMPLODER_WEAPON:
     case MINE_LAUNCHER_WEAPON:
     case BLACK_HOLE_WEAPON:
@@ -718,14 +719,14 @@ bool weaponSafeForMovement(const droneEntity *drone) {
 // recoil movement while an enemy is alive
 bool reservingAmmo(const botCtx *c) {
     const droneEntity *drone = c->drone;
-    if (!botHas(c, BOT_FEAT_AMMO_RESERVE) || c->enemy == NULL || drone->ammo == INFINITE) {
+    if (!botHas(c, BOT_FEAT_AMMO_RESERVE) || c->enemy == NULL || drone->activeWeapon.ammo == INFINITE) {
         return false;
     }
     // ammo above the reserve may be spent closing in on an enemy that's
     // out of range
     if (botHas(c, BOT_FEAT_SMART_RESERVE) && c->enemyDistSq > c->idealRangeSquared) {
-        const int8_t maxAmmo = weaponAmmo(c->e->defaultWeapon->type, drone->weaponInfo->type);
-        if (drone->ammo > maxAmmo * SMART_RESERVE_FRACTION) {
+        const int8_t maxAmmo = weaponAmmo(drone->activeWeapon.weaponInfo->type);
+        if (drone->activeWeapon.ammo > maxAmmo * SMART_RESERVE_FRACTION) {
             botEvent(c, BOT_EVENT_SPARE_AMMO_MOVE);
             return false;
         }
@@ -739,10 +740,9 @@ bool recoilMoveAllowed(const botCtx *c) {
 }
 
 void scriptedAgentShoot(const droneEntity *drone, agentActions *actions) {
-    actions->shoot = true;
-    if (drone->chargingWeapon && drone->weaponCharge == drone->weaponInfo->charge) {
-        actions->chargingWeapon = false;
-    }
+    // release a full charge to fire it, otherwise hold the trigger
+    const weaponSlot *weapon = &drone->activeWeapon;
+    actions->trigger = !(weapon->weaponInfo->maxCharge != 0.0f && weapon->charge == weapon->weaponInfo->maxCharge);
 }
 
 static bool segmentClear(const iwEnv *e, const b2Vec2 start, const b2Vec2 end, const float radius) {
@@ -1058,7 +1058,7 @@ void moveTo(botCtx *c, agentActions *actions, b2Vec2 dstPos) {
 }
 
 float weaponIdealRangeSquared(const droneEntity *drone) {
-    switch (drone->weaponInfo->type) {
+    switch (drone->activeWeapon.weaponInfo->type) {
     case STANDARD_WEAPON:
         return SQUARED(20.0f);
     case MACHINEGUN_WEAPON:
@@ -1078,14 +1078,14 @@ float weaponIdealRangeSquared(const droneEntity *drone) {
         return FLT_MAX;
 
     default:
-        ERRORF("unknown weapon type %d", drone->weaponInfo->type);
+        ERRORF("unknown weapon type %d", drone->activeWeapon.weaponInfo->type);
     }
 }
 
 bool shouldShootAtEnemy(iwEnv *e, const droneEntity *drone, const droneEntity *enemyDrone, const b2Vec2 enemyDroneDirection) {
     // don't shoot at shielded enemies with railguns since it will likely
     // bounce back and hit us
-    if (drone->weaponInfo->type == SNIPER_WEAPON && enemyDrone->shield != NULL) {
+    if (drone->activeWeapon.weaponInfo->type == SNIPER_WEAPON && enemyDrone->shield != NULL) {
         return false;
     }
     if (!safeToFire(e, drone, enemyDroneDirection)) {
@@ -1096,7 +1096,7 @@ bool shouldShootAtEnemy(iwEnv *e, const droneEntity *drone, const droneEntity *e
     const float enemyDroneDistance = b2Distance(enemyDrone->pos, drone->pos);
     const b2Vec2 castEnd = b2MulAdd(drone->pos, enemyDroneDistance, enemyDroneDirection);
     const b2Vec2 translation = b2Sub(castEnd, drone->pos);
-    const b2ShapeProxy cirProxy = b2MakeProxy(&drone->pos, 1, drone->weaponInfo->radius);
+    const b2ShapeProxy cirProxy = b2MakeProxy(&drone->pos, 1, drone->activeWeapon.weaponInfo->radius);
     const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | DRONE_SHAPE};
 
     castCircleCtx ctx = {0};
@@ -1119,7 +1119,7 @@ bool shouldShootAtEnemy(iwEnv *e, const droneEntity *drone, const droneEntity *e
 
 // can the current weapon's projectile travel distance before it's destroyed
 bool shotReaches(const droneEntity *drone, const float distance) {
-    const float maxDistance = drone->weaponInfo->maxDistance;
+    const float maxDistance = drone->activeWeapon.weaponInfo->maxDistance;
     return maxDistance == INFINITE || distance <= maxDistance;
 }
 
@@ -1129,7 +1129,7 @@ bool shotReaches(const droneEntity *drone, const float distance) {
 bool shouldShootAtEnemyIntercept(botCtx *c, b2Vec2 *aim) {
     const droneEntity *drone = c->drone;
     const droneEntity *enemy = c->enemy;
-    if (drone->weaponInfo->type == SNIPER_WEAPON && enemy->shield != NULL) {
+    if (drone->activeWeapon.weaponInfo->type == SNIPER_WEAPON && enemy->shield != NULL) {
         return false;
     }
     float distance;
@@ -1330,7 +1330,7 @@ bool defendAgainstProjectiles(botCtx *c, agentActions *actions) {
 
     // 1. shoot it away if the collision would happen far enough away
     bool shotAtThreat = false;
-    if (drone->weaponCooldown <= 0.0f && drone->weaponInfo->charge == 0.0f && drone->weaponInfo->type != MINE_LAUNCHER_WEAPON) {
+    if (drone->activeWeapon.cooldown <= 0.0f && drone->activeWeapon.weaponInfo->maxCharge == 0.0f && drone->activeWeapon.weaponInfo->type != MINE_LAUNCHER_WEAPON) {
         b2Vec2 aim;
         float distance;
         if (interceptAim(drone, threat->pos, threat->velocity, threat->weaponInfo->damping, &aim, &distance) && distance > threatBlast && safeToFire(e, drone, aim) && shotPathClear(c, aim, distance, NULL)) {
@@ -1376,10 +1376,10 @@ bool defendAgainstProjectiles(botCtx *c, agentActions *actions) {
 bool dodgeSniper(botCtx *c, agentActions *actions) {
     const droneEntity *drone = c->drone;
     const droneEntity *enemy = c->enemy;
-    if (enemy == NULL || enemy->weaponInfo->type != SNIPER_WEAPON || drone->shield != NULL) {
+    if (enemy == NULL || enemy->activeWeapon.weaponInfo->type != SNIPER_WEAPON || drone->shield != NULL) {
         return false;
     }
-    const float charge = enemy->weaponCharge / SNIPER_CHARGE;
+    const float charge = enemy->activeWeapon.charge / SNIPER_CHARGE;
     if (charge < SNIPER_TELL_CHARGE) {
         return false;
     }
@@ -1530,7 +1530,7 @@ void deliberateBurst(botCtx *c, agentActions *actions) {
 // speeds up the just fired projectile
 void burstBoost(botCtx *c, agentActions *actions) {
     const droneEntity *drone = c->drone;
-    const enum weaponType type = drone->weaponInfo->type;
+    const enum weaponType type = drone->activeWeapon.weaponInfo->type;
     bool worthIt = false;
     if (type == FLAK_CANNON_WEAPON) {
         worthIt = drone->energyLeft >= BOOST_ENERGY_RESERVE;
@@ -1547,7 +1547,7 @@ void burstBoost(botCtx *c, agentActions *actions) {
         return;
     }
     // release with the shot, keep charging until the weapon is ready
-    if (drone->weaponCooldown > 0.0f) {
+    if (drone->activeWeapon.cooldown > 0.0f) {
         actions->chargingBurst = true;
     } else {
         botEvent(c, BOT_EVENT_BOOST_RELEASE);
@@ -1562,7 +1562,7 @@ bool recoilBoost(botCtx *c, agentActions *actions, const b2Vec2 moveDir) {
     if (b2Equal(moveDir, b2Vec2_zero) || !b2Equal(actions->aim, b2Vec2_zero) || !weaponSafeForMovement(drone)) {
         return false;
     }
-    if (drone->weaponCooldown > 0.0f || drone->weaponCharge < drone->weaponInfo->charge - c->e->deltaTime) {
+    if (drone->activeWeapon.cooldown > 0.0f || drone->activeWeapon.charge < drone->activeWeapon.weaponInfo->maxCharge - c->e->deltaTime) {
         return false;
     }
     if (b2Dot(drone->velocity, moveDir) >= BOOST_TOP_SPEED) {
@@ -1816,7 +1816,7 @@ static inline bool camperWeapon(const enum weaponType type) {
 // takes fully charged shots; returns false to fall back to the default
 // behavior
 bool camperActions(botCtx *c, agentActions *actions) {
-    if (!camperWeapon(c->drone->weaponInfo->type)) {
+    if (!camperWeapon(c->drone->activeWeapon.weaponInfo->type)) {
         return false;
     }
     // the spot is re-chosen every CAMPER_SHOT_WAIT seconds, or right away
@@ -1828,7 +1828,7 @@ bool camperActions(botCtx *c, agentActions *actions) {
     if (spot == -1) {
         return false;
     }
-    const bool charged = c->drone->weaponCharge >= c->drone->weaponInfo->charge - c->e->deltaTime;
+    const bool charged = c->drone->activeWeapon.charge >= c->drone->activeWeapon.weaponInfo->maxCharge - c->e->deltaTime;
     if (charged && c->enemyDist >= CAMPER_MIN_RANGE && shootAtEnemy(c, actions)) {
         return true;
     }
@@ -1894,7 +1894,7 @@ void keepRange(botCtx *c, agentActions *actions, const float range) {
 // mines chokepoints between it and the enemy and fires area weapons from
 // mid range; returns false to fall back to the default behavior
 bool trapperActions(botCtx *c, agentActions *actions) {
-    switch (c->drone->weaponInfo->type) {
+    switch (c->drone->activeWeapon.weaponInfo->type) {
     case MINE_LAUNCHER_WEAPON:
         if (!placeMine(c, actions)) {
             keepRange(c, actions, TRAPPER_RANGE);
@@ -2025,19 +2025,18 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
     }
     c.suddenDeath = suddenDeathSafeArea(e, SUDDEN_DEATH_MARGIN, &c.suddenDeathSafe);
     c.idealRangeSquared = weaponIdealRangeSquared(drone);
-    if (drone->weaponInfo->type == FLAK_CANNON_WEAPON) {
+    if (drone->activeWeapon.weaponInfo->type == FLAK_CANNON_WEAPON) {
         c.idealRangeSquared = SQUARED(FLAK_RANGE);
     }
     // flak shells need distance to arm and imploders pull the drone in too
-    const enum weaponType weaponType = drone->weaponInfo->type;
+    const enum weaponType weaponType = drone->activeWeapon.weaponInfo->type;
     if (c.preset->rangeScale != 1.0f && c.idealRangeSquared != FLT_MAX && weaponType != FLAK_CANNON_WEAPON && weaponType != IMPLODER_WEAPON) {
         c.idealRangeSquared *= SQUARED(c.preset->rangeScale);
     }
 
     // keep the weapon charged and ready
-    if (drone->weaponInfo->charge != 0.0f) {
-        actions.chargingWeapon = true;
-        actions.shoot = true;
+    if (drone->activeWeapon.weaponInfo->maxCharge != 0.0f) {
+        actions.trigger = true;
     }
 
     // find the N nearest death walls or floating walls
@@ -2182,7 +2181,7 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
     }
 
     // get a weapon if the standard weapon is active
-    if (drone->weaponInfo->type == STANDARD_WEAPON && cc_array_size(e->pickups) != 0) {
+    if (drone->activeWeapon.weaponInfo->type == STANDARD_WEAPON && cc_array_size(e->pickups) != 0) {
         const weaponPickupEntity *pickup = choosePickup(&c);
         if (pickup != NULL) {
             moveTo(&c, &actions, pickup->pos);
@@ -2253,7 +2252,7 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
     }
 
     if (shoot) {
-        if (drone->weaponCooldown <= 0.0f && drone->weaponCharge >= drone->weaponInfo->charge - e->deltaTime) {
+        if (drone->activeWeapon.cooldown <= 0.0f && drone->activeWeapon.charge >= drone->activeWeapon.weaponInfo->maxCharge - e->deltaTime) {
             actions.move.x += enemyDroneDirection.x;
             actions.move.y += enemyDroneDirection.y;
             actions.move = b2Normalize(actions.move);

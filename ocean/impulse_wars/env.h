@@ -47,11 +47,11 @@ uint16_t findNearestCell(const iwEnv *e, const b2Vec2 pos, const uint16_t cellId
 }
 
 // normalize a drone's ammo count, setting infinite ammo as no ammo
-static inline float scaleAmmo(const iwEnv *e, const droneEntity *drone) {
-    int8_t maxAmmo = weaponAmmo(e->defaultWeapon->type, drone->weaponInfo->type);
+static inline float scaleAmmo(const weaponSlot *weapon) {
+    int8_t maxAmmo = weaponAmmo(weapon->weaponInfo->type);
     float scaledAmmo = 0;
-    if (drone->ammo != INFINITE) {
-        scaledAmmo = scaleValue(drone->ammo, maxAmmo, true);
+    if (weapon->ammo != INFINITE) {
+        scaledAmmo = scaleValue(weapon->ammo, maxAmmo, true);
     }
     return scaledAmmo;
 }
@@ -352,12 +352,21 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
 
             offset = WEAPON_PICKUP_INFO_OBS_OFFSET + (i * WEAPON_PICKUP_INFO_OBS_SIZE);
             ASSERTF(offset + WEAPON_PICKUP_INFO_OBS_SIZE <= PROJECTILE_INFO_OBS_OFFSET, "offset: %d", offset);
-            continuousObs[offset++] = (float)(pickup->weapon + 1);
+            continuousObs[offset++] = pickup->weapon;
             const b2Vec2 pickupRelPos = b2Sub(pickup->pos, drone->pos);
             continuousObs[offset++] = scaleValue(pickupRelPos.x, MAX_OBS_RELATIVE_POS, false);
             continuousObs[offset] = scaleValue(pickupRelPos.y, MAX_OBS_RELATIVE_POS, false);
         }
     }
+}
+
+static inline void computeWeaponObs(const iwEnv *e, const droneEntity *drone, const weaponSlot *weapon, float *obs, uint16_t offset) {
+    obs[offset++] = weapon->weaponInfo->type;
+    obs[offset++] = scaleAmmo(weapon);
+    obs[offset++] = weapon->ammo != 0 || !weaponUseless(e, drone, *weapon);
+    obs[offset++] = scaleValue(fmaxf(weapon->cooldown, 0.0f), weapon->weaponInfo->cooldown, true);
+    obs[offset++] = scaleValue(weapon->charge, weapon->weaponInfo->maxCharge, true);
+    obs[offset++] = scaleValue(weapon->fullChargeHoldTime, MAX_OBS_DRONE_CHARGE_HOLD, true);
 }
 
 static inline void computeDroneGrappleObs(const droneEntity *drone, const b2Vec2 pos, float *obs, uint16_t offset) {
@@ -368,7 +377,7 @@ static inline void computeDroneGrappleObs(const droneEntity *drone, const b2Vec2
     const b2Vec2 grappleRelPos = b2Sub(drone->grapple->pos, pos);
     const float grappleTension = b2DistanceJoint_GetCurrentLength(drone->grappleJointID) - drone->grappleLength;
     bool grappleReeling = false;
-    if (drone->weaponInfo->type == GRAPPLE_WEAPON) {
+    if (drone->activeWeapon.weaponInfo->type == GRAPPLE_WEAPON) {
         grappleReeling = b2DistanceJoint_GetMotorForce(drone->grappleJointID) > 0.0f;
     }
 
@@ -496,7 +505,7 @@ static void computeVelocityRayObs(const iwEnv *e, const droneEntity *drone, cons
 
 // writes ray observations for what the drone's shot and movement would hit
 static void computeDroneRayObs(const iwEnv *e, const droneEntity *drone, float *obs) {
-    float distance = drone->weaponInfo->maxDistance;
+    float distance = drone->activeWeapon.weaponInfo->maxDistance;
     if (distance == INFINITE) {
         distance = MAX_DISTANCE;
     } else {
@@ -510,23 +519,23 @@ static void computeDroneRayObs(const iwEnv *e, const droneEntity *drone, float *
         .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | DRONE_SHAPE | SHIELD_SHAPE,
     };
     float fraction;
-    obs[0] = castDroneCircle(e, drone, drone->weaponInfo->radius, aimTranslation, aimFilter, &fraction);
+    obs[0] = castDroneCircle(e, drone, drone->activeWeapon.weaponInfo->radius, aimTranslation, aimFilter, &fraction);
     obs[1] = fraction;
 
     // where the drone is drifting to
-    computeVelocityRayObs(e, drone, drone->velocity, obs + RAY_OBS_SIZE); 
+    computeVelocityRayObs(e, drone, drone->velocity, obs + RAY_OBS_SIZE);
 }
 
 static void computeAgentRayObs(const iwEnv *e, const droneEntity *drone, float *obs) {
     computeDroneRayObs(e, drone, obs);
 
     // where the drone would drift to if it fired now
-    const b2Vec2 recoilVelocity = b2MulSV(-drone->weaponInfo->recoilMagnitude / DRONE_MASS, drone->lastAim);
+    const b2Vec2 recoilVelocity = b2MulSV(-drone->activeWeapon.weaponInfo->recoilMagnitude / DRONE_MASS, drone->lastAim);
     computeVelocityRayObs(e, drone, b2Add(drone->velocity, recoilVelocity), obs + (2 * RAY_OBS_SIZE));
 }
 
 static void computeEnemyRayObs(const iwEnv *e, const droneEntity *drone, const droneEntity *enemyDrone, float *obs) {
-    // writes the type of the first wall or other drone between the 
+    // writes the type of the first wall or other drone between the
     // drone and the enemy and the distance to it
     const b2Vec2 translation = b2Sub(enemyDrone->pos, drone->pos);
     const float distance = b2Length(translation);
@@ -608,7 +617,7 @@ void computeObs(iwEnv *e) {
                 } else {
                     continuousObs[continuousObsOffset++] = 0.5f;
                 }
-                continuousObs[continuousObsOffset++] = (float)(projectile->weaponInfo->type + 1);
+                continuousObs[continuousObsOffset++] = projectile->weaponInfo->type;
                 continuousObs[continuousObsOffset++] = scaleValue(projectileRelPos.x, MAX_OBS_RELATIVE_POS, false);
                 continuousObs[continuousObsOffset++] = scaleValue(projectileRelPos.y, MAX_OBS_RELATIVE_POS, false);
                 continuousObs[continuousObsOffset++] = projectileRelVel.x;
@@ -651,7 +660,13 @@ void computeObs(iwEnv *e) {
             }
 
             continuousObsOffset = ENEMY_DRONE_OBS_OFFSET + (processedDrones * ENEMY_DRONE_OBS_SIZE);
-            continuousObs[continuousObsOffset++] = (float)(enemyDrone->weaponInfo->type + 1);
+
+            computeWeaponObs(e, enemyDrone, &enemyDrone->activeWeapon, continuousObs, continuousObsOffset);
+            continuousObsOffset += WEAPON_OBS_SIZE;
+            computeWeaponObs(e, enemyDrone, &enemyDrone->inactiveWeapon, continuousObs, continuousObsOffset);
+            continuousObsOffset += WEAPON_OBS_SIZE;
+            continuousObs[continuousObsOffset++] = scaleValue(fmaxf(enemyDrone->swapCooldown, 0.0f), DRONE_SWAP_COOLDOWN, true);
+
             continuousObs[continuousObsOffset++] = scaleValue(enemyDroneRelPos.x, MAX_OBS_RELATIVE_POS, false);
             continuousObs[continuousObsOffset++] = scaleValue(enemyDroneRelPos.y, MAX_OBS_RELATIVE_POS, false);
             continuousObs[continuousObsOffset++] = squashValue(enemyDroneDistance, MAX_OBS_DRONE_DISTANCE);
@@ -663,10 +678,7 @@ void computeObs(iwEnv *e) {
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->lastAim.y, 1.0f, false);
             continuousObs[continuousObsOffset++] = scaleValue(enemyShieldHealth, DRONE_SHIELD_HEALTH, true);
             continuousObs[continuousObsOffset++] = scaleValue(enemyShieldDuration, DRONE_SHIELD_RESPAWN_DURATION, true);
-            continuousObs[continuousObsOffset++] = scaleAmmo(e, enemyDrone);
-            continuousObs[continuousObsOffset++] = scaleValue(max(enemyDrone->weaponCooldown, 0.0f), enemyDrone->weaponInfo->coolDown, true);
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->weaponCharge, enemyDrone->weaponInfo->charge, true);
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->fullChargeHoldTime, MAX_OBS_DRONE_CHARGE_HOLD, true);
+
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->energyLeft, DRONE_ENERGY_MAX, true);
             continuousObs[continuousObsOffset++] = enemyDrone->energyFullyDepleted;
             continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->energyRefillWait, DRONE_ENERGY_REFILL_EMPTY_WAIT, true);
@@ -717,7 +729,14 @@ void computeObs(iwEnv *e) {
             shieldDuration = agentDrone->shield->duration;
         }
 
-        continuousObs[continuousObsOffset++] = (float)(agentDrone->weaponInfo->type + 1);
+        computeWeaponObs(e, agentDrone, &agentDrone->activeWeapon, continuousObs, continuousObsOffset);
+        continuousObsOffset += WEAPON_OBS_SIZE;
+        computeWeaponObs(e, agentDrone, &agentDrone->inactiveWeapon, continuousObs, continuousObsOffset);
+        continuousObsOffset += WEAPON_OBS_SIZE;
+        continuousObs[continuousObsOffset++] = scaleValue(fmaxf(agentDrone->swapCooldown, 0.0f), DRONE_SWAP_COOLDOWN, true);
+        continuousObs[continuousObsOffset++] = agentDrone->triggerHeld;
+        continuousObs[continuousObsOffset++] = agentDrone->triggerSuppressed;
+
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->pos.x, MAX_OBS_AGENT_POS, false);
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->pos.y, MAX_OBS_AGENT_POS, false);
         continuousObs[continuousObsOffset++] = agentSquashedVel.x;
@@ -728,10 +747,7 @@ void computeObs(iwEnv *e) {
         continuousObs[continuousObsOffset++] = aimVelCos;
         continuousObs[continuousObsOffset++] = scaleValue(shieldHealth, DRONE_SHIELD_HEALTH, true);
         continuousObs[continuousObsOffset++] = scaleValue(shieldDuration, DRONE_SHIELD_RESPAWN_DURATION, true);
-        continuousObs[continuousObsOffset++] = scaleAmmo(e, agentDrone);
-        continuousObs[continuousObsOffset++] = scaleValue(max(agentDrone->weaponCooldown, 0.0f), agentDrone->weaponInfo->coolDown, true);
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->weaponCharge, agentDrone->weaponInfo->charge, true);
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->fullChargeHoldTime, MAX_OBS_DRONE_CHARGE_HOLD, true);
+
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->energyLeft, DRONE_ENERGY_MAX, true);
         continuousObs[continuousObsOffset++] = agentDrone->energyFullyDepleted;
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->energyRefillWait, DRONE_ENERGY_REFILL_EMPTY_WAIT, true);
@@ -762,6 +778,27 @@ void computeObs(iwEnv *e) {
         continuousObs[continuousObsOffset++] = scaleValue(e->stepsLeft, e->totalSteps, true);
         continuousObs[continuousObsOffset++] = scaleValue(e->suddenDeathSteps, e->totalSuddenDeathSteps, true);
     }
+}
+
+// picks two different weapons uniformly, ignoring spawn weights so rarely
+// spawned weapons are practiced as much as common ones
+static void randLoadout(iwEnv *e, enum weaponType *active, enum weaponType *inactive) {
+    // the standard weapon is the fallback and not part of loadouts
+    const enum weaponType firstWeapon = STANDARD_WEAPON + 1;
+    *active = randInt(&e->rng, firstWeapon, NUM_WEAPONS - 1);
+    *inactive = randInt(&e->rng, firstWeapon, NUM_WEAPONS - 2);
+    if (*inactive >= *active) {
+        (*inactive)++;
+    }
+}
+
+static void droneSetLoadout(droneEntity *drone, const enum weaponType active, const enum weaponType inactive) {
+    drone->activeWeapon.weaponInfo = weaponInfos[active];
+    resetWeapon(&drone->activeWeapon);
+    drone->activeWeapon.ammo = weaponAmmo(active);
+    drone->inactiveWeapon.weaponInfo = weaponInfos[inactive];
+    resetWeapon(&drone->inactiveWeapon);
+    drone->inactiveWeapon.ammo = weaponAmmo(inactive);
 }
 
 void setupEnv(iwEnv *e) {
@@ -795,6 +832,21 @@ void setupEnv(iwEnv *e) {
     DEBUG_LOG("creating drones");
     for (uint8_t i = 0; i < e->numDrones; i++) {
         createDrone(e, i);
+    }
+
+    // start drones with random loadouts so rare weapons and combos get
+    // practiced; easy episodes are left alone
+    if (e->isTraining && !e->easyEp && e->comboTrainingProb > 0.0f && randFloat(&e->rng, 0.0f, 1.0f) < e->comboTrainingProb) {
+        const bool symmetric = randInt(&e->rng, 0, 1) == 1;
+        enum weaponType active = UNSET_WEAPON;
+        enum weaponType inactive = UNSET_WEAPON;
+        for (uint8_t i = 0; i < e->numDrones; i++) {
+            if (i == 0 || !symmetric) {
+                randLoadout(e, &active, &inactive);
+            }
+            droneEntity *drone = safe_array_get_at(e->drones, i);
+            droneSetLoadout(drone, active, inactive);
+        }
     }
 
     DEBUG_LOG("placing floating walls");
@@ -965,6 +1017,8 @@ void clearEnv(iwEnv *e) {
     cc_array_remove_all(e->boostSparks);
     cc_array_remove_all(e->drones);
     cc_array_remove_all(e->dronePieces);
+
+    memset(e->minesCreated, 0x0, sizeof(e->minesCreated));
 }
 
 void puf_close(iwEnv *e) {
@@ -1034,11 +1088,11 @@ float computeReward(iwEnv *e, droneEntity *drone) {
     // aiming into a contextual bandit to sanity check the learning pipeline
     reward += drone->stepInfo.aimAlignment * e->aimDrillReward;
 
-    // only reward picking up a weapon if the standard weapon was
-    // previously held; every weapon is better than the standard
-    // weapon, but other weapons are situational better so don't
-    // reward switching a non-standard weapon
-    if (drone->stepInfo.pickedUpWeapon && drone->stepInfo.prevWeapon == STANDARD_WEAPON) {
+    // only reward picking up a weapon if it filled an unset slot or
+    // replaced the standard weapon; every weapon is better than the
+    // standard weapon, but other weapons are situationally better so
+    // don't reward replacing or topping up a non-standard weapon
+    if (drone->stepInfo.pickedUpWeapon && drone->stepInfo.pickupFilledSlot) {
         reward += e->weaponPickupReward;
     }
 
@@ -1125,10 +1179,11 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
         if (e->continuousActions) {
             actions.move = (b2Vec2){.x = tanhf(envActions[0]), .y = tanhf(envActions[1])};
             actions.aim = (b2Vec2){.x = tanhf(envActions[2]), .y = tanhf(envActions[3])};
-            actions.chargingWeapon = envActions[4] > 0.0f;
+            actions.trigger = envActions[4] > 0.0f;
             actions.brake = envActions[5] > 0.0f;
             actions.chargingBurst = envActions[6] > 0.0f;
-            actions.weaponAction = envActions[7] > 0.0f;
+            actions.swapWeapon = envActions[7] > 0.0f;
+            actions.weaponAction = envActions[8] > 0.0f;
         } else {
             uint8_t move = envActions[0];
             // 0 is no-op for move
@@ -1149,23 +1204,19 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
             actions.aim.x = cosf(angle);
             actions.aim.y = sinf(angle);
 
-            actions.chargingWeapon = envActions[3] > 0.0f;
+            actions.trigger = envActions[3] > 0.0f;
             actions.brake = envActions[4] > 0.0f;
             actions.chargingBurst = envActions[5] > 0.0f;
-            actions.weaponAction = envActions[6] > 0.0f;
-        }
-
-        actions.shoot = actions.chargingWeapon;
-        if (!actions.chargingWeapon && drone->chargingWeapon) {
-            actions.shoot = true;
+            actions.swapWeapon = envActions[6] > 0.0f;
+            actions.weaponAction = envActions[7] > 0.0f;
         }
     } else {
         actions.move = manualActions->move;
         actions.aim = manualActions->aim;
-        actions.chargingWeapon = manualActions->chargingWeapon;
-        actions.shoot = manualActions->shoot;
+        actions.trigger = manualActions->trigger;
         actions.brake = manualActions->brake;
         actions.chargingBurst = manualActions->chargingBurst;
+        actions.swapWeapon = manualActions->swapWeapon;
         actions.weaponAction = manualActions->weaponAction;
     }
 
@@ -1368,12 +1419,22 @@ bool stepPhysicsFrame(iwEnv *e, const agentActions stepActions[], int8_t *winner
         }
         agentActions actions = stepActions[i];
 
+        if (actions.swapWeapon) {
+            droneSwapWeapon(drone, actions.trigger, true);
+        }
         if (actions.weaponAction) {
             droneWeaponAction(e, drone);
         }
-        if (actions.shoot) {
-            droneShoot(e, drone, actions.aim, actions.chargingWeapon);
+
+        if (drone->triggerSuppressed) {
+            drone->triggerSuppressed = actions.trigger;
+        } else if (actions.trigger) {
+            droneShoot(e, drone, actions.aim, true);
+        } else if (drone->triggerHeld && drone->activeWeapon.charge > 0.0f) {
+            droneShoot(e, drone, actions.aim, false);
         }
+        drone->triggerHeld = actions.trigger;
+
         if (actions.chargingBurst && !e->easyEp) {
             droneChargeBurst(e, drone);
         } else if (drone->chargingBurst) {

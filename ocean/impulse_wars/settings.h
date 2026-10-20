@@ -102,15 +102,16 @@ static const uint8_t NUM_DRONE_RAY_OBS = 3;
 // many seconds
 static const float RAY_TIME_HORIZON = 2.0f;
 
+static const uint8_t WEAPON_OBS_SIZE = 6;
 static const uint8_t GRAPPLE_OBS_SIZE = 10;
 
 static const uint16_t ENEMY_DRONE_OBS_OFFSET = PROJECTILE_INFO_OBS_OFFSET + PROJECTILE_OBS_SIZE;
 // the ray to the enemy is last
-static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 40;
+static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 48;
 static const uint8_t ENEMY_DRONE_OBS_SIZE = ENEMY_DRONE_RAY_OBS_IDX + RAY_OBS_SIZE;
 
 // the rays are last
-static const uint8_t DRONE_RAY_OBS_IDX = 38;
+static const uint8_t DRONE_RAY_OBS_IDX = 48;
 static const uint8_t DRONE_OBS_SIZE = DRONE_RAY_OBS_IDX + (NUM_DRONE_RAY_OBS * RAY_OBS_SIZE);
 
 // easy episode flag, steps left and sudden death steps left
@@ -188,6 +189,8 @@ static const float DRONE_FRICTION = 0.1f;
 static const float DRONE_MOVE_MAGNITUDE = 35.0f;
 static const float DRONE_LINEAR_DAMPING = 1.0f;
 static const float DRONE_MOVE_AIM_COEF = 0.1f;
+
+static const float DRONE_SWAP_COOLDOWN = 0.5f;
 
 static const float DRONE_ENERGY_MAX = 1.0f;
 static const float DRONE_BRAKE_DAMPING_COEF = 2.5f;
@@ -432,6 +435,31 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define GRAPPLE_HEALTH 100.0f
 #define GRAPPLE_BURST_REDUCTION 0.8f
 
+static const weaponInformation unsetWeapon = {
+    .type = UNSET_WEAPON,
+    .isPhysicsBullet = false,
+    .canSleep = false,
+    .numProjectiles = 0,
+    .fireMagnitude = 0.0f,
+    .recoilMagnitude = 0.0f,
+    .damping = 0.0f,
+    .maxCharge = 0.0f,
+    .cooldown = 0.0f,
+    .maxDistance = 0.0f,
+    .radius = 0.0f,
+    .density = 0.0f,
+    .mass = 0.0f,
+    .invMass = 0.0f,
+    .initialSpeed = 0.0f,
+    .maxBounces = 0,
+    .explosive = false,
+    .destroyedOnDroneHit = false,
+    .explodesOnDroneHit = false,
+    .hasSensor = false,
+    .energyRefillCoef = 0.0f,
+    .spawnWeight = 0.0f,
+};
+
 static const weaponInformation standard = {
     .type = STANDARD_WEAPON,
     .isPhysicsBullet = true,
@@ -440,8 +468,8 @@ static const weaponInformation standard = {
     .fireMagnitude = STANDARD_FIRE_MAGNITUDE,
     .recoilMagnitude = STANDARD_RECOIL_MAGNITUDE,
     .damping = STANDARD_DAMPING,
-    .charge = STANDARD_CHARGE,
-    .coolDown = STANDARD_COOL_DOWN,
+    .maxCharge = STANDARD_CHARGE,
+    .cooldown = STANDARD_COOL_DOWN,
     .maxDistance = STANDARD_MAX_DISTANCE,
     .radius = STANDARD_RADIUS,
     .density = STANDARD_DENSITY,
@@ -465,8 +493,8 @@ static const weaponInformation machineGun = {
     .fireMagnitude = MACHINEGUN_FIRE_MAGNITUDE,
     .recoilMagnitude = MACHINEGUN_RECOIL_MAGNITUDE,
     .damping = MACHINEGUN_DAMPING,
-    .charge = MACHINEGUN_CHARGE,
-    .coolDown = MACHINEGUN_COOL_DOWN,
+    .maxCharge = MACHINEGUN_CHARGE,
+    .cooldown = MACHINEGUN_COOL_DOWN,
     .maxDistance = MACHINEGUN_MAX_DISTANCE,
     .radius = MACHINEGUN_RADIUS,
     .density = MACHINEGUN_DENSITY,
@@ -490,8 +518,8 @@ static const weaponInformation sniper = {
     .fireMagnitude = SNIPER_FIRE_MAGNITUDE,
     .recoilMagnitude = SNIPER_RECOIL_MAGNITUDE,
     .damping = SNIPER_DAMPING,
-    .charge = SNIPER_CHARGE,
-    .coolDown = SNIPER_COOL_DOWN,
+    .maxCharge = SNIPER_CHARGE,
+    .cooldown = SNIPER_COOL_DOWN,
     .maxDistance = SNIPER_MAX_DISTANCE,
     .radius = SNIPER_RADIUS,
     .density = SNIPER_DENSITY,
@@ -515,8 +543,8 @@ static const weaponInformation shotgun = {
     .fireMagnitude = SHOTGUN_FIRE_MAGNITUDE,
     .recoilMagnitude = SHOTGUN_RECOIL_MAGNITUDE,
     .damping = SHOTGUN_DAMPING,
-    .charge = SHOTGUN_CHARGE,
-    .coolDown = SHOTGUN_COOL_DOWN,
+    .maxCharge = SHOTGUN_CHARGE,
+    .cooldown = SHOTGUN_COOL_DOWN,
     .maxDistance = SHOTGUN_MAX_DISTANCE,
     .radius = SHOTGUN_RADIUS,
     .density = SHOTGUN_DENSITY,
@@ -540,8 +568,8 @@ static const weaponInformation imploder = {
     .fireMagnitude = IMPLODER_FIRE_MAGNITUDE,
     .recoilMagnitude = IMPLODER_RECOIL_MAGNITUDE,
     .damping = IMPLODER_DAMPING,
-    .charge = IMPLODER_CHARGE,
-    .coolDown = IMPLODER_COOL_DOWN,
+    .maxCharge = IMPLODER_CHARGE,
+    .cooldown = IMPLODER_COOL_DOWN,
     .maxDistance = IMPLODER_MAX_DISTANCE,
     .radius = IMPLODER_RADIUS,
     .density = IMPLODER_DENSITY,
@@ -565,8 +593,8 @@ static const weaponInformation accelerator = {
     .fireMagnitude = ACCELERATOR_FIRE_MAGNITUDE,
     .recoilMagnitude = ACCELERATOR_RECOIL_MAGNITUDE,
     .damping = ACCELERATOR_DAMPING,
-    .charge = ACCELERATOR_CHARGE,
-    .coolDown = ACCELERATOR_COOL_DOWN,
+    .maxCharge = ACCELERATOR_CHARGE,
+    .cooldown = ACCELERATOR_COOL_DOWN,
     .maxDistance = ACCELERATOR_MAX_DISTANCE,
     .radius = ACCELERATOR_RADIUS,
     .density = ACCELERATOR_DENSITY,
@@ -590,8 +618,8 @@ static const weaponInformation flakCannon = {
     .fireMagnitude = FLAK_CANNON_FIRE_MAGNITUDE,
     .recoilMagnitude = FLAK_CANNON_RECOIL_MAGNITUDE,
     .damping = FLAK_CANNON_DAMPING,
-    .charge = FLAK_CANNON_CHARGE,
-    .coolDown = FLAK_CANNON_COOL_DOWN,
+    .maxCharge = FLAK_CANNON_CHARGE,
+    .cooldown = FLAK_CANNON_COOL_DOWN,
     .maxDistance = FLAK_CANNON_MAX_DISTANCE,
     .radius = FLAK_CANNON_RADIUS,
     .density = FLAK_CANNON_DENSITY,
@@ -615,8 +643,8 @@ static const weaponInformation mineLauncher = {
     .fireMagnitude = MINE_LAUNCHER_FIRE_MAGNITUDE,
     .recoilMagnitude = MINE_LAUNCHER_RECOIL_MAGNITUDE,
     .damping = MINE_LAUNCHER_DAMPING,
-    .charge = MINE_LAUNCHER_CHARGE,
-    .coolDown = MINE_LAUNCHER_COOL_DOWN,
+    .maxCharge = MINE_LAUNCHER_CHARGE,
+    .cooldown = MINE_LAUNCHER_COOL_DOWN,
     .maxDistance = MINE_LAUNCHER_MAX_DISTANCE,
     .radius = MINE_LAUNCHER_RADIUS,
     .density = MINE_LAUNCHER_DENSITY,
@@ -640,8 +668,8 @@ static const weaponInformation blackHole = {
     .fireMagnitude = BLACK_HOLE_FIRE_MAGNITUDE,
     .recoilMagnitude = BLACK_HOLE_RECOIL_MAGNITUDE,
     .damping = BLACK_HOLE_DAMPING,
-    .charge = BLACK_HOLE_CHARGE,
-    .coolDown = BLACK_HOLE_COOL_DOWN,
+    .maxCharge = BLACK_HOLE_CHARGE,
+    .cooldown = BLACK_HOLE_COOL_DOWN,
     .maxDistance = BLACK_HOLE_MAX_DISTANCE,
     .radius = BLACK_HOLE_RADIUS,
     .density = BLACK_HOLE_DENSITY,
@@ -665,8 +693,8 @@ static const weaponInformation nuke = {
     .fireMagnitude = NUKE_FIRE_MAGNITUDE,
     .recoilMagnitude = NUKE_RECOIL_MAGNITUDE,
     .damping = NUKE_DAMPING,
-    .charge = NUKE_CHARGE,
-    .coolDown = NUKE_COOL_DOWN,
+    .maxCharge = NUKE_CHARGE,
+    .cooldown = NUKE_COOL_DOWN,
     .maxDistance = NUKE_MAX_DISTANCE,
     .radius = NUKE_RADIUS,
     .density = NUKE_DENSITY,
@@ -690,8 +718,8 @@ static const weaponInformation grapple = {
     .fireMagnitude = GRAPPLE_FIRE_MAGNITUDE,
     .recoilMagnitude = GRAPPLE_RECOIL_MAGNITUDE,
     .damping = GRAPPLE_DAMPING,
-    .charge = GRAPPLE_CHARGE,
-    .coolDown = GRAPPLE_COOL_DOWN,
+    .maxCharge = GRAPPLE_CHARGE,
+    .cooldown = GRAPPLE_COOL_DOWN,
     .maxDistance = GRAPPLE_MAX_DISTANCE,
     .radius = GRAPPLE_RADIUS,
     .density = GRAPPLE_DENSITY,
@@ -708,6 +736,7 @@ static const weaponInformation grapple = {
 };
 
 static weaponInformation *weaponInfos[] = {
+    (weaponInformation *)&unsetWeapon,
     (weaponInformation *)&standard,
     (weaponInformation *)&machineGun,
     (weaponInformation *)&sniper,
@@ -736,11 +765,10 @@ static const char *weaponNames[] = {
 };
 
 // max ammo of weapon
-static int8_t weaponAmmo(const enum weaponType defaultWep, const enum weaponType type) {
-    if (type == defaultWep) {
-        return INFINITE;
-    }
+static int8_t weaponAmmo(const enum weaponType type) {
     switch (type) {
+    case UNSET_WEAPON:
+        return 0;
     case STANDARD_WEAPON:
         return STANDARD_AMMO;
     case MACHINEGUN_WEAPON:

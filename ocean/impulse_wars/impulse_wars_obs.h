@@ -8,9 +8,9 @@
 // floating wall slots are records for the projectile and floating wall
 // branches: a shared MLP per branch over every slot, max pooled over the
 // non-empty ones. Wall type slots hold 0 (empty) or wall
-// type + 1, weapon type slots hold 0 (no entity) or weapon type + 1, ray hit
-// type slots hold a RAY_HIT_* value; these are one-hot encoded with type 0
-// as all zeros. Every other obs value is a continuous scalar that is passed
+// type + 1, weapon type slots hold a weapon type (0 is UNSET_WEAPON: no
+// entity or no weapon), ray hit type slots hold a RAY_HIT_* value; these
+// are one-hot encoded with type 0 as all zeros. Every other obs value is a continuous scalar that is passed
 // through to the projection unchanged.
 #ifndef IMPULSE_WARS_OBS_H
 #define IMPULSE_WARS_OBS_H
@@ -34,11 +34,16 @@
 #define IW_NUM_PROJECTILES 30
 #define IW_PROJECTILE_SIZE 6
 #define IW_RAY_SIZE 2
+// every drone block starts with its active then holstered weapon: type,
+// ammo, whether it's still useful, cooldown, charge and full charge hold
+// time
+#define IW_WEAPON_SIZE 6
+#define IW_DRONE_WEAPONS 2
 // ray to the enemy, last in each enemy drone block
-#define IW_ENEMY_RAY_IDX 40
+#define IW_ENEMY_RAY_IDX 48
 #define IW_ENEMY_DRONE_SIZE (IW_ENEMY_RAY_IDX + IW_RAY_SIZE)
 // aim, velocity and recoil rays, last in the agent's drone block
-#define IW_DRONE_RAY_IDX 38
+#define IW_DRONE_RAY_IDX 48
 #define IW_NUM_DRONE_RAYS 3
 #define IW_DRONE_SIZE (IW_DRONE_RAY_IDX + IW_NUM_DRONE_RAYS * IW_RAY_SIZE)
 
@@ -48,7 +53,7 @@
 #define IW_PROJECTILE_OFFSET (IW_PICKUP_OFFSET + IW_NUM_PICKUPS * IW_PICKUP_SIZE)
 #define IW_ENEMY_DRONE_OFFSET (IW_PROJECTILE_OFFSET + IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE)
 // obs size with zero enemy drones; each enemy adds IW_ENEMY_DRONE_SIZE
-#define IW_BASE_OBS_SIZE 425
+#define IW_BASE_OBS_SIZE 435
 #define IW_NUM_ENEMIES ((OBS_SIZE - IW_BASE_OBS_SIZE) / IW_ENEMY_DRONE_SIZE)
 #define IW_DRONE_OFFSET (IW_ENEMY_DRONE_OFFSET + IW_NUM_ENEMIES * IW_ENEMY_DRONE_SIZE)
 
@@ -117,8 +122,9 @@
 // near walls; the map grid goes to the CNN and floating walls to the
 // floating wall branch
 #define IW_NUM_WALL_SLOTS IW_NUM_NEAR_WALLS
-// pickups, enemy drones, own drone; projectiles go to the projectile branch
-#define IW_NUM_WEAPON_SLOTS (IW_NUM_PICKUPS + IW_NUM_ENEMIES + 1)
+// pickups, then the active and holstered weapons of the enemy drones and
+// own drone; projectiles go to the projectile branch
+#define IW_NUM_WEAPON_SLOTS (IW_NUM_PICKUPS + IW_DRONE_WEAPONS * (IW_NUM_ENEMIES + 1))
 // enemy drone rays, own drone rays
 #define IW_NUM_RAY_SLOTS (IW_NUM_ENEMIES + IW_NUM_DRONE_RAYS)
 #define IW_NUM_SCALARS (OBS_SIZE - IW_MAP_CELLS - IW_NUM_WALL_SLOTS - IW_NUM_WEAPON_SLOTS - IW_NUM_RAY_SLOTS - IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE - IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE)
@@ -166,10 +172,17 @@ IW_FN int iw_weapon_slot_idx(int j) {
         return IW_PICKUP_OFFSET + j * IW_PICKUP_SIZE;
     }
     j -= IW_NUM_PICKUPS;
-    if (j < IW_NUM_ENEMIES) {
-        return IW_ENEMY_DRONE_OFFSET + j * IW_ENEMY_DRONE_SIZE;
+    const int drone = j / IW_DRONE_WEAPONS;
+    const int weapon = (j % IW_DRONE_WEAPONS) * IW_WEAPON_SIZE;
+    if (drone < IW_NUM_ENEMIES) {
+        return IW_ENEMY_DRONE_OFFSET + drone * IW_ENEMY_DRONE_SIZE + weapon;
     }
-    return IW_DRONE_OFFSET;
+    return IW_DRONE_OFFSET + weapon;
+}
+
+// whether offset k into a drone block is one of its weapon type slots
+IW_FN int iw_is_drone_weapon_type(int k) {
+    return k < IW_DRONE_WEAPONS * IW_WEAPON_SIZE && k % IW_WEAPON_SIZE == 0;
 }
 
 // obs index of ray hit type slot j
@@ -202,13 +215,13 @@ IW_FN int iw_is_scalar(int i) {
     }
     if (i < IW_DRONE_OFFSET) {
         const int k = (i - IW_ENEMY_DRONE_OFFSET) % IW_ENEMY_DRONE_SIZE;
-        return k != 0 && k != IW_ENEMY_RAY_IDX;
+        return !iw_is_drone_weapon_type(k) && k != IW_ENEMY_RAY_IDX;
     }
     const int k = i - IW_DRONE_OFFSET;
     if (k >= IW_DRONE_RAY_IDX && k < IW_DRONE_SIZE) {
         return (k - IW_DRONE_RAY_IDX) % IW_RAY_SIZE != 0;
     }
-    return k != 0;
+    return !iw_is_drone_weapon_type(k);
 }
 
 // a one-hot concat column: the type slot it reads and the class it is hot

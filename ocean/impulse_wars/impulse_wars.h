@@ -4,8 +4,8 @@ typedef float obs_t;
 #endif
 
 // uncomment to use continuous actions
-// #define NUM_ATNS 8
-// #define ACT_SIZES {1, 1, 1, 1, 1, 1, 1, 1}
+// #define NUM_ATNS 9
+// #define ACT_SIZES {1, 1, 1, 1, 1, 1, 1, 1, 1}
 // #define CONTINUOUS_ACTIONS 1
 
 // actions:
@@ -15,12 +15,13 @@ typedef float obs_t;
 // 2: shoot or not
 // 2: brake or not
 // 2: burst or not
+// 2: swap weapon or not
 // 2: weapon action or not
-#define NUM_ATNS 7
-#define ACT_SIZES {9, AIM_COARSE_SECTORS, AIM_FINE_STEPS, 2, 2, 2, 2}
+#define NUM_ATNS 8
+#define ACT_SIZES {9, AIM_COARSE_SECTORS, AIM_FINE_STEPS, 2, 2, 2, 2, 2}
 #define CONTINUOUS_ACTIONS 0
 
-#define OBS_SIZE 467 // for 2 drones (players)
+#define OBS_SIZE 485 // for 2 drones (players)
 
 #ifdef __cplusplus
 // Game/Box2D/collections-c are C (void* implicit conv); pufferl.cu is C++17.
@@ -115,6 +116,7 @@ void puf_init(Env *env, Dict *kwargs) {
     env->easyEpProb = dict_get(kwargs, "easy_ep_prob");
     env->easyEpDecay = dict_get(kwargs, "easy_ep_decay");
     env->easyEpHitRate = dict_get(kwargs, "easy_ep_hit_rate");
+    env->comboTrainingProb = dict_get(kwargs, "combo_training_prob");
 
     for (int i = 0; i < env->num_agents; i++) {
         env->agents[i].policy = i;

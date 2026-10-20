@@ -40,8 +40,7 @@ static mapEntry boringMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
-    .weaponPickups = 8,
-    .defaultWeapon = STANDARD_WEAPON,
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 5,
 };
 
@@ -77,7 +76,6 @@ static mapEntry prototypeArenaMap = {
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
     .weaponPickups = 6,
-    .defaultWeapon = STANDARD_WEAPON,
     .maxSuddenDeathWalls = 4,
 };
 
@@ -114,7 +112,6 @@ static mapEntry snipersMap = {
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
     .weaponPickups = 6,
-    .defaultWeapon = SNIPER_WEAPON,
     .maxSuddenDeathWalls = 4,
 };
 
@@ -150,8 +147,7 @@ static mapEntry roomsMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 3,
     .hasSetFloatingWalls = false,
-    .weaponPickups = 10,
-    .defaultWeapon = STANDARD_WEAPON,
+    .weaponPickups = 8,
     .maxSuddenDeathWalls = 5,
 };
 
@@ -189,8 +185,7 @@ static mapEntry xArena = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 8,
-    .defaultWeapon = STANDARD_WEAPON,
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 6,
 };
 
@@ -229,8 +224,7 @@ static mapEntry crossBounce = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 8,
-    .defaultWeapon = STANDARD_WEAPON,// TODO: make this exploding weapon
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 6,
 };
 
@@ -268,8 +262,7 @@ static mapEntry asteriskArena = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
-    .weaponPickups = 8,
-    .defaultWeapon = STANDARD_WEAPON,
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 7,
 };
 
@@ -304,8 +297,7 @@ static mapEntry foamPitMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 6,
-    .defaultWeapon = STANDARD_WEAPON,
+    .weaponPickups = 5,
     .maxSuddenDeathWalls = 5,
 };
 
@@ -345,7 +337,6 @@ static mapEntry siegeMap = {
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
     .weaponPickups = 5,
-    .defaultWeapon = STANDARD_WEAPON,
     .maxSuddenDeathWalls = 8,
 };
 
@@ -381,8 +372,7 @@ static mapEntry pinballMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
-    .weaponPickups = 8,
-    .defaultWeapon = STANDARD_WEAPON,
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 5,
 };
 
@@ -416,8 +406,7 @@ static mapEntry moatMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 2,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 8,
-    .defaultWeapon = STANDARD_WEAPON,
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 4,
 };
 
@@ -455,8 +444,7 @@ static mapEntry hourglassMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 2,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 6,
-    .defaultWeapon = STANDARD_WEAPON,
+    .weaponPickups = 5,
     .maxSuddenDeathWalls = 4,
 };
 
@@ -488,8 +476,7 @@ static mapEntry jawsMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
-    .weaponPickups = 6,
-    .defaultWeapon = STANDARD_WEAPON,
+    .weaponPickups = 5,
     .maxSuddenDeathWalls = 4,
 };
 
@@ -525,8 +512,7 @@ static mapEntry cavernMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
-    .weaponPickups = 8,
-    .defaultWeapon = STANDARD_WEAPON,
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 4,
 };
 
@@ -562,8 +548,7 @@ static mapEntry crossroadsMap = {
     .randFloatingBouncyWalls = 2,
     .randFloatingDeathWalls = 2,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 6,
-    .defaultWeapon = STANDARD_WEAPON,
+    .weaponPickups = 5,
     .maxSuddenDeathWalls = 5,
 };
 // clang-format on
@@ -666,10 +651,6 @@ void setupMap(iwEnv *e, const uint8_t mapIdx) {
 
     e->mapIdx = mapIdx;
     e->map = maps[mapIdx];
-    e->defaultWeapon = weaponInfos[maps[mapIdx]->defaultWeapon];
-    if (e->isTraining && randFloat(&e->rng, 0.0f, 1.0f) < 0.25f) {
-        e->defaultWeapon = weaponInfos[randInt(&e->rng, 0, NUM_WEAPONS - 1)];
-    }
 
     uint16_t cellIdx = 0;
     for (int row = 0; row < rows; row++) {
