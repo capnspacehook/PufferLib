@@ -1113,13 +1113,13 @@ bool weaponUseless(const iwEnv *e, const droneEntity *drone, const weaponSlot we
     }
 }
 
-// returns true if the new weapon filled an unset slot or took the place
-// of the standard weapon
-bool droneChangeWeapon(iwEnv *e, droneEntity *drone, const enum weaponType newWeapon) {
+float droneChangeWeapon(iwEnv *e, droneEntity *drone, const enum weaponType newWeapon) {
     const enum weaponType activeType = drone->activeWeapon.weaponInfo->type;
     const enum weaponType inactiveType = drone->inactiveWeapon.weaponInfo->type;
     weaponSlot *weapon = &drone->activeWeapon;
-    bool filledSlot = false;
+    bool slotFilled = false;
+    bool slotReplaced = false;
+    float refillAmount = 0.0f;
 
     if (activeType != newWeapon) {
         if (activeType != STANDARD_WEAPON && inactiveType == UNSET_WEAPON) {
@@ -1128,7 +1128,7 @@ bool droneChangeWeapon(iwEnv *e, droneEntity *drone, const enum weaponType newWe
             drone->inactiveWeapon.weaponInfo = weaponInfos[newWeapon];
             resetWeapon(&drone->inactiveWeapon);
             weapon = &drone->inactiveWeapon;
-            filledSlot = true;
+            slotFilled = true;
         } else if (inactiveType != newWeapon) {
             if (activeType == GRAPPLE_WEAPON && drone->grapple != NULL) {
                 destroyProjectile(e, drone->grapple, false, true);
@@ -1136,7 +1136,8 @@ bool droneChangeWeapon(iwEnv *e, droneEntity *drone, const enum weaponType newWe
 
             // a holstered standard weapon is removed in droneStep now
             // that the active weapon can shoot
-            filledSlot = activeType == STANDARD_WEAPON || inactiveType == STANDARD_WEAPON;
+            slotFilled = activeType == STANDARD_WEAPON || inactiveType == STANDARD_WEAPON;
+            slotReplaced = !slotFilled;
             drone->activeWeapon.weaponInfo = weaponInfos[newWeapon];
             resetWeapon(&drone->activeWeapon);
         } else {
@@ -1146,28 +1147,35 @@ bool droneChangeWeapon(iwEnv *e, droneEntity *drone, const enum weaponType newWe
         }
     }
 
-    weapon->ammo = weaponAmmo(weapon->weaponInfo->type);
-    return filledSlot;
+    const int8_t maxAmmo = weaponAmmo(weapon->weaponInfo->type);
+    if (slotFilled) {
+        refillAmount = 1.0f;
+    } else if (!slotReplaced) {
+        refillAmount = (float)(maxAmmo - weapon->ammo) / (float)maxAmmo;
+    }
+
+    weapon->ammo = maxAmmo;
+    return refillAmount;
 }
 
-// an ammo crate fills both slots' pickup weapons to full ammo, including
-// empty ones kept for their live projectiles; returns true if it added
-// any ammo
-bool droneRefillAmmo(droneEntity *drone) {
+float droneRefillAmmo(droneEntity *drone) {
     weaponSlot *slots[2] = {&drone->activeWeapon, &drone->inactiveWeapon};
-    bool refilled = false;
+    float refillAmount = 0.0f;
     for (uint8_t i = 0; i < 2; i++) {
         const enum weaponType type = slots[i]->weaponInfo->type;
         if (type == UNSET_WEAPON || type == STANDARD_WEAPON) {
             continue;
         }
-        const int8_t ammo = weaponAmmo(type);
-        if (slots[i]->ammo < ammo) {
-            slots[i]->ammo = ammo;
-            refilled = true;
+
+        const int8_t curAmmo = slots[i]->ammo;
+        const int8_t maxAmmo = weaponAmmo(type);
+        if (curAmmo < maxAmmo) {
+            slots[i]->ammo = maxAmmo;
+            refillAmount += (float)(maxAmmo - curAmmo) / (float)maxAmmo;
         }
     }
-    return refilled;
+
+    return refillAmount;
 }
 
 void droneEmptyCharge(droneEntity *drone, const bool inactiveAlso) {
@@ -3301,15 +3309,15 @@ void weaponPickupsOverlapStep(iwEnv *e) {
             disableWeaponPickup(e, pickup);
             drone->stepInfo.pickedUpWeapon = true;
             if (pickup->isCrate) {
-                const bool refilled = droneRefillAmmo(drone);
-                drone->stepInfo.pickupFilledSlot |= refilled;
+                const float refillAmount = droneRefillAmmo(drone);
+                drone->stepInfo.pickupFillOrRefill += refillAmount;
                 e->stats[drone->idx].cratesPickedUp++;
-                e->stats[drone->idx].cratesRefilled += refilled;
+                e->stats[drone->idx].cratesRefilled += refillAmount > 0.0f;
                 DEBUG_LOGF("drone %d picked up an ammo crate", drone->idx);
                 break;
             }
             e->analysisStats[drone->idx].pickupsFrom[drone->activeWeapon.weaponInfo->type][pickup->weapon]++;
-            drone->stepInfo.pickupFilledSlot |= droneChangeWeapon(e, drone, pickup->weapon);
+            drone->stepInfo.pickupFillOrRefill += droneChangeWeapon(e, drone, pickup->weapon);
 
             e->stats[drone->idx].weaponsPickedUp[pickup->weapon]++;
             e->stats[drone->idx].totalWeaponsPickedUp++;

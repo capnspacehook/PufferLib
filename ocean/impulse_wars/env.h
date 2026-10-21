@@ -1097,8 +1097,11 @@ float computeReward(iwEnv *e, droneEntity *drone) {
     // every weapon is better than the standard weapon, but other weapons
     // are situationally better so don't reward replacing or topping up a
     // non-standard weapon
-    if (drone->stepInfo.pickedUpWeapon && drone->stepInfo.pickupFilledSlot) {
-        reward += e->weaponPickupReward;
+    if (drone->stepInfo.pickedUpWeapon && drone->stepInfo.pickupFillOrRefill > 0.0f) {
+        // reward refilling ammo proportionally to the amount filled;
+        // allow a max of the full pickup reward even if a ammo crate
+        // refilled both held weapons up a lot
+        reward += e->weaponPickupReward * fminf(drone->stepInfo.pickupFillOrRefill, 1.0f);
     }
 
     for (uint8_t i = 0; i < e->numDrones; i++) {

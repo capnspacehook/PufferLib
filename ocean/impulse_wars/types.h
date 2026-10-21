@@ -242,9 +242,9 @@ typedef struct droneStepInfo {
     bool firedShot;
     bool pickedUpWeapon;
     bool emptiedEnergy;
-    // the picked up weapon filled an unset slot or replaced the
-    // standard weapon
-    bool pickupFilledSlot;
+    // the picked up weapon filled an unset slot, replaced the
+    // standard weapon, or refilled ammo
+    float pickupFillOrRefill;
     float shotHit[_MAX_DRONES];
     float explosionHit[_MAX_DRONES];
     float shotTaken[_MAX_DRONES];
