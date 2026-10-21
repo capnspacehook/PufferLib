@@ -598,9 +598,11 @@ enum botPolicy {
 
 // scripted bot behaviors, toggled per drone so variants of the bot can be
 // played against each other in the same env (see bot_tournament.c). Ammo
-// reserve is on by default; the rest are experiments that measured neutral
-// or worse against scripted opponents and are kept for evaluating against
-// learned policies. Smart reserve only has an effect with ammo reserve on
+// reserve, weapon slots, safe geometry and shotgun boosting are on by
+// default, and personalities add others for their playstyle (see
+// botPresets); the rest are experiments that measured neutral or worse and
+// are kept for evaluating against learned policies. Smart reserve only has
+// an effect with ammo reserve on
 enum botFeature {
     BOT_FEAT_AMMO_RESERVE = 1 << 0,
     BOT_FEAT_PROJ_DEFENSE = 1 << 1,
@@ -609,8 +611,28 @@ enum botFeature {
     BOT_FEAT_KILL_GEOMETRY = 1 << 4,
     BOT_FEAT_SNIPER_DODGE = 1 << 5,
     BOT_FEAT_SMART_RESERVE = 1 << 6,
+    // fill and manage both weapon slots: pickups for the holster, swapping
+    // to the weapon that suits the situation and away from empty ones
+    BOT_FEAT_WEAPON_SLOTS = 1 << 7,
+    // detonate own mines next to the enemy with the weapon action
+    BOT_FEAT_MINE_DETONATE = 1 << 8,
+    // swap to the holstered weapon while the drawn one is cooling down
+    BOT_FEAT_SWAP_CYCLE = 1 << 9,
+    // keep death walls from being behind the drone as seen from the enemy,
+    // so hits don't knock it into them
+    BOT_FEAT_SAFE_GEOMETRY = 1 << 10,
+    // stay out of shotgun range of an enemy with a shotgun drawn
+    BOT_FEAT_KITE = 1 << 11,
+    // cancel a full charge held long enough to start draining energy
+    BOT_FEAT_CHARGE_DRAIN = 1 << 12,
+    // charge a burst before a close shotgun shot and release it with the
+    // shot so the burst speeds up the pellets
+    BOT_FEAT_SHOTGUN_BOOST = 1 << 13,
+    // only fire the shotgun from close enough for the pellets to keep
+    // their speed and stay together
+    BOT_FEAT_SHOTGUN_RANGE = 1 << 14,
 };
-#define BOT_FEAT_ALL 0x7F
+#define BOT_FEAT_ALL 0x7FFF
 
 // how many cells ahead along a planned route the scripted bot remembers
 #define BOT_PATH_WAYPOINTS 4
@@ -668,6 +690,14 @@ enum botEvent {
     BOT_EVENT_MINE_PLACED,
     BOT_EVENT_COUNTER_SHOT,
     BOT_EVENT_SUDDEN_DEATH_AVOID,
+    BOT_EVENT_SWAP,
+    BOT_EVENT_SWAP_CYCLE,
+    BOT_EVENT_CHARGE_CANCEL,
+    BOT_EVENT_PICKUP_SWAP,
+    BOT_EVENT_MINE_DETONATE,
+    BOT_EVENT_SAFE_GEOMETRY,
+    BOT_EVENT_KITE,
+    BOT_EVENT_SHOTGUN_BOOST,
     NUM_BOT_EVENTS,
 };
 
