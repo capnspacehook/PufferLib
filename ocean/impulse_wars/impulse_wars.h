@@ -112,7 +112,7 @@ void puf_init(Env *env, Dict *kwargs) {
         dict_get(kwargs, "reward_shield_break"),
         dict_get(kwargs, "reward_hit_coef")
     );
-    env->aimDrillReward = dict_get(kwargs, "reward_aim_drill");
+    env->assistReward = dict_get(kwargs, "reward_assist");
     env->easyEpProb = dict_get(kwargs, "easy_ep_prob");
     env->easyEpDecay = dict_get(kwargs, "easy_ep_decay");
     env->easyEpHitRate = dict_get(kwargs, "easy_ep_hit_rate");
@@ -146,6 +146,9 @@ void puf_set_bot_policy(iwEnv *e, int botPolicy) {
     dict_set(out, "drone_" idxStr "_self_kills", log->stats[idx].selfKills);                      \
     dict_set(out, "drone_" idxStr "_kills", log->stats[idx].kills);                               \
     dict_set(out, "drone_" idxStr "_unknown_kills", log->stats[idx].unknownKills);                \
+    dict_set(out, "drone_" idxStr "_assists", log->stats[idx].assists);                           \
+    dict_set(out, "drone_" idxStr "_crates_picked_up", log->stats[idx].cratesPickedUp);           \
+    dict_set(out, "drone_" idxStr "_crates_refilled", log->stats[idx].cratesRefilled);            \
     dict_set(out, "drone_" idxStr "_total_shots_fired", log->stats[idx].totalShotsFired);         \
     dict_set(out, "drone_" idxStr "_total_shots_hit", log->stats[idx].totalShotsHit);             \
     dict_set(out, "drone_" idxStr "_total_shots_taken", log->stats[idx].totalShotsTaken);         \
@@ -166,8 +169,6 @@ void puf_log(Log *log, Dict *out) {
     dict_set(out, "bot_cl_noise", log->botCLNoise);
     dict_set(out, "easy_ep_prob", log->easyEpProb);
     dict_set(out, "easy_ep_rate", log->easyEp);
-    dict_set(out, "normal_shots_fired", log->normalShotsFired);
-    dict_set(out, "normal_shots_aimed_10", log->normalShotsAimed10);
     dict_set(out, "n", log->n);
 
     LOG_DRONE_STATS(log, out, 0, "0");

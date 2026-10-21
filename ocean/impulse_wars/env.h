@@ -352,7 +352,7 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
 
             offset = WEAPON_PICKUP_INFO_OBS_OFFSET + (i * WEAPON_PICKUP_INFO_OBS_SIZE);
             ASSERTF(offset + WEAPON_PICKUP_INFO_OBS_SIZE <= PROJECTILE_INFO_OBS_OFFSET, "offset: %d", offset);
-            continuousObs[offset++] = pickup->weapon;
+            continuousObs[offset++] = pickup->isCrate ? AMMO_CRATE_OBS_TYPE : pickup->weapon;
             const b2Vec2 pickupRelPos = b2Sub(pickup->pos, drone->pos);
             continuousObs[offset++] = scaleValue(pickupRelPos.x, MAX_OBS_RELATIVE_POS, false);
             continuousObs[offset] = scaleValue(pickupRelPos.y, MAX_OBS_RELATIVE_POS, false);
@@ -836,7 +836,8 @@ void setupEnv(iwEnv *e) {
 
     // start drones with random loadouts so rare weapons and combos get
     // practiced; easy episodes are left alone
-    if (e->isTraining && !e->easyEp && e->comboTrainingProb > 0.0f && randFloat(&e->rng, 0.0f, 1.0f) < e->comboTrainingProb) {
+    e->comboEp = e->isTraining && !e->easyEp && e->comboTrainingProb > 0.0f && randFloat(&e->rng, 0.0f, 1.0f) < e->comboTrainingProb;
+    if (e->comboEp) {
         const bool symmetric = randInt(&e->rng, 0, 1) == 1;
         enum weaponType active = UNSET_WEAPON;
         enum weaponType inactive = UNSET_WEAPON;
@@ -971,6 +972,10 @@ void clearEnv(iwEnv *e) {
 
     e->burstSerial = 0;
     e->episodeLength = 0;
+    // pickups alive at the end of an episode are destroyed without being
+    // disabled, so reset the spawned counts here
+    memset(e->spawnedWeaponPickups, 0x0, sizeof(e->spawnedWeaponPickups));
+    e->spawnedCrates = 0;
     memset(e->stats, 0x0, sizeof(e->stats));
     memset(e->analysisStats, 0x0, sizeof(e->analysisStats));
 
@@ -1084,14 +1089,14 @@ float computeReward(iwEnv *e, droneEntity *drone) {
         reward += e->energyEmptiedPunishment;
     }
 
-    // debugging aid: dense reward for pointing shots at the enemy, turns
-    // aiming into a contextual bandit to sanity check the learning pipeline
-    reward += drone->stepInfo.aimAlignment * e->aimDrillReward;
+    // like the kill reward, only the drone that set up the kill gets it
+    reward += drone->stepInfo.assists * e->assistReward;
 
     // only reward picking up a weapon if it filled an unset slot or
-    // replaced the standard weapon; every weapon is better than the
-    // standard weapon, but other weapons are situationally better so
-    // don't reward replacing or topping up a non-standard weapon
+    // replaced the standard weapon, or an ammo crate if it added ammo;
+    // every weapon is better than the standard weapon, but other weapons
+    // are situationally better so don't reward replacing or topping up a
+    // non-standard weapon
     if (drone->stepInfo.pickedUpWeapon && drone->stepInfo.pickupFilledSlot) {
         reward += e->weaponPickupReward;
     }
@@ -1258,8 +1263,6 @@ void addLog(iwEnv *e, Log *log) {
     e->log.botCLNoise += log->botCLNoise;
     e->log.easyEpProb += log->easyEpProb;
     e->log.easyEp += log->easyEp;
-    e->log.normalShotsFired += log->normalShotsFired;
-    e->log.normalShotsAimed10 += log->normalShotsAimed10;
 
     for (uint8_t j = 0; j < e->numDrones; j++) {
         e->log.stats[j].returns += log->stats[j].returns;
@@ -1276,6 +1279,9 @@ void addLog(iwEnv *e, Log *log) {
         e->log.stats[j].selfKills += log->stats[j].selfKills;
         e->log.stats[j].kills += log->stats[j].kills;
         e->log.stats[j].unknownKills += log->stats[j].unknownKills;
+        e->log.stats[j].assists += log->stats[j].assists;
+        e->log.stats[j].cratesPickedUp += log->stats[j].cratesPickedUp;
+        e->log.stats[j].cratesRefilled += log->stats[j].cratesRefilled;
 
         for (uint8_t k = 0; k < NUM_WEAPONS; k++) {
             e->log.stats[j].shotsFired[k] += log->stats[j].shotsFired[k];
@@ -1593,10 +1599,6 @@ void endEpisode(iwEnv *e, const int8_t lastAlive, const int8_t lastAliveTeam) {
     log.botCLNoise = e->botCLNoise;
     log.easyEpProb = e->easyEpProb;
     log.easyEp = e->easyEp;
-    if (!e->easyEp) {
-        log.normalShotsFired = e->stats[0].totalShotsFired;
-        log.normalShotsAimed10 = e->stats[0].shotsAimed10;
-    }
 
     const float shotsFired = e->stats[0].totalShotsFired;
     if (e->easyEp && shotsFired >= EASY_EP_MIN_SHOTS && e->stats[0].totalShotsHit / shotsFired >= e->easyEpHitRate) {

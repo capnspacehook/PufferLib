@@ -175,6 +175,12 @@ static const float PICKUP_SPAWN_DISTANCE_SQUARED = SQUARED(10.0f);
 static const float PICKUP_RESPAWN_WAIT = 3.0f;
 static const float SUDDEN_DEATH_PICKUP_RESPAWN_WAIT = 2.0f;
 
+// ammo crates refill the picking drone's weapons; in combo training
+// episodes they're the only pickups
+#define AMMO_CRATE_SPAWN_WEIGHT 1.5f
+// pickup type of an ammo crate in the obs, one past the last weapon
+#define AMMO_CRATE_OBS_TYPE _NUM_WEAPONS
+
 // drone settings
 static const float DRONE_WALL_SPAWN_DISTANCE = 2.0f;
 static const float DRONE_DEATH_WALL_SPAWN_DISTANCE = 7.5f;
@@ -190,7 +196,10 @@ static const float DRONE_MOVE_MAGNITUDE = 35.0f;
 static const float DRONE_LINEAR_DAMPING = 1.0f;
 static const float DRONE_MOVE_AIM_COEF = 0.1f;
 
-static const float DRONE_SWAP_COOLDOWN = 0.5f;
+static const float DRONE_SWAP_COOLDOWN = 0.35f;
+// seconds after a black hole pull or grapple attachment that the enemy
+// dying earns the setter an assist
+static const float DRONE_ASSIST_WINDOW = 2.0f;
 
 static const float DRONE_ENERGY_MAX = 1.0f;
 static const float DRONE_BRAKE_DAMPING_COEF = 2.5f;

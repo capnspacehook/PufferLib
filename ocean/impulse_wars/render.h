@@ -1604,7 +1604,7 @@ void renderWeaponPickup(const iwEnv *e, const weaponPickupEntity *pickup) {
         WHITE
     );
 
-    const char *weaponName = getWeaponAbreviation(pickup->weapon);
+    const char *weaponName = pickup->isCrate ? "AMMO" : getWeaponAbreviation(pickup->weapon);
     Vector3 textPos = (Vector3){
         .x = pickup->pos.x - PICKUP_THICKNESS / 2.0f,
         .y = 1.0f,

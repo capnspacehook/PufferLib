@@ -575,30 +575,41 @@ void destroyWall(iwEnv *e, wallEntity *wall, const bool full) {
     fastFree(wall);
 }
 
-enum weaponType randWeaponPickupType(iwEnv *e) {
-    // spawn weapon pickups according to their spawn weights and how many
-    // pickups are currently spawned with different weapons
-    float totalWeight = 0.0f;
-    float spawnWeights[_NUM_WEAPONS - 1] = {0};
-    for (uint8_t i = 1; i < NUM_WEAPONS; i++) {
-        spawnWeights[i - 1] = weaponInfos[i]->spawnWeight / ((e->spawnedWeaponPickups[i] + 1) * 2.0f);
-        totalWeight += spawnWeights[i - 1];
-    }
+// picks what a pickup spawns as: in combo episodes always an ammo crate,
+// otherwise a weapon or a crate by spawn weight and how many pickups of
+// each are currently spawned
+void randPickupType(iwEnv *e, weaponPickupEntity *pickup) {
+    pickup->isCrate = e->comboEp;
+    pickup->weapon = UNSET_WEAPON;
+    if (!pickup->isCrate) {
+        float totalWeight = 0.0f;
+        float spawnWeights[_NUM_WEAPONS - 1] = {0};
+        for (uint8_t i = 1; i < NUM_WEAPONS; i++) {
+            spawnWeights[i - 1] = weaponInfos[i]->spawnWeight / ((e->spawnedWeaponPickups[i] + 1) * 2.0f);
+            totalWeight += spawnWeights[i - 1];
+        }
+        const float crateWeight = AMMO_CRATE_SPAWN_WEIGHT / ((e->spawnedCrates + 1) * 2.0f);
+        totalWeight += crateWeight;
 
-    const float randPick = randFloat(&e->rng, 0.0f, totalWeight);
-    float cumulativeWeight = 0.0f;
-    enum weaponType type = STANDARD_WEAPON;
-    for (uint8_t i = 1; i < NUM_WEAPONS; i++) {
-        cumulativeWeight += spawnWeights[i - 1];
-        if (randPick < cumulativeWeight) {
-            type = i;
-            break;
+        const float randPick = randFloat(&e->rng, 0.0f, totalWeight);
+        float cumulativeWeight = 0.0f;
+        pickup->isCrate = true;
+        for (uint8_t i = 1; i < NUM_WEAPONS; i++) {
+            cumulativeWeight += spawnWeights[i - 1];
+            if (randPick < cumulativeWeight) {
+                pickup->weapon = i;
+                pickup->isCrate = false;
+                break;
+            }
         }
     }
-    ASSERT(type != STANDARD_WEAPON);
-    e->spawnedWeaponPickups[type]++;
 
-    return type;
+    if (pickup->isCrate) {
+        e->spawnedCrates++;
+        return;
+    }
+    ASSERT(pickup->weapon != STANDARD_WEAPON && pickup->weapon != UNSET_WEAPON);
+    e->spawnedWeaponPickups[pickup->weapon]++;
 }
 
 void createWeaponPickupBodyShape(const iwEnv *e, weaponPickupEntity *pickup) {
@@ -635,7 +646,7 @@ void createWeaponPickup(iwEnv *e) {
     }
 
     weaponPickupEntity *pickup = fastCalloc(1, sizeof(weaponPickupEntity));
-    pickup->weapon = randWeaponPickupType(e);
+    randPickupType(e, pickup);
     pickup->respawnWait = 0.0f;
     pickup->floatingWallsTouching = 0;
     pickup->pos = pos;
@@ -687,7 +698,11 @@ void disableWeaponPickup(iwEnv *e, weaponPickupEntity *pickup) {
     ASSERT(cell->ent != NULL);
     cell->ent = NULL;
 
-    e->spawnedWeaponPickups[pickup->weapon]--;
+    if (pickup->isCrate) {
+        e->spawnedCrates--;
+    } else {
+        e->spawnedWeaponPickups[pickup->weapon]--;
+    }
 }
 
 void createDroneShield(iwEnv *e, droneEntity *drone, const int8_t groupIdx) {
@@ -1135,6 +1150,26 @@ bool droneChangeWeapon(iwEnv *e, droneEntity *drone, const enum weaponType newWe
     return filledSlot;
 }
 
+// an ammo crate fills both slots' pickup weapons to full ammo, including
+// empty ones kept for their live projectiles; returns true if it added
+// any ammo
+bool droneRefillAmmo(droneEntity *drone) {
+    weaponSlot *slots[2] = {&drone->activeWeapon, &drone->inactiveWeapon};
+    bool refilled = false;
+    for (uint8_t i = 0; i < 2; i++) {
+        const enum weaponType type = slots[i]->weaponInfo->type;
+        if (type == UNSET_WEAPON || type == STANDARD_WEAPON) {
+            continue;
+        }
+        const int8_t ammo = weaponAmmo(type);
+        if (slots[i]->ammo < ammo) {
+            slots[i]->ammo = ammo;
+            refilled = true;
+        }
+    }
+    return refilled;
+}
+
 void droneEmptyCharge(droneEntity *drone, const bool inactiveAlso) {
     drone->activeWeapon.charge = 0.0f;
     drone->activeWeapon.fullChargeHoldTime = 0.0f;
@@ -1362,6 +1397,48 @@ void recordDeathAnalysis(iwEnv *e, const droneEntity *drone, const int8_t killer
     }
 }
 
+// records a black hole pull on or grapple attachment to an enemy, which
+// earns an assist if the enemy dies soon after
+static inline void markAssistSetup(const iwEnv *e, droneEntity *attacker, const droneEntity *victim, const enum assistWeapon weapon) {
+    if (attacker->team == victim->team) {
+        return;
+    }
+    attacker->assistFrame[victim->idx][weapon] = e->episodeLength + 1;
+}
+
+// gives an assist to every enemy that pulled the dying drone with a black
+// hole or had a grapple attached to it within DRONE_ASSIST_WINDOW, unless
+// the kill itself is credited to that weapon, as the kill reward already
+// covers it
+void recordAssists(iwEnv *e, const droneEntity *drone, const int8_t killer) {
+    static const enum weaponType assistWeapons[NUM_ASSIST_WEAPONS] = {
+        [ASSIST_BLACK_HOLE] = BLACK_HOLE_WEAPON,
+        [ASSIST_GRAPPLE] = GRAPPLE_WEAPON,
+    };
+    const uint32_t window = (uint32_t)(DRONE_ASSIST_WINDOW * e->frameRate);
+    const physicsSource source = drone->killSource;
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        if (i == drone->idx) {
+            continue;
+        }
+
+        droneEntity *other = safe_array_get_at(e->drones, i);
+        for (uint8_t w = 0; w < NUM_ASSIST_WEAPONS; w++) {
+            const uint32_t frame = other->assistFrame[drone->idx][w];
+            other->assistFrame[drone->idx][w] = 0;
+            if (frame == 0 || (uint32_t)e->episodeLength + 1 - frame > window) {
+                continue;
+            }
+            if (killer == i && physicsSourceIsWeapon(source) && source.weapon == assistWeapons[w]) {
+                continue;
+            }
+            other->stepInfo.assists++;
+            e->stats[i].assists++;
+            e->analysisStats[i].assistsByWeapon[assistWeapons[w]]++;
+        }
+    }
+}
+
 void destroyGrapplesAttachedTo(iwEnv *e, const entity *ent) {
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
@@ -1419,6 +1496,7 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
 
     const int8_t killer = findDroneKiller(e, drone, killWall);
     recordDeathAnalysis(e, drone, killer, killWall);
+    recordAssists(e, drone, killer);
 
     for (size_t i = 0; i < cc_array_size(drone->physicsTracking); i++) {
         physicsStepInfo *physicsStep = safe_array_get_at(drone->physicsTracking, i);
@@ -2742,12 +2820,12 @@ void droneWeaponAction(iwEnv *e, droneEntity *drone) {
         droneEmptyCharge(drone, false);
         break;
     case MINE_LAUNCHER_WEAPON: {
-        // set off all mines from this drone
+        // set off all mines from this drone that are stuck to walls
         CC_ArrayIter projIter;
         cc_array_iter_init(&projIter, e->projectiles);
         projectileEntity *projectile;
         while (cc_array_iter_next(&projIter, (void **)&projectile) != CC_ITER_END) {
-            if (projectile->needsToBeDestroyed || projectile->droneIdx != drone->idx) {
+            if (projectile->needsToBeDestroyed || projectile->droneIdx != drone->idx || projectile->weaponInfo->type != MINE_LAUNCHER_WEAPON || !projectile->welded) {
                 continue;
             }
 
@@ -2898,6 +2976,7 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
         } else if (attachedEnt->type == DRONE_ENTITY) {
             const droneEntity *attachedDrone = attachedEnt->entity;
             attachedPhysics = attachedDrone->physicsTracking;
+            markAssistSetup(e, drone, attachedDrone, ASSIST_GRAPPLE);
         }
 
         // impulses and forces applied to static walls are not tracked
@@ -3035,6 +3114,9 @@ void handleBlackHolePull(iwEnv *e, projectileEntity *projectile) {
         } else if (ent->type == DRONE_ENTITY) {
             droneEntity *drone = ent->entity;
             applyTrackedForce(e, drone->bodyID, drone->physicsTracking, force, projectile->droneIdx, source);
+            if (projectile->droneIdx != drone->idx) {
+                markAssistSetup(e, safe_array_get_at(e->drones, projectile->droneIdx), drone, ASSIST_BLACK_HOLE);
+            }
         } else {
             b2Body_ApplyForceToCenter(bodyID, force, true);
         }
@@ -3218,6 +3300,14 @@ void weaponPickupsOverlapStep(iwEnv *e) {
             droneEntity *drone = safe_array_get_at(e->drones, liveDrones[j]);
             disableWeaponPickup(e, pickup);
             drone->stepInfo.pickedUpWeapon = true;
+            if (pickup->isCrate) {
+                const bool refilled = droneRefillAmmo(drone);
+                drone->stepInfo.pickupFilledSlot |= refilled;
+                e->stats[drone->idx].cratesPickedUp++;
+                e->stats[drone->idx].cratesRefilled += refilled;
+                DEBUG_LOGF("drone %d picked up an ammo crate", drone->idx);
+                break;
+            }
             e->analysisStats[drone->idx].pickupsFrom[drone->activeWeapon.weaponInfo->type][pickup->weapon]++;
             drone->stepInfo.pickupFilledSlot |= droneChangeWeapon(e, drone, pickup->weapon);
 
@@ -3255,7 +3345,7 @@ void weaponPickupsStep(iwEnv *e) {
             continue;
         }
         pickup->pos = pos;
-        pickup->weapon = randWeaponPickupType(e);
+        randPickupType(e, pickup);
 
         const int16_t cellIdx = entityPosToCellIdx(e, pos);
         if (cellIdx == -1) {

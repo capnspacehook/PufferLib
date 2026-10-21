@@ -119,7 +119,7 @@ static inline ImpulseWarsNet *init_impulse_wars_net(Weights *weights, int num_ag
     assert(IW_WEAPON_SIZE == WEAPON_OBS_SIZE);
     assert(IW_RAY_VOCAB == NUM_RAY_HIT_TYPES);
     assert(IW_BASE_OBS_SIZE == DISCRETE_OBS_SIZE + _CONTINUOUS_OBS_SIZE);
-    assert(IW_WEAPON_VOCAB == NUM_WEAPONS);
+    assert(IW_WEAPON_VOCAB == NUM_WEAPONS + 1 && AMMO_CRATE_OBS_TYPE == NUM_WEAPONS);
 
     ImpulseWarsNet *net = (ImpulseWarsNet *)calloc(1, sizeof(ImpulseWarsNet));
     net->num_agents = num_agents;

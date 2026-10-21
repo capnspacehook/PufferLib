@@ -185,7 +185,9 @@ typedef struct weaponInformation {
 typedef struct weaponPickupEntity {
     b2BodyId bodyID;
     b2ShapeId shapeID;
+    // UNSET_WEAPON for an ammo crate
     enum weaponType weapon;
+    bool isCrate;
     float respawnWait;
     // how many floating walls are touching this pickup
     uint8_t floatingWallsTouching;
@@ -251,6 +253,7 @@ typedef struct droneStepInfo {
     bool ownShotTaken;
     // summed cos of the aim error of shots fired this step
     float aimAlignment;
+    uint8_t assists;
 } droneStepInfo;
 
 typedef struct shieldEntity {
@@ -325,6 +328,13 @@ typedef struct weaponSlot {
     float fullChargeHoldTime;
 } weaponSlot;
 
+// setup weapons that earn assists
+enum assistWeapon {
+    ASSIST_BLACK_HOLE,
+    ASSIST_GRAPPLE,
+    NUM_ASSIST_WEAPONS,
+};
+
 typedef struct droneEntity {
     b2BodyId bodyID;
     b2ShapeId shapeID;
@@ -338,6 +348,9 @@ typedef struct droneEntity {
     projectileEntity *grapple;
     float grappleLength;
     b2JointId grappleJointID;
+    // episode frame + 1 this drone last pulled each drone with a black
+    // hole or had its grapple attached to it, 0 if it hasn't
+    uint16_t assistFrame[_MAX_DRONES][NUM_ASSIST_WEAPONS];
 
     float energyLeft;
     bool braking;
@@ -399,6 +412,10 @@ typedef struct droneStats {
     float selfKills;
     float kills;
     float unknownKills;
+    float assists;
+    // ammo crates picked up, and those that added ammo
+    float cratesPickedUp;
+    float cratesRefilled;
     float score;
 
     float shotsFired[_NUM_WEAPONS];
@@ -432,6 +449,7 @@ typedef struct droneAnalysisStats {
     float selfKillsBySource[NUM_PHYSICS_TYPES];
     float floatingWallDeaths;
     float floatingWallSelfKills;
+    float assistsByWeapon[_NUM_WEAPONS];
     float diedHoldingActive[_NUM_WEAPONS];
     float diedHoldingInactive[_NUM_WEAPONS];
     // pickups by the weapon held before and the weapon picked up
@@ -453,10 +471,6 @@ struct Log {
     float botCLNoise;
     float easyEpProb;
     float easyEp;
-    // agent shots in normal (non easy) episodes, to see if aiming
-    // carries over once bursts are enabled
-    float normalShotsFired;
-    float normalShotsAimed10;
     droneStats stats[_MAX_DRONES];
 
     float n;
@@ -691,10 +705,15 @@ struct Env {
     // with probability comboTrainingProb a training episode starts every
     // drone with a random two weapon loadout, symmetric half of the time
     float comboTrainingProb;
+    // this episode started with combo loadouts, so pickups are ammo crates
+    bool comboEp;
 
     float winReward;
     float lifeReward;
     float killReward;
+    // for an enemy dying within DRONE_ASSIST_WINDOW of being pulled by a
+    // black hole or grappled, see recordAssists
+    float assistReward;
     float selfKillPunishment;
     float teammateDeathPunishment;
     float teammateKillPunishment;
@@ -702,7 +721,6 @@ struct Env {
     float weaponPickupReward;
     float shieldBreakReward;
     float hitRewardCoef;
-    float aimDrillReward;
 
     uint16_t obsSize;
     bool continuousActions;
@@ -726,6 +744,7 @@ struct Env {
     mapEntry *map;
     int8_t lastSpawnQuad;
     uint8_t spawnedWeaponPickups[_NUM_WEAPONS];
+    uint8_t spawnedCrates;
     b2IdPool idPool;
     CC_Array *entities;
     // flat, allocated once at MAX_CELLS; map layouts only ever shrink it

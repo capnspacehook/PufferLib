@@ -9,7 +9,8 @@
 // branches: a shared MLP per branch over every slot, max pooled over the
 // non-empty ones. Wall type slots hold 0 (empty) or wall
 // type + 1, weapon type slots hold a weapon type (0 is UNSET_WEAPON: no
-// entity or no weapon), ray hit type slots hold a RAY_HIT_* value; these
+// entity or no weapon; pickups use one past the last weapon for an ammo
+// crate), ray hit type slots hold a RAY_HIT_* value; these
 // are one-hot encoded with type 0 as all zeros. Every other obs value is a continuous scalar that is passed
 // through to the projection unchanged.
 #ifndef IMPULSE_WARS_OBS_H
@@ -59,8 +60,8 @@
 
 // empty + standard, bouncy, death walls
 #define IW_WALL_VOCAB 4
-// none + 11 weapons
-#define IW_WEAPON_VOCAB 12
+// none + 11 weapons + ammo crate, which only pickups use
+#define IW_WEAPON_VOCAB 13
 // none + static standard, bouncy, death walls + floating standard,
 // bouncy, death walls + drone
 #define IW_RAY_VOCAB 8
