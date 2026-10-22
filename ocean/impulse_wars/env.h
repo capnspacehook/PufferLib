@@ -1104,12 +1104,12 @@ float computeReward(iwEnv *e, droneEntity *drone) {
     // like the kill reward, only the drone that set up the kill gets it
     reward += drone->stepInfo.assists * e->assistReward;
 
-    // only reward picking up a weapon if it filled an unset slot or
-    // replaced the standard weapon, or an ammo crate if it added ammo;
-    // every weapon is better than the standard weapon, but other weapons
-    // are situationally better so don't reward replacing or topping up a
-    // non-standard weapon
-    if (drone->stepInfo.pickedUpWeapon && drone->stepInfo.pickupFillOrRefill == 1.0f) {
+    // only reward a pickup if it filled an unset slot, replaced the
+    // standard weapon or refilled a weapon from empty to full; every
+    // weapon is better than the standard weapon, but other weapons are
+    // situationally better so don't reward replacing a non-standard
+    // weapon or topping up ammo
+    if (drone->stepInfo.pickedUpWeapon && drone->stepInfo.slotFilled) {
         reward += e->weaponPickupReward;
     }
 

@@ -380,6 +380,7 @@ static mapEntry pinballMap = {
     .hasSetFloatingWalls = false,
     .weaponPickups = 6,
     .maxSuddenDeathWalls = 5,
+    .weaponSpawnWeights = {[ACCELERATOR_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
 static const char moatLayout[] = {

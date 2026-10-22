@@ -1141,13 +1141,14 @@ bool weaponUseless(const iwEnv *e, const droneEntity *drone, const weaponSlot we
     }
 }
 
-float droneChangeWeapon(iwEnv *e, droneEntity *drone, const enum weaponType newWeapon) {
+// returns true if the new weapon filled an unset slot, replaced the
+// standard weapon or refilled an empty weapon of the same type
+bool droneChangeWeapon(iwEnv *e, droneEntity *drone, const enum weaponType newWeapon) {
     const enum weaponType activeType = drone->activeWeapon.weaponInfo->type;
     const enum weaponType inactiveType = drone->inactiveWeapon.weaponInfo->type;
     weaponSlot *weapon = &drone->activeWeapon;
     bool slotFilled = false;
     bool slotReplaced = false;
-    float refillAmount = 0.0f;
 
     if (activeType != newWeapon) {
         if (activeType != STANDARD_WEAPON && inactiveType == UNSET_WEAPON) {
@@ -1175,20 +1176,20 @@ float droneChangeWeapon(iwEnv *e, droneEntity *drone, const enum weaponType newW
         }
     }
 
-    const int8_t maxAmmo = weaponAmmo(weapon->weaponInfo->type);
-    if (slotFilled) {
-        refillAmount = 1.0f;
-    } else if (!slotReplaced) {
-        refillAmount = (float)(maxAmmo - weapon->ammo) / (float)maxAmmo;
-    }
-
-    weapon->ammo = maxAmmo;
-    return refillAmount;
+    // only empty weapons kept for their live projectiles (mines,
+    // attached grapples) can be refilled from empty
+    const bool refilledEmpty = !slotFilled && !slotReplaced && weapon->ammo == 0;
+    weapon->ammo = weaponAmmo(weapon->weaponInfo->type);
+    return slotFilled || refilledEmpty;
 }
 
-float droneRefillAmmo(droneEntity *drone) {
+// an ammo crate fills both slots' pickup weapons to full ammo, including
+// empty ones kept for their live projectiles; returns true if it added
+// any ammo, and sets refilledEmpty if it refilled a weapon from empty
+bool droneRefillAmmo(droneEntity *drone, bool *refilledEmpty) {
     weaponSlot *slots[2] = {&drone->activeWeapon, &drone->inactiveWeapon};
-    float refillAmount = 0.0f;
+    bool refilled = false;
+    *refilledEmpty = false;
     for (uint8_t i = 0; i < 2; i++) {
         const enum weaponType type = slots[i]->weaponInfo->type;
         if (type == UNSET_WEAPON || type == STANDARD_WEAPON) {
@@ -1199,11 +1200,12 @@ float droneRefillAmmo(droneEntity *drone) {
         const int8_t maxAmmo = weaponAmmo(type);
         if (curAmmo < maxAmmo) {
             slots[i]->ammo = maxAmmo;
-            refillAmount += (float)(maxAmmo - curAmmo) / (float)maxAmmo;
+            refilled = true;
+            *refilledEmpty |= curAmmo == 0;
         }
     }
 
-    return refillAmount;
+    return refilled;
 }
 
 void droneEmptyCharge(droneEntity *drone, const bool inactiveAlso) {
@@ -3350,15 +3352,16 @@ void weaponPickupsOverlapStep(iwEnv *e) {
             disableWeaponPickup(e, pickup);
             drone->stepInfo.pickedUpWeapon = true;
             if (pickup->isCrate) {
-                const float refillAmount = droneRefillAmmo(drone);
-                drone->stepInfo.pickupFillOrRefill += refillAmount;
+                bool refilledEmpty;
+                const bool refilled = droneRefillAmmo(drone, &refilledEmpty);
+                drone->stepInfo.slotFilled |= refilledEmpty;
                 e->stats[drone->idx].cratesPickedUp++;
-                e->stats[drone->idx].cratesRefilled += refillAmount > 0.0f;
+                e->stats[drone->idx].cratesRefilled += refilled;
                 DEBUG_LOGF("drone %d picked up an ammo crate", drone->idx);
                 break;
             }
             e->analysisStats[drone->idx].pickupsFrom[drone->activeWeapon.weaponInfo->type][pickup->weapon]++;
-            drone->stepInfo.pickupFillOrRefill += droneChangeWeapon(e, drone, pickup->weapon);
+            drone->stepInfo.slotFilled |= droneChangeWeapon(e, drone, pickup->weapon);
 
             e->stats[drone->idx].weaponsPickedUp[pickup->weapon]++;
             e->stats[drone->idx].totalWeaponsPickedUp++;
@@ -3583,9 +3586,10 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             trackImpulse(e, wall->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), projectile->droneIdx, source);
         }
 
-        if (ent->type == BOUNCY_WALL_ENTITY && projectile->weaponInfo->type != GRAPPLE_WEAPON) {
-            // always allow projectiles to bounce off bouncy walls, 
-            // except for grapples which attach to all walls
+        if (ent->type == BOUNCY_WALL_ENTITY && projectile->weaponInfo->type != GRAPPLE_WEAPON && projectile->weaponInfo->type != ACCELERATOR_WEAPON) {
+            // always allow projectiles to bounce off bouncy walls,
+            // except for grapples which attach to all walls and
+            // accelerator projectiles whose bounces are all counted
             return 0;
         }
     } else if (ent->type == SHIELD_ENTITY) {
@@ -3605,6 +3609,16 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             }
             parentDrone->stepInfo.brokeShield[shield->drone->idx] = true;
             e->stats[parentDrone->idx].shieldsBroken++;
+        }
+
+        // accelerator projectiles speed up off of shields, so shields
+        // count towards their max bounces
+        if (projectile->weaponInfo->type == ACCELERATOR_WEAPON) {
+            projectile->bounces++;
+            if (projectile->bounces == projectile->weaponInfo->maxBounces) {
+                destroyProjectile(e, projectile, true, true);
+                return 1;
+            }
         }
 
         return 0;
