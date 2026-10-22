@@ -795,10 +795,10 @@ static void randLoadout(iwEnv *e, enum weaponType *active, enum weaponType *inac
 static void droneSetLoadout(droneEntity *drone, const enum weaponType active, const enum weaponType inactive) {
     drone->activeWeapon.weaponInfo = weaponInfos[active];
     resetWeapon(&drone->activeWeapon);
-    drone->activeWeapon.ammo = weaponAmmo(active);
+    drone->activeWeapon.ammo = max(weaponAmmo(active), 2);
     drone->inactiveWeapon.weaponInfo = weaponInfos[inactive];
     resetWeapon(&drone->inactiveWeapon);
-    drone->inactiveWeapon.ammo = weaponAmmo(inactive);
+    drone->inactiveWeapon.ammo = max(weaponAmmo(inactive), 2);
 }
 
 void setupEnv(iwEnv *e) {
@@ -1097,11 +1097,8 @@ float computeReward(iwEnv *e, droneEntity *drone) {
     // every weapon is better than the standard weapon, but other weapons
     // are situationally better so don't reward replacing or topping up a
     // non-standard weapon
-    if (drone->stepInfo.pickedUpWeapon && drone->stepInfo.pickupFillOrRefill > 0.0f) {
-        // reward refilling ammo proportionally to the amount filled;
-        // allow a max of the full pickup reward even if a ammo crate
-        // refilled both held weapons up a lot
-        reward += e->weaponPickupReward * fminf(drone->stepInfo.pickupFillOrRefill, 1.0f);
+    if (drone->stepInfo.pickedUpWeapon && drone->stepInfo.pickupFillOrRefill == 1.0f) {
+        reward += e->weaponPickupReward;
     }
 
     for (uint8_t i = 0; i < e->numDrones; i++) {
