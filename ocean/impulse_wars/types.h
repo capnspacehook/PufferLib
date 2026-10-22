@@ -105,6 +105,15 @@ typedef struct nearWall {
     b2Vec2 pos;
 } nearWall;
 
+// an optional per map override of a pickup spawn weight; zero initialized
+// overrides aren't set so the default weight is used
+typedef struct spawnWeightOverride {
+    bool set;
+    float weight;
+} spawnWeightOverride;
+
+#define SPAWN_WEIGHT(w) {.set = true, .weight = (w)}
+
 typedef struct mapEntry {
     const char *layout;
     const uint8_t columns;
@@ -116,7 +125,13 @@ typedef struct mapEntry {
     const bool hasSetFloatingWalls;
     const uint16_t weaponPickups;
     const uint8_t maxSuddenDeathWalls;
+    // overrides of the default pickup spawn weights, indexed by weapon type
+    const spawnWeightOverride weaponSpawnWeights[_NUM_WEAPONS];
+    const spawnWeightOverride crateSpawnWeight;
 
+    // pickup spawn weights with overrides applied, set in initMaps
+    float weaponWeights[_NUM_WEAPONS];
+    float crateWeight;
     mapBounds bounds;
     mapBounds spawnQuads[4];
     uint16_t quadCells;
@@ -179,6 +194,7 @@ typedef struct weaponInformation {
     const bool explodesOnDroneHit;
     const bool hasSensor;
     const float energyRefillCoef;
+    const float burstBoostCoef;
     const float spawnWeight;
 } weaponInformation;
 

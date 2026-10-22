@@ -172,12 +172,20 @@ static const float WALL_DENSITY = 4.0f;
 // weapon pickup settings
 static const float PICKUP_THICKNESS = 3.0f;
 static const float PICKUP_SPAWN_DISTANCE_SQUARED = SQUARED(10.0f);
-static const float PICKUP_RESPAWN_WAIT = 3.0f;
+static const float PICKUP_RESPAWN_WAIT = 4.0f;
 static const float SUDDEN_DEATH_PICKUP_RESPAWN_WAIT = 2.0f;
+
+static const float PICKUP_HELD_WEAPON_WEIGHT_COEF = 0.33f;
+// pickup spawn weights default to a 0-10 scale where 5 is an average
+// spawn rate; only the ratios between weights matter. These are the
+// defaults, maps can override any of them (see mapEntry). The max is
+// above the default scale so maps can feature a weapon by giving it the
+// max weight
+#define MAX_PICKUP_SPAWN_WEIGHT 15.0f
 
 // ammo crates refill the picking drone's weapons; in combo training
 // episodes they're the only pickups
-#define AMMO_CRATE_SPAWN_WEIGHT 1.5f
+#define AMMO_CRATE_SPAWN_WEIGHT 5.0f
 // pickup type of an ammo crate in the obs, one past the last weapon
 #define AMMO_CRATE_OBS_TYPE _NUM_WEAPONS
 
@@ -220,19 +228,23 @@ static const float DRONE_BURST_RADIUS_MIN = 3.5f;
 static const float DRONE_BURST_IMPACT_BASE = 140.0f;
 static const float DRONE_BURST_IMPACT_MIN = 35.0f;
 static const float DRONE_BURST_COOLDOWN = 0.5f;
-static const float DRONE_BURST_ACTIVE_TIME = 0.1f;
+static const float DRONE_BURST_ACTIVE_TIME = 0.15f;
 
 static const float DRONE_SHIELD_RADIUS = DRONE_RADIUS * 1.5f;
 static const float DRONE_SHIELD_HEALTH = 150.0f;
 static const float DRONE_SHIELD_START_DURATION = 1.5f;
 static const float DRONE_SHIELD_RESPAWN_DURATION = 3.0f;
 static const float DRONE_SHIELD_EXPLOSION_REDUCTION = 0.33f;
+static const float DRONE_SHIELD_FORCE_REDUCTION = 0.33f;
 static const float DRONE_SHIELD_HEALTH_IMPULSE_COEF = 0.5f;
 static const float DRONE_SHIELD_HEALTH_EXPLOSION_COEF = 0.8;
 static const float DRONE_SHIELD_BREAK_ENERGY_COST = -0.33f;
 static const float DRONE_SHIELD_BREAK_ENERGY_REFILL = 0.33f;
 
 #define PROJECTILE_ENERGY_REFILL_COEF 0.001f
+// scales the burst impulse applied to a drone's own projectiles when
+// boosting them; deflecting projectiles isn't affected
+#define PROJECTILE_BURST_BOOST_COEF 1.0f
 static const float EXPLOSION_ENERGY_REFILL_COEF = 1.75f;
 
 static const uint8_t DRONE_PIECE_COUNT = 5;
@@ -258,7 +270,8 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define STANDARD_MASS MASS(STANDARD_DENSITY, STANDARD_RADIUS)
 #define STANDARD_INV_MASS INV_MASS(STANDARD_MASS)
 #define STANDARD_BOUNCE 2
-#define STANDARD_SPAWN_WEIGHT 0
+#define STANDARD_ENERGY_REFILL_COEF 5.0f
+#define STANDARD_SPAWN_WEIGHT 0.0f
 
 #define MACHINEGUN_AMMO 50
 #define MACHINEGUN_PROJECTILES 1
@@ -273,11 +286,12 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define MACHINEGUN_MASS MASS(MACHINEGUN_DENSITY, MACHINEGUN_RADIUS)
 #define MACHINEGUN_INV_MASS INV_MASS(MACHINEGUN_MASS)
 #define MACHINEGUN_BOUNCE 1
-#define MACHINEGUN_ENERGY_REFILL_COEF 0.2f
-#define MACHINEGUN_SPAWN_WEIGHT 3.0f
+#define MACHINEGUN_ENERGY_REFILL_COEF 0.5f
+#define MACHINEGUN_SPAWN_WEIGHT 5.0f
 #define MACHINEGUN_SWAY (5.7f * PI / 180.0f)
 #define MACHINEGUN_SWAY_HEAT 120.0f
-#define MACHINEGUN_HEAT_BUILDUP 10
+#define MACHINEGUN_HEAT_BUILDUP 11
+#define MACHINEGUN_HEAT_COOL 100.0f
 
 #define SNIPER_AMMO 3
 #define SNIPER_PROJECTILES 1
@@ -293,7 +307,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define SNIPER_INV_MASS INV_MASS(SNIPER_MASS)
 #define SNIPER_BOUNCE 0
 #define SNIPER_ENERGY_REFILL_COEF 1.2f
-#define SNIPER_SPAWN_WEIGHT 3.0f
+#define SNIPER_SPAWN_WEIGHT 5.0f
 
 #define SHOTGUN_AMMO 8
 #define SHOTGUN_PROJECTILES 8
@@ -308,12 +322,13 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define SHOTGUN_MASS MASS(SHOTGUN_DENSITY, SHOTGUN_RADIUS)
 #define SHOTGUN_INV_MASS INV_MASS(SHOTGUN_MASS)
 #define SHOTGUN_BOUNCE 0
-#define SHOTGUN_ENERGY_REFILL_COEF 0.5f
-#define SHOTGUN_SPAWN_WEIGHT 3.0f
+#define SHOTGUN_ENERGY_REFILL_COEF 1.5f
+#define SHOTGUN_BURST_BOOST_COEF 0.75f
+#define SHOTGUN_SPAWN_WEIGHT 5.0f
 #define SHOTGUN_SPREAD (8.0f * PI / 180.0f)
 #define SHOTGUN_SPREAD_JITTER (1.0f * PI / 180.0f)
 
-#define IMPLODER_AMMO 1
+#define IMPLODER_AMMO 2
 #define IMPLODER_PROJECTILES 1
 #define IMPLODER_RECOIL_MAGNITUDE 65.0f
 #define IMPLODER_FIRE_MAGNITUDE 60.0f
@@ -326,7 +341,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define IMPLODER_MASS MASS(IMPLODER_DENSITY, IMPLODER_RADIUS)
 #define IMPLODER_INV_MASS INV_MASS(IMPLODER_MASS)
 #define IMPLODER_BOUNCE 0
-#define IMPLODER_SPAWN_WEIGHT 1.0f
+#define IMPLODER_SPAWN_WEIGHT 5.0f
 #define IMPLODER_EXPLOSION_RADIUS 15.0f
 #define IMPLODER_EXPLOSION_IMPULSE -250.0f
 
@@ -360,9 +375,10 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define FLAK_CANNON_MASS MASS(FLAK_CANNON_DENSITY, FLAK_CANNON_RADIUS)
 #define FLAK_CANNON_INV_MASS INV_MASS(FLAK_CANNON_MASS)
 #define FLAK_CANNON_BOUNCE INFINITE
+#define FLAK_CANNON_BURST_BOOST_COEF 0.8f
 #define FLAK_CANNON_SAFE_DISTANCE 25.0f
 #define FLAK_CANNON_PROXIMITY_RADIUS 2.0f
-#define FLAK_CANNON_SPAWN_WEIGHT 2.0f
+#define FLAK_CANNON_SPAWN_WEIGHT 5.0f
 #define FLAK_CANNON_EXPLOSION_RADIUS 7.5f
 #define FLAK_CANNON_EXPLOSION_IMPULSE 15.0f
 
@@ -379,7 +395,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define MINE_LAUNCHER_MASS MASS(MINE_LAUNCHER_DENSITY, MINE_LAUNCHER_RADIUS)
 #define MINE_LAUNCHER_INV_MASS INV_MASS(MINE_LAUNCHER_MASS)
 #define MINE_LAUNCHER_BOUNCE INFINITE // this is to avoid mines sometimes exploding when hitting walls
-#define MINE_LAUNCHER_SPAWN_WEIGHT 2.0f
+#define MINE_LAUNCHER_SPAWN_WEIGHT 5.0f
 #define MINE_LAUNCHER_EXPLOSION_RADIUS 15.0f
 #define MINE_LAUNCHER_EXPLOSION_IMPULSE 200.0f
 #define MINE_LAUNCHER_PROXIMITY_RADIUS 7.5f
@@ -387,7 +403,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define BLACK_HOLE_AMMO 3
 #define BLACK_HOLE_PROJECTILES 1
 #define BLACK_HOLE_RECOIL_MAGNITUDE 75.0f
-#define BLACK_HOLE_FIRE_MAGNITUDE 125.0f
+#define BLACK_HOLE_FIRE_MAGNITUDE 175.0f
 #define BLACK_HOLE_DAMPING 0.0f
 #define BLACK_HOLE_CHARGE 0.75f
 #define BLACK_HOLE_COOL_DOWN 1.0f
@@ -397,7 +413,9 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define BLACK_HOLE_MASS MASS(BLACK_HOLE_DENSITY, BLACK_HOLE_RADIUS)
 #define BLACK_HOLE_INV_MASS INV_MASS(BLACK_HOLE_MASS)
 #define BLACK_HOLE_BOUNCE 1
-#define BLACK_HOLE_SPAWN_WEIGHT 2.0f
+#define BLACK_HOLE_ENERGY_REFILL_COEF 0.25f
+#define BLACK_HOLE_PULL_ENERGY_REFILL_COEF 0.3f
+#define BLACK_HOLE_SPAWN_WEIGHT 5.0f
 #define BLACK_HOLE_PROXIMITY_RADIUS 10.0f
 #define BLACK_HOLE_PARENT_IGNORE_DISTANCE BLACK_HOLE_PROXIMITY_RADIUS * 1.5f
 #define BLACK_HOLE_PULL_MAGNITUDE -350.0f
@@ -417,7 +435,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define NUKE_MASS MASS(NUKE_DENSITY, NUKE_RADIUS)
 #define NUKE_INV_MASS INV_MASS(NUKE_MASS)
 #define NUKE_BOUNCE 0
-#define NUKE_SPAWN_WEIGHT 0.5f
+#define NUKE_SPAWN_WEIGHT 2.5f
 #define NUKE_EXPLOSION_RADIUS 35.0f
 #define NUKE_EXPLOSION_IMPULSE 500.0f
 
@@ -434,9 +452,9 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define GRAPPLE_MASS MASS(GRAPPLE_DENSITY, GRAPPLE_RADIUS)
 #define GRAPPLE_INV_MASS INV_MASS(GRAPPLE_MASS)
 #define GRAPPLE_BOUNCE INFINITE // this is to avoid grapples getting destroyed before they can create a weld joint
-#define GRAPPLE_SPAWN_WEIGHT 2.0f
+#define GRAPPLE_SPAWN_WEIGHT 4.0f
 #define GRAPPLE_MOTOR_SPEED 100.0f
-#define GRAPPLE_MOTOR_FORCE 225.0f
+#define GRAPPLE_MOTOR_FORCE 250.0f
 #define GRAPPLE_SLACK 3.0f
 #define GRAPPLE_DAMPING_RATIO 0.1f
 #define GRAPPLE_MAX_STRETCH 5.0f
@@ -466,6 +484,7 @@ static const weaponInformation unsetWeapon = {
     .explodesOnDroneHit = false,
     .hasSensor = false,
     .energyRefillCoef = 0.0f,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
     .spawnWeight = 0.0f,
 };
 
@@ -490,7 +509,8 @@ static const weaponInformation standard = {
     .destroyedOnDroneHit = false,
     .explodesOnDroneHit = false,
     .hasSensor = false,
-    .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF,
+    .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF * STANDARD_ENERGY_REFILL_COEF,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
     .spawnWeight = STANDARD_SPAWN_WEIGHT,
 };
 
@@ -516,6 +536,7 @@ static const weaponInformation machineGun = {
     .explodesOnDroneHit = false,
     .hasSensor = false,
     .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF * MACHINEGUN_ENERGY_REFILL_COEF,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
     .spawnWeight = MACHINEGUN_SPAWN_WEIGHT,
 };
 
@@ -541,6 +562,7 @@ static const weaponInformation sniper = {
     .explodesOnDroneHit = false,
     .hasSensor = false,
     .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF * SNIPER_ENERGY_REFILL_COEF,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
     .spawnWeight = SNIPER_SPAWN_WEIGHT,
 };
 
@@ -566,6 +588,7 @@ static const weaponInformation shotgun = {
     .explodesOnDroneHit = false,
     .hasSensor = false,
     .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF * SHOTGUN_ENERGY_REFILL_COEF,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF * SHOTGUN_BURST_BOOST_COEF,
     .spawnWeight = SHOTGUN_SPAWN_WEIGHT,
 };
 
@@ -591,6 +614,7 @@ static const weaponInformation imploder = {
     .explodesOnDroneHit = true,
     .hasSensor = false,
     .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
     .spawnWeight = IMPLODER_SPAWN_WEIGHT,
 };
 
@@ -616,6 +640,7 @@ static const weaponInformation accelerator = {
     .explodesOnDroneHit = false,
     .hasSensor = false,
     .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
     .spawnWeight = ACCELERATOR_SPAWN_WEIGHT,
 };
 
@@ -641,6 +666,7 @@ static const weaponInformation flakCannon = {
     .explodesOnDroneHit = false,
     .hasSensor = true,
     .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
     .spawnWeight = FLAK_CANNON_SPAWN_WEIGHT,
 };
 
@@ -666,6 +692,7 @@ static const weaponInformation mineLauncher = {
     .explodesOnDroneHit = false,
     .hasSensor = true,
     .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
     .spawnWeight = MINE_LAUNCHER_SPAWN_WEIGHT,
 };
 
@@ -690,7 +717,8 @@ static const weaponInformation blackHole = {
     .destroyedOnDroneHit = false,
     .explodesOnDroneHit = false,
     .hasSensor = true,
-    .energyRefillCoef = 0.0f,
+    .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF * BLACK_HOLE_ENERGY_REFILL_COEF,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
     .spawnWeight = BLACK_HOLE_SPAWN_WEIGHT,
 };
 
@@ -716,6 +744,7 @@ static const weaponInformation nuke = {
     .explodesOnDroneHit = true,
     .hasSensor = false,
     .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
     .spawnWeight = NUKE_SPAWN_WEIGHT,
 };
 
@@ -741,6 +770,7 @@ static const weaponInformation grapple = {
     .explodesOnDroneHit = false,
     .hasSensor = false,
     .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
     .spawnWeight = GRAPPLE_SPAWN_WEIGHT,
 };
 

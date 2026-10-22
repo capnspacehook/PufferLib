@@ -77,6 +77,7 @@ static mapEntry prototypeArenaMap = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 6,
     .maxSuddenDeathWalls = 4,
+    .weaponSpawnWeights = {[MACHINEGUN_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
 static const char snipersLayout[] = {
@@ -113,6 +114,7 @@ static mapEntry snipersMap = {
     .hasSetFloatingWalls = false,
     .weaponPickups = 6,
     .maxSuddenDeathWalls = 4,
+    .weaponSpawnWeights = {[SNIPER_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
 static const char roomsLayout[] = {
@@ -149,6 +151,7 @@ static mapEntry roomsMap = {
     .hasSetFloatingWalls = false,
     .weaponPickups = 8,
     .maxSuddenDeathWalls = 5,
+    .weaponSpawnWeights = {[SHOTGUN_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
 static const char xArenaLayout[] = {
@@ -187,6 +190,7 @@ static mapEntry xArena = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 6,
     .maxSuddenDeathWalls = 6,
+    .weaponSpawnWeights = {[NUKE_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
 static const char crossBounceLayout[] = {
@@ -299,6 +303,7 @@ static mapEntry foamPitMap = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 5,
     .maxSuddenDeathWalls = 5,
+    .weaponSpawnWeights = {[IMPLODER_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
 static const char siegeLayout[] = {
@@ -338,6 +343,7 @@ static mapEntry siegeMap = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 5,
     .maxSuddenDeathWalls = 8,
+    .weaponSpawnWeights = {[GRAPPLE_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
 static const char pinballLayout[] = {
@@ -408,13 +414,15 @@ static mapEntry moatMap = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 6,
     .maxSuddenDeathWalls = 4,
+    .weaponSpawnWeights = {[MINE_LAUNCHER_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
 static const char hourglassLayout[] = {
     'B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B',
-    'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
-    'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
-    'B','O','O','O','O','O','O','O','O','O','O','O','O','W','O','O','O','O','B',
+    'B','O','O','O','O','O','B','B','B','B','B','B','B','O','O','O','O','O','B',
+    'B','O','O','O','O','O','O','B','B','B','B','B','O','O','O','O','O','O','B',
+    'B','O','O','O','O','O','O','O','B','B','B','O','O','O','O','O','O','O','B',
+    'B','O','O','O','O','O','O','O','O','B','O','O','O','O','w','O','O','O','B',
     'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
     'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
     'W','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','W',
@@ -430,22 +438,24 @@ static const char hourglassLayout[] = {
     'W','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','W',
     'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
     'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
-    'B','O','O','O','O','W','O','O','O','O','O','O','O','O','O','O','O','O','B',
-    'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
-    'B','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','O','B',
+    'B','O','O','O','w','O','O','O','O','B','O','O','O','O','O','O','O','O','B',
+    'B','O','O','O','O','O','O','O','B','B','B','O','O','O','O','O','O','O','B',
+    'B','O','O','O','O','O','O','B','B','B','B','B','O','O','O','O','O','O','B',
+    'B','O','O','O','O','O','B','B','B','B','B','B','B','O','O','O','O','O','B',
     'B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B','B',
 };
 
 static mapEntry hourglassMap = {
     .layout = hourglassLayout,
     .columns = 19,
-    .rows = 23,
-    .randFloatingStandardWalls = 2,
+    .rows = 25,
+    .randFloatingStandardWalls = 0,
     .randFloatingBouncyWalls = 0,
-    .randFloatingDeathWalls = 2,
+    .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 5,
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 4,
+    .weaponSpawnWeights = {[BLACK_HOLE_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
 static const char jawsLayout[] = {
@@ -550,6 +560,7 @@ static mapEntry crossroadsMap = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 5,
     .maxSuddenDeathWalls = 5,
+    .weaponSpawnWeights = {[FLAK_CANNON_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 // clang-format on
 
@@ -789,11 +800,46 @@ bool posValidDroneSpawnPoint(const iwEnv *e, const b2Vec2 pos) {
     return true;
 }
 
+// applies a map's pickup spawn weight overrides to the default weights
+void resolvePickupSpawnWeights(const uint8_t mapIdx) {
+    mapEntry *map = maps[mapIdx];
+    float totalWeight = 0.0f;
+    for (uint8_t i = 0; i < NUM_WEAPONS; i++) {
+        float weight = weaponInfos[i]->spawnWeight;
+        if (map->weaponSpawnWeights[i].set) {
+            if (i == UNSET_WEAPON || i == STANDARD_WEAPON) {
+                ERRORF("map %d overrides the spawn weight of weapon %d which can't be spawned", mapIdx, i);
+            }
+            weight = map->weaponSpawnWeights[i].weight;
+        }
+        if (weight < 0.0f || weight > MAX_PICKUP_SPAWN_WEIGHT) {
+            ERRORF("map %d weapon %d spawn weight %f is outside of [0, %f]", mapIdx, i, weight, MAX_PICKUP_SPAWN_WEIGHT);
+        }
+        map->weaponWeights[i] = weight;
+        totalWeight += weight;
+    }
+
+    float crateWeight = AMMO_CRATE_SPAWN_WEIGHT;
+    if (map->crateSpawnWeight.set) {
+        crateWeight = map->crateSpawnWeight.weight;
+    }
+    if (crateWeight < 0.0f || crateWeight > MAX_PICKUP_SPAWN_WEIGHT) {
+        ERRORF("map %d ammo crate spawn weight %f is outside of [0, %f]", mapIdx, crateWeight, MAX_PICKUP_SPAWN_WEIGHT);
+    }
+    map->crateWeight = crateWeight;
+    totalWeight += crateWeight;
+
+    if (map->weaponPickups != 0 && totalWeight == 0.0f) {
+        ERRORF("map %d spawns pickups but every pickup spawn weight is 0", mapIdx);
+    }
+}
+
 void initMaps(iwEnv *e) {
     for (uint8_t i = 0; i < NUM_MAPS; i++) {
         setupMap(e, i);
         mapEntry *map = maps[i];
 
+        resolvePickupSpawnWeights(i);
         computeMapBoundsAndQuadrants(e, map);
 
         const uint32_t cellCount = (uint32_t)map->columns * map->rows;

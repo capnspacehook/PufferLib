@@ -783,22 +783,34 @@ void computeObs(iwEnv *e) {
 // picks two different weapons uniformly, ignoring spawn weights so rarely
 // spawned weapons are practiced as much as common ones
 static void randLoadout(iwEnv *e, enum weaponType *active, enum weaponType *inactive) {
-    // the standard weapon is the fallback and not part of loadouts
-    const enum weaponType firstWeapon = STANDARD_WEAPON + 1;
-    *active = randInt(&e->rng, firstWeapon, NUM_WEAPONS - 1);
-    *inactive = randInt(&e->rng, firstWeapon, NUM_WEAPONS - 2);
-    if (*inactive >= *active) {
-        (*inactive)++;
+    // the standard weapon is the fallback and not part of loadouts, and
+    // weapons with 1 ammo are excluded since ammo crates can't refill them
+    // once they're fired
+    enum weaponType candidates[_NUM_WEAPONS];
+    uint8_t numCandidates = 0;
+    for (uint8_t i = STANDARD_WEAPON + 1; i < NUM_WEAPONS; i++) {
+        if (weaponAmmo(i) > 1) {
+            candidates[numCandidates++] = i;
+        }
     }
+    ASSERT(numCandidates >= 2);
+
+    const uint8_t activeIdx = randInt(&e->rng, 0, numCandidates - 1);
+    uint8_t inactiveIdx = randInt(&e->rng, 0, numCandidates - 2);
+    if (inactiveIdx >= activeIdx) {
+        inactiveIdx++;
+    }
+    *active = candidates[activeIdx];
+    *inactive = candidates[inactiveIdx];
 }
 
 static void droneSetLoadout(droneEntity *drone, const enum weaponType active, const enum weaponType inactive) {
     drone->activeWeapon.weaponInfo = weaponInfos[active];
     resetWeapon(&drone->activeWeapon);
-    drone->activeWeapon.ammo = max(weaponAmmo(active), 2);
+    drone->activeWeapon.ammo = weaponAmmo(active);
     drone->inactiveWeapon.weaponInfo = weaponInfos[inactive];
     resetWeapon(&drone->inactiveWeapon);
-    drone->inactiveWeapon.ammo = max(weaponAmmo(inactive), 2);
+    drone->inactiveWeapon.ammo = weaponAmmo(inactive);
 }
 
 void setupEnv(iwEnv *e) {

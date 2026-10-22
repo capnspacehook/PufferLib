@@ -577,19 +577,47 @@ void destroyWall(iwEnv *e, wallEntity *wall, const bool full) {
 
 // picks what a pickup spawns as: in combo episodes always an ammo crate,
 // otherwise a weapon or a crate by spawn weight and how many pickups of
-// each are currently spawned
-void randPickupType(iwEnv *e, weaponPickupEntity *pickup) {
+// each are currently spawned; the map's spawn weights are used, which are
+// the default weights unless the map overrides them
+void randPickupType(iwEnv *e, weaponPickupEntity *pickup, const bool episodeStart) {
     pickup->isCrate = e->comboEp;
     pickup->weapon = UNSET_WEAPON;
     if (!pickup->isCrate) {
         float totalWeight = 0.0f;
+        float heldWeights[_NUM_WEAPONS] = {0};
         float spawnWeights[_NUM_WEAPONS - 1] = {0};
+
+        // reduce the weight of weapons currently being held
+        for (uint8_t i = 0; i < e->numDrones; i++) {
+            const droneEntity *drone = safe_array_get_at(e->drones, i);
+            if (drone->dead) {
+                continue;
+            }
+
+            // if the weapon has the max weight don't reduce it based
+            // off of players holding it; this will make it very unlikely
+            // for both players to have it at once
+            const enum weaponType activeType = drone->activeWeapon.weaponInfo->type;
+            const enum weaponType inactiveType = drone->inactiveWeapon.weaponInfo->type;
+            if (drone->activeWeapon.ammo != 0 && activeType != STANDARD_WEAPON && e->map->weaponWeights[activeType] < MAX_PICKUP_SPAWN_WEIGHT) {
+                heldWeights[activeType] += 1.0f;
+            }
+            if (drone->inactiveWeapon.ammo != 0 && inactiveType != STANDARD_WEAPON && inactiveType != UNSET_WEAPON && e->map->weaponWeights[inactiveType] < MAX_PICKUP_SPAWN_WEIGHT) {
+                heldWeights[inactiveType] += 1.0f;
+            }
+        }
+
         for (uint8_t i = 1; i < NUM_WEAPONS; i++) {
-            spawnWeights[i - 1] = weaponInfos[i]->spawnWeight / ((e->spawnedWeaponPickups[i] + 1) * 2.0f);
+            const float discount = (float)e->spawnedWeaponPickups[i] + (heldWeights[i] * PICKUP_HELD_WEAPON_WEIGHT_COEF) + 1.0f;
+            spawnWeights[i - 1] = e->map->weaponWeights[i] / discount;
             totalWeight += spawnWeights[i - 1];
         }
-        const float crateWeight = AMMO_CRATE_SPAWN_WEIGHT / ((e->spawnedCrates + 1) * 2.0f);
-        totalWeight += crateWeight;
+
+        float crateWeight = 0.0f;
+        if (!episodeStart) {
+            crateWeight = e->map->crateWeight / (e->spawnedCrates + 1);
+            totalWeight += crateWeight;
+        }
 
         const float randPick = randFloat(&e->rng, 0.0f, totalWeight);
         float cumulativeWeight = 0.0f;
@@ -646,7 +674,7 @@ void createWeaponPickup(iwEnv *e) {
     }
 
     weaponPickupEntity *pickup = fastCalloc(1, sizeof(weaponPickupEntity));
-    randPickupType(e, pickup);
+    randPickupType(e, pickup, true);
     pickup->respawnWait = 0.0f;
     pickup->floatingWallsTouching = 0;
     pickup->pos = pos;
@@ -2106,7 +2134,11 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
             stats->boostedShotsFired[projectile->weaponInfo->type]++;
         }
 
-        b2Body_ApplyLinearImpulseToCenter(bodyID, impulse, true);
+        b2Vec2 projImpulse = impulse;
+        if (boost) {
+            projImpulse = b2MulSV(projectile->weaponInfo->burstBoostCoef, impulse);
+        }
+        b2Body_ApplyLinearImpulseToCenter(bodyID, projImpulse, true);
         if (!isImplosion) {
             switch (projectile->weaponInfo->type) {
             case MINE_LAUNCHER_WEAPON:
@@ -2182,7 +2214,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         shieldEntity *shield = drone->shield;
         const float explosionStrength = fabsf(magnitude);
         if (!ctx->isBurst && drone->team != ctx->parentDrone->team && shield == NULL) {
-            const float energyRefill = explosionStrength * DRONE_INV_MASS / MAX_SPEED * EXPLOSION_ENERGY_REFILL_COEF;
+            const float energyRefill = explosionStrength * (DRONE_INV_MASS / MAX_SPEED) * EXPLOSION_ENERGY_REFILL_COEF;
             droneAddEnergy(ctx->parentDrone, energyRefill);
         } else if (shield != NULL && shield->health > 0.0f) {
             const float damage = fabsf(magnitude) * DRONE_SHIELD_HEALTH_EXPLOSION_COEF;
@@ -2867,7 +2899,7 @@ void weaponStep(const iwEnv *e, weaponSlot *weapon) {
         weapon->cooldown = max(weapon->cooldown - e->deltaTime, -e->deltaTime);
     } else {
         weapon->cooldown = 0.0f;
-        weapon->heat = max(weapon->heat - (120.0f * e->deltaTime), 0);
+        weapon->heat = max(weapon->heat - (MACHINEGUN_HEAT_COOL * e->deltaTime), 0);
     }
 }
 
@@ -3111,7 +3143,7 @@ void handleBlackHolePull(iwEnv *e, projectileEntity *projectile) {
 
         float magnitude = (BLACK_HOLE_PULL_MAGNITUDE + (-1.0f * parentSpeed)) * perimeter * scale;
         if (hasShield) {
-            magnitude *= DRONE_SHIELD_EXPLOSION_REDUCTION;
+            magnitude *= DRONE_SHIELD_FORCE_REDUCTION;
         }
         const b2Vec2 force = b2MulSV(magnitude, direction);
         const physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = BLACK_HOLE_WEAPON};
@@ -3124,10 +3156,15 @@ void handleBlackHolePull(iwEnv *e, projectileEntity *projectile) {
                 b2Body_ApplyForce(wall->bodyID, force, output.pointB, true);
             }
         } else if (ent->type == DRONE_ENTITY) {
-            droneEntity *drone = ent->entity;
             applyTrackedForce(e, drone->bodyID, drone->physicsTracking, force, projectile->droneIdx, source);
-            if (projectile->droneIdx != drone->idx) {
-                markAssistSetup(e, safe_array_get_at(e->drones, projectile->droneIdx), drone, ASSIST_BLACK_HOLE);
+
+            droneEntity *parentDrone = safe_array_get_at(e->drones, projectile->droneIdx);
+            if (projectile->droneIdx != drone->idx && parentDrone->team != drone->team) {
+                // add energy to the drone that fired the projectile
+                const float energyRefill = fabsf(magnitude) * e->deltaTime * (DRONE_INV_MASS / MAX_SPEED) * BLACK_HOLE_PULL_ENERGY_REFILL_COEF;
+                droneAddEnergy(parentDrone, energyRefill);
+
+                markAssistSetup(e, parentDrone, drone, ASSIST_BLACK_HOLE);
             }
         } else {
             b2Body_ApplyForceToCenter(bodyID, force, true);
@@ -3357,7 +3394,7 @@ void weaponPickupsStep(iwEnv *e) {
             continue;
         }
         pickup->pos = pos;
-        randPickupType(e, pickup);
+        randPickupType(e, pickup, false);
 
         const int16_t cellIdx = entityPosToCellIdx(e, pos);
         if (cellIdx == -1) {
@@ -3546,8 +3583,9 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             trackImpulse(e, wall->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), projectile->droneIdx, source);
         }
 
-        if (ent->type == BOUNCY_WALL_ENTITY) {
-            // always allow projectiles to bounce off bouncy walls
+        if (ent->type == BOUNCY_WALL_ENTITY && projectile->weaponInfo->type != GRAPPLE_WEAPON) {
+            // always allow projectiles to bounce off bouncy walls, 
+            // except for grapples which attach to all walls
             return 0;
         }
     } else if (ent->type == SHIELD_ENTITY) {
