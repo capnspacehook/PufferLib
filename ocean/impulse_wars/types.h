@@ -342,6 +342,9 @@ typedef struct droneEntity {
     weaponSlot activeWeapon;
     weaponSlot inactiveWeapon;
     float swapCooldown;
+
+    bool swapHeld;
+    bool weaponActionHeld;
     bool triggerHeld;
     bool triggerSuppressed;
 

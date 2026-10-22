@@ -1456,10 +1456,10 @@ void destroyGrapplesAttachedTo(iwEnv *e, const entity *ent) {
     }
 }
 
-void droneSwapWeapon(droneEntity *drone, const bool triggerDown, const bool respectCooldown) {
+bool droneSwapWeapon(droneEntity *drone, const bool triggerDown, const bool respectCooldown) {
     const enum weaponType inactiveWeaponType = drone->inactiveWeapon.weaponInfo->type;
     if ((respectCooldown && drone->swapCooldown > 0.0f) || inactiveWeaponType == UNSET_WEAPON) {
-        return;
+        return false;
     }
 
     // swapping a charged weapon while holding the trigger shouldn't
@@ -1482,6 +1482,8 @@ void droneSwapWeapon(droneEntity *drone, const bool triggerDown, const bool resp
     if (respectCooldown) {
         drone->swapCooldown = DRONE_SWAP_COOLDOWN;
     }
+
+    return true;
 }
 
 void droneUnsetActiveWeapon(iwEnv *e, droneEntity *drone) {
@@ -1552,6 +1554,8 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
 
     b2Body_Disable(drone->bodyID);
     drone->swapCooldown = 0.0f;
+    drone->swapHeld = false;
+    drone->weaponActionHeld = false;
     drone->triggerHeld = false;
     drone->triggerSuppressed = false;
     drone->braking = false;

@@ -335,10 +335,10 @@ agentActions getPlayerInputs(iwEnv *e, droneEntity *drone, uint8_t gamepadIdx) {
         if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_RIGHT_TRIGGER_1)) {
             actions.chargingBurst = true;
         }
-        if (IsGamepadButtonPressed(gamepadIdx, GAMEPAD_BUTTON_LEFT_TRIGGER_1)) {
+        if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_LEFT_TRIGGER_1)) {
             actions.swapWeapon = true;
         }
-        if (IsGamepadButtonPressed(gamepadIdx, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) {
+        if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) {
             actions.weaponAction = true;
         }
 

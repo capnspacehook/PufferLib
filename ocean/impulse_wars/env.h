@@ -1425,12 +1425,19 @@ bool stepPhysicsFrame(iwEnv *e, const agentActions stepActions[], int8_t *winner
         }
         agentActions actions = stepActions[i];
 
-        if (actions.swapWeapon) {
-            droneSwapWeapon(drone, actions.trigger, true);
+        // Force button press semantics for swapping and weapon
+        // actions; only the first input is registered. If the
+        // swap input is pressed during the cooldown it doesn't
+        // count until the cooldown is over.
+        if (!actions.swapWeapon) {
+            drone->swapHeld = false;
+        } else if (!drone->swapHeld) {
+            drone->swapHeld = droneSwapWeapon(drone, actions.trigger, true);
         }
-        if (actions.weaponAction) {
+        if (actions.weaponAction && !drone->weaponActionHeld) {
             droneWeaponAction(e, drone);
         }
+        drone->weaponActionHeld = actions.weaponAction;
 
         if (drone->triggerSuppressed) {
             drone->triggerSuppressed = actions.trigger;
