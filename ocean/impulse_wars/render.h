@@ -160,6 +160,26 @@ static void unloadRenderTextures(rayClient *client) {
     UnloadRenderTexture(client->explosionSceneTex);
 }
 
+#ifndef __EMSCRIPTEN__
+#define GAMEPAD_MAPPINGS_PATH "resources/impulse_wars/gamecontrollerdb.txt"
+
+// GLFW matches gamepad mappings on the full GUID, which includes the
+// controller's firmware version. Its built-in DB is outdated, so controllers
+// it doesn't know are treated as plain joysticks and report no gamepad input.
+// Load the community SDL controller DB to cover newer controllers.
+static void addMissingGamepadMappings(void) {
+    if (!FileExists(GAMEPAD_MAPPINGS_PATH)) {
+        TraceLog(LOG_WARNING, "gamepad mappings file %s not found", GAMEPAD_MAPPINGS_PATH);
+        return;
+    }
+    char *mappings = LoadFileText(GAMEPAD_MAPPINGS_PATH);
+    if (mappings != NULL) {
+        SetGamepadMappings(mappings);
+        UnloadFileText(mappings);
+    }
+}
+#endif
+
 rayClient *createRayClient() {
     unsigned int windowFlags = FLAG_MSAA_4X_HINT;
 #ifndef __EMSCRIPTEN__
@@ -169,6 +189,7 @@ rayClient *createRayClient() {
     InitWindow(DEFAULT_WIDTH, DEFAULT_HEIGHT, "Impulse Wars");
 
 #ifndef __EMSCRIPTEN__
+    addMissingGamepadMappings();
     MaximizeWindow();
 
     // GLFW reports the maximized client area through its resize event. Pump
