@@ -3,13 +3,13 @@
 
 #include "game.h"
 
-// weapon slot management and staying out of kill geometry, which every
-// personality uses
-#define BOT_FEATURES_SLOTS (BOT_FEAT_WEAPON_SLOTS | BOT_FEAT_SAFE_GEOMETRY)
+// behaviors every personality uses: staying out of kill geometry and using
+// the utility
+#define BOT_FEATURES_BASE (BOT_FEAT_SAFE_GEOMETRY | BOT_FEAT_UTILITY)
 
 // optional behaviors the scripted bot uses by default; see enum botFeature
 #ifndef BOT_FEATURES_DEFAULT
-#define BOT_FEATURES_DEFAULT (BOT_FEAT_AMMO_RESERVE | BOT_FEAT_SHOTGUN_BOOST | BOT_FEAT_SHOTGUN_RANGE | BOT_FEATURES_SLOTS)
+#define BOT_FEATURES_DEFAULT (BOT_FEAT_AMMO_RESERVE | BOT_FEAT_SHOTGUN_BOOST | BOT_FEAT_SHOTGUN_RANGE | BOT_FEATURES_BASE)
 #endif
 
 static const uint8_t NUM_NEAR_WALLS = 3;
@@ -83,10 +83,12 @@ static inline float forcedDistance(const float accel, const float linearDamping,
 // returns true if drone can fire in the given direction without hitting
 // or getting too close to a death wall before it can fire again; the
 // planned movement is included in the predicted position
+bool recoilPathSafe(iwEnv *e, const droneEntity *drone, const float recoilMagnitude, const float shotWait, const b2Vec2 direction, const b2Vec2 move);
+
 bool safeToFireMoving(iwEnv *e, const droneEntity *drone, const b2Vec2 direction, const b2Vec2 move) {
     // don't shoot shotgun point blank at walls, the shots will immediately
     // bounce back and send the drone flying uncontrollably
-    if (drone->activeWeapon.weaponInfo->type == SHOTGUN_WEAPON) {
+    if (drone->weapon.weaponInfo->type == SHOTGUN_WEAPON) {
         const b2Vec2 rayEnd = b2MulAdd(drone->pos, SHOTGUN_DANGER_DISTANCE, direction);
         const b2Vec2 translation = b2Sub(rayEnd, drone->pos);
         const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE};
@@ -97,13 +99,19 @@ bool safeToFireMoving(iwEnv *e, const droneEntity *drone, const b2Vec2 direction
     }
 
     float shotWait;
-    if (drone->activeWeapon.ammo > 1) {
-        shotWait = ((drone->activeWeapon.weaponInfo->cooldown + drone->activeWeapon.weaponInfo->maxCharge) / e->deltaTime) * 1.5f;
+    if (drone->weapon.ammo > 1) {
+        shotWait = ((drone->weapon.weaponInfo->cooldown + drone->weapon.weaponInfo->maxCharge) / e->deltaTime) * 1.5f;
     } else {
         const weaponInformation *standardInfo = weaponInfos[STANDARD_WEAPON];
         shotWait = (standardInfo->cooldown / e->deltaTime) * 1.5f;
     }
-    const float recoilSpeed = -drone->activeWeapon.weaponInfo->recoilMagnitude * DRONE_INV_MASS;
+    return recoilPathSafe(e, drone, drone->weapon.weaponInfo->recoilMagnitude, shotWait, direction, move);
+}
+
+// whether the recoil of a shot along direction, followed by moving along
+// move for shotWait frames, keeps the drone clear of death walls and drones
+bool recoilPathSafe(iwEnv *e, const droneEntity *drone, const float recoilMagnitude, const float shotWait, const b2Vec2 direction, const b2Vec2 move) {
+    const float recoilSpeed = -recoilMagnitude * DRONE_INV_MASS;
     const b2Vec2 recoil = b2MulSV(recoilSpeed, direction);
     b2Vec2 recoilPos = positionWithDamping(e, drone, recoil, DRONE_LINEAR_DAMPING, shotWait);
     if (!b2Equal(move, b2Vec2_zero)) {
@@ -142,6 +150,13 @@ bool safeToFireMoving(iwEnv *e, const droneEntity *drone, const b2Vec2 direction
 
 bool safeToFire(iwEnv *e, const droneEntity *drone, const b2Vec2 direction) {
     return safeToFireMoving(e, drone, direction, b2Vec2_zero);
+}
+
+// whether the recoil of firing the utility along direction is safe
+bool safeToFireUtility(iwEnv *e, const droneEntity *drone, const b2Vec2 direction) {
+    const weaponInformation *info = drone->utility.utilityInfo->projectileInfo;
+    const float shotWait = (info->cooldown / e->deltaTime) * 1.5f;
+    return recoilPathSafe(e, drone, info->recoilMagnitude, shotWait, direction, b2Vec2_zero);
 }
 
 // engagement range of the flak cannon; flak
@@ -211,6 +226,39 @@ static const float trapperWeaponValue[_NUM_WEAPONS] = {
 
 static const float fundamentalsWeaponValue[_NUM_WEAPONS] = {0};
 
+// how many seconds of fighting a utility pickup is worth
+static const float botUtilityValue[_NUM_UTILITIES] = {
+    [GRAPPLE_UTILITY] = 2.0f,
+    [MINE_UTILITY] = 2.5f,
+};
+
+static const float evaderUtilityValue[_NUM_UTILITIES] = {
+    [GRAPPLE_UTILITY] = 3.0f,
+    [MINE_UTILITY] = 1.0f,
+};
+
+static const float camperUtilityValue[_NUM_UTILITIES] = {
+    [GRAPPLE_UTILITY] = 1.0f,
+    [MINE_UTILITY] = 2.0f,
+};
+
+static const float rusherUtilityValue[_NUM_UTILITIES] = {
+    [GRAPPLE_UTILITY] = 3.0f,
+    [MINE_UTILITY] = 0.5f,
+};
+
+static const float trapperUtilityValue[_NUM_UTILITIES] = {
+    [GRAPPLE_UTILITY] = 1.0f,
+    [MINE_UTILITY] = 5.0f,
+};
+
+static const float turtleUtilityValue[_NUM_UTILITIES] = {
+    [GRAPPLE_UTILITY] = 0.5f,
+    [MINE_UTILITY] = 3.0f,
+};
+
+static const float fundamentalsUtilityValue[_NUM_UTILITIES] = {0};
+
 typedef struct botPreset {
     // default feature mask, see enum botFeature
     uint32_t feats;
@@ -220,21 +268,26 @@ typedef struct botPreset {
     float rangeScale;
     // fire against the direction of movement to move faster, see recoilBoost
     bool speedFirst;
-    // with BOT_FEAT_WEAPON_SLOTS, the fraction of a pickup's value it's
-    // worth going for to fill the holster or replace a held weapon; 0
-    // keeps the bot fighting with what it has
-    float holsterPickupScale;
+    // go for pickups worth more than the held weapon; otherwise the bot
+    // keeps fighting with what it has once it has a pickup weapon
+    bool replacesWeapon;
+    // how many seconds of fighting a utility pickup is worth
+    const float *utilityValue;
+    // with BOT_FEAT_UTILITY, grapple the enemy to close in on it, and
+    // grapple a wall away from a close enemy to escape it
+    bool grappleCloses;
+    bool grappleEscapes;
 } botPreset;
 
 static const botPreset botPresets[NUM_BOT_POLICIES] = {
-    [BOT_SITTING_DUCK] = {BOT_FEATURES_DEFAULT, botWeaponValue, 1.0f, false, 0.3f},
-    [BOT_SCRIPTED] = {BOT_FEATURES_DEFAULT, botWeaponValue, 1.0f, false, 0.3f},
-    [BOT_EVADER] = {BOT_FEAT_PROJ_DEFENSE | BOT_FEAT_SNIPER_DODGE | BOT_FEATURES_SLOTS, evaderWeaponValue, 1.0f, true, 0.3f},
-    [BOT_CAMPER] = {BOT_FEAT_AMMO_RESERVE | BOT_FEAT_SNIPER_DODGE | BOT_FEAT_CHARGE_DRAIN | BOT_FEATURES_SLOTS, camperWeaponValue, 1.0f, false, 0.3f},
-    [BOT_RUSHER] = {BOT_FEAT_BURST | BOT_FEAT_BURST_BOOST | BOT_FEAT_KILL_GEOMETRY | BOT_FEAT_SWAP_CYCLE | BOT_FEAT_SHOTGUN_BOOST | BOT_FEAT_SHOTGUN_RANGE | BOT_FEATURES_SLOTS, rusherWeaponValue, 0.4f, true, 0.0f},
-    [BOT_TRAPPER] = {BOT_FEAT_AMMO_RESERVE | BOT_FEAT_PROJ_DEFENSE | BOT_FEAT_MINE_DETONATE | BOT_FEATURES_SLOTS, trapperWeaponValue, 1.0f, false, 0.0f},
-    [BOT_TURTLE] = {BOT_FEAT_AMMO_RESERVE | BOT_FEAT_PROJ_DEFENSE | BOT_FEAT_SNIPER_DODGE | BOT_FEATURES_SLOTS, botWeaponValue, 1.0f, false, 0.3f},
-    [BOT_FUNDAMENTALS] = {BOT_FEAT_AMMO_RESERVE | BOT_FEATURES_SLOTS, fundamentalsWeaponValue, 1.0f, false, 0.0f},
+    [BOT_SITTING_DUCK] = {BOT_FEATURES_DEFAULT, botWeaponValue, 1.0f, false, true, botUtilityValue, true, true},
+    [BOT_SCRIPTED] = {BOT_FEATURES_DEFAULT, botWeaponValue, 1.0f, false, true, botUtilityValue, true, true},
+    [BOT_EVADER] = {BOT_FEAT_PROJ_DEFENSE | BOT_FEAT_SNIPER_DODGE | BOT_FEATURES_BASE, evaderWeaponValue, 1.0f, true, true, evaderUtilityValue, false, true},
+    [BOT_CAMPER] = {BOT_FEAT_AMMO_RESERVE | BOT_FEAT_SNIPER_DODGE | BOT_FEATURES_BASE, camperWeaponValue, 1.0f, false, true, camperUtilityValue, false, true},
+    [BOT_RUSHER] = {BOT_FEAT_BURST | BOT_FEAT_BURST_BOOST | BOT_FEAT_KILL_GEOMETRY | BOT_FEAT_SHOTGUN_BOOST | BOT_FEAT_SHOTGUN_RANGE | BOT_FEATURES_BASE, rusherWeaponValue, 0.4f, true, false, rusherUtilityValue, true, false},
+    [BOT_TRAPPER] = {BOT_FEAT_AMMO_RESERVE | BOT_FEAT_PROJ_DEFENSE | BOT_FEATURES_BASE, trapperWeaponValue, 1.0f, false, false, trapperUtilityValue, false, true},
+    [BOT_TURTLE] = {BOT_FEAT_AMMO_RESERVE | BOT_FEAT_PROJ_DEFENSE | BOT_FEAT_SNIPER_DODGE | BOT_FEATURES_BASE, botWeaponValue, 1.0f, false, true, turtleUtilityValue, false, false},
+    [BOT_FUNDAMENTALS] = {BOT_FEAT_AMMO_RESERVE | BOT_FEATURES_BASE, fundamentalsWeaponValue, 1.0f, false, false, fundamentalsUtilityValue, false, false},
 };
 
 // sets the bot policy and gives every drone that personality and its
@@ -288,7 +341,7 @@ static const float CAMPER_SPOT_SEARCH_DISTANCE = 30.0f;
 static const float CAMPER_SHOT_WAIT = 3.0f;
 static const float SPOT_REACHED_DISTANCE = 3.0f;
 static const float SPOT_WALL_DISTANCE = 4.0f;
-static const float TRAPPER_MINE_RANGE = 20.0f;
+static const float TRAPPER_MINE_RANGE = 30.0f;
 static const float TRAPPER_RANGE = 25.0f;
 static const float TRAPPER_MIN_RANGE = 10.0f;
 static const float TRAPPER_MAX_RANGE = 30.0f;
@@ -315,26 +368,53 @@ static const float SNIPER_TELL_CHARGE = 0.5f;
 static const float SNIPER_URGENT_CHARGE = 0.8f;
 static const float DODGE_HOLD_TIME = 0.5f;
 static const float SNIPER_AIM_COS = 0.966f;
-// with BOT_FEAT_WEAPON_SLOTS, swap only to a weapon this much better suited
-// to the fight than the drawn one
-static const float SWAP_MARGIN = 1.0f;
 // only replace a held weapon with a pickup worth this much more
 static const float PICKUP_REPLACE_MARGIN = 2.0f;
-// pickups replace the drawn weapon, so the weapon to drop is drawn this close
-// to the pickup
-static const float PICKUP_SWAP_DISTANCE = 15.0f;
-// charged weapons are clumsy this close to the enemy
-static const float CHARGED_WEAPON_MIN_RANGE = 12.0f;
-static const float NUKE_MIN_RANGE = 25.0f;
-static const float MINE_MIN_RANGE = 10.0f;
-static const float SHOTGUN_CLOSE_RANGE = 15.0f;
+// mines go off for their owner too, so they're placed and set off at least
+// this far away, outside of the blast
+static const float MINE_SELF_SAFE_DISTANCE = MINE_LAUNCHER_EXPLOSION_RADIUS + 2.0f;
+// own mines are avoided this close, inside of which their blast is strong
+static const float OWN_MINE_HAZARD_RADIUS = MINE_LAUNCHER_EXPLOSION_RADIUS - 3.0f;
+// bots that close in on the enemy mine the walls next to it, as they'd move
+// through a mine on the way; the rest mine the middle of the way
+static const float MINE_CLOSING_PATH_FRACTION = 1.0f;
+// mines are only placed with the enemy at least this far away and none of
+// its projectiles this close, so its shots don't set them off next to the
+// drone; with a line to the enemy they aren't fired this close to straight
+// at it either, where its shots come from
+static const float MINE_PLACE_MIN_ENEMY_DISTANCE = 20.0f;
+static const float MINE_PLACE_PROJECTILE_CLEARANCE = 20.0f;
+static const float MINE_PLACE_ENEMY_AIM_COS = 0.866f;
+// the drone steers away from its own welded mine this close, outside of
+// which it won't set the mine off itself
+static const float OWN_MINE_AVOID_DISTANCE = MINE_LAUNCHER_PROXIMITY_RADIUS + 4.0f;
+// bursts reach this far, and set off mines they hit
+static const float MINE_BURST_DISTANCE = DRONE_BURST_RADIUS_BASE + DRONE_BURST_RADIUS_MIN + MINE_LAUNCHER_RADIUS + 1.0f;
+// with the enemy this much further than the trigger radius from the
+// drone's own mine, the drone gets out of the mine's blast
+static const float MINE_ENEMY_NEAR_MARGIN = 15.0f;
 // own mines are set off when one is this close to the enemy, and only if
-// every one of them is far enough from the drone
+// the drone is outside of its blast
 static const float MINE_DETONATE_DISTANCE = 9.0f;
-static const float MINE_DETONATE_SELF_DISTANCE = 13.0f;
-// with BOT_FEAT_SWAP_CYCLE, swap to the holstered weapon when the drawn one
-// has at least this long left to cool down
-static const float SWAP_CYCLE_MIN_COOLDOWN = 0.3f;
+// grapple the enemy when it's this much further than the weapon's ideal
+// range, and stop reeling once it's within the ideal range or this close
+static const float GRAPPLE_CLOSE_MARGIN = 15.0f;
+static const float GRAPPLE_CLOSE_MIN_DISTANCE = 25.0f;
+static const float GRAPPLE_CLOSE_STOP_DISTANCE = 12.0f;
+static const float GRAPPLE_CLOSE_TIME = 2.5f;
+// grapple a wall at least GRAPPLE_ESCAPE_MIN_ANCHOR away from an enemy this
+// close when low on energy, or always for the evader, and let go when near
+// the wall or once the enemy is far enough
+static const float GRAPPLE_ESCAPE_ENEMY_DISTANCE = 12.0f;
+static const float GRAPPLE_ESCAPE_ENERGY = 0.35f;
+static const float GRAPPLE_ESCAPE_MIN_ANCHOR = 15.0f;
+static const float GRAPPLE_ESCAPE_DONE_ANCHOR = 6.0f;
+static const float GRAPPLE_ESCAPE_DONE_ENEMY = 30.0f;
+static const float GRAPPLE_ESCAPE_TIME = 2.0f;
+// let go of the grapple when it would take this little time to hit a death
+// wall this close at the current speed towards it
+static const float GRAPPLE_DANGER_WALL_DISTANCE = 8.0f;
+static const float GRAPPLE_DANGER_WALL_TIME = 0.5f;
 // with BOT_FEAT_SAFE_GEOMETRY, death walls this close behind the drone as
 // seen from the enemy push it sideways and away
 static const float SAFE_GEOMETRY_WALL_DISTANCE = 15.0f;
@@ -342,9 +422,6 @@ static const float SAFE_GEOMETRY_COS = 0.3f;
 // with BOT_FEAT_KITE, fight an enemy with a shotgun drawn from at least this
 // far away
 static const float KITE_RANGE = 30.0f;
-// with BOT_FEAT_CHARGE_DRAIN, a full charge that starts draining energy is
-// canceled when energy is below this
-static const float CHARGE_DRAIN_ENERGY = 0.4f;
 // with BOT_FEAT_SHOTGUN_BOOST, shotgun shots at an enemy this close are
 // boosted by a burst charged this much; the smallest burst speeds pellets
 // up almost as much as a charged one for a fraction of the energy
@@ -535,7 +612,7 @@ float interceptTime(const b2Vec2 relPos, const b2Vec2 relVel, const float speed)
 // form intercept can't handle, so this iterates on the impact time starting
 // from the undamped solution. Returns false if the target can't be reached.
 bool interceptAim(const droneEntity *drone, const b2Vec2 targetPos, const b2Vec2 targetVel, const float targetDamping, b2Vec2 *aim, float *distance) {
-    const weaponInformation *weapon = drone->activeWeapon.weaponInfo;
+    const weaponInformation *weapon = drone->weapon.weaponInfo;
     const float speed = weapon->initialSpeed;
     // lateral velocity is added as an impulse scaled by density, so the
     // resulting velocity only depends on the projectile's area
@@ -581,7 +658,7 @@ bool interceptAim(const droneEntity *drone, const b2Vec2 targetPos, const b2Vec2
 bool shotPathClear(const botCtx *c, const b2Vec2 aim, const float distance, const droneEntity *target) {
     const droneEntity *drone = c->drone;
     const b2Vec2 translation = b2MulSV(distance, aim);
-    const b2ShapeProxy cirProxy = b2MakeProxy(&drone->pos, 1, drone->activeWeapon.weaponInfo->radius);
+    const b2ShapeProxy cirProxy = b2MakeProxy(&drone->pos, 1, drone->weapon.weaponInfo->radius);
     uint64_t mask = WALL_SHAPE | FLOATING_WALL_SHAPE;
     if (target != NULL) {
         mask |= DRONE_SHAPE;
@@ -649,13 +726,16 @@ void findHazards(botCtx *c) {
     }
     for (uint8_t i = 0; i < cc_array_size(e->projectiles) && c->numHazards < MAX_HAZARDS; i++) {
         const projectileEntity *proj = safe_array_get_at(e->projectiles, i);
-        // mines go off for their owner too, which bots that set their
-        // mines off keep in mind
-        const bool ownMine = proj->droneIdx == drone->idx && !botHas(c, BOT_FEAT_MINE_DETONATE);
-        if (proj->weaponInfo->type != MINE_LAUNCHER_WEAPON || !proj->welded || ownMine || b2DistanceSquared(proj->pos, drone->pos) > SQUARED(HAZARD_CHECK_DISTANCE + MINE_LAUNCHER_PROXIMITY_RADIUS)) {
+        // mines go off for their owner too, and the enemy can set off
+        // the drone's own mines, so they're avoided further out
+        if (proj->weaponInfo->type != MINE_LAUNCHER_WEAPON || !proj->welded || b2DistanceSquared(proj->pos, drone->pos) > SQUARED(HAZARD_CHECK_DISTANCE + OWN_MINE_HAZARD_RADIUS)) {
             continue;
         }
-        c->hazards[c->numHazards++] = (hazard){.pos = proj->pos, .radius = MINE_LAUNCHER_PROXIMITY_RADIUS + MINE_HAZARD_MARGIN};
+        float radius = MINE_LAUNCHER_PROXIMITY_RADIUS + MINE_HAZARD_MARGIN;
+        if (proj->droneIdx == drone->idx) {
+            radius = OWN_MINE_HAZARD_RADIUS;
+        }
+        c->hazards[c->numHazards++] = (hazard){.pos = proj->pos, .radius = radius};
     }
 }
 
@@ -752,17 +832,11 @@ bool killGeometryGood(botCtx *c, const float maxWallDistance) {
     return b2Dot(c->enemyDir, wallDir) > 0.5f;
 }
 
-static inline bool slotUsable(const weaponSlot *slot) {
-    return slot->weaponInfo->type != UNSET_WEAPON && slot->ammo != 0;
-}
-
 bool weaponSafeForMovement(const droneEntity *drone) {
-    switch (drone->activeWeapon.weaponInfo->type) {
+    switch (drone->weapon.weaponInfo->type) {
     case IMPLODER_WEAPON:
-    case MINE_LAUNCHER_WEAPON:
     case BLACK_HOLE_WEAPON:
     case NUKE_WEAPON:
-    case GRAPPLE_WEAPON:
         return false;
     default:
         return true;
@@ -773,14 +847,14 @@ bool weaponSafeForMovement(const droneEntity *drone) {
 // recoil movement while an enemy is alive
 bool reservingAmmo(const botCtx *c) {
     const droneEntity *drone = c->drone;
-    if (!botHas(c, BOT_FEAT_AMMO_RESERVE) || c->enemy == NULL || drone->activeWeapon.ammo == INFINITE) {
+    if (!botHas(c, BOT_FEAT_AMMO_RESERVE) || c->enemy == NULL || drone->weapon.ammo == INFINITE) {
         return false;
     }
     // ammo above the reserve may be spent closing in on an enemy that's
     // out of range
     if (botHas(c, BOT_FEAT_SMART_RESERVE) && c->enemyDistSq > c->idealRangeSquared) {
-        const int8_t maxAmmo = weaponAmmo(drone->activeWeapon.weaponInfo->type);
-        if (drone->activeWeapon.ammo > maxAmmo * SMART_RESERVE_FRACTION) {
+        const int8_t maxAmmo = weaponInfos[drone->weapon.weaponInfo->type]->ammo;
+        if (drone->weapon.ammo > maxAmmo * SMART_RESERVE_FRACTION) {
             botEvent(c, BOT_EVENT_SPARE_AMMO_MOVE);
             return false;
         }
@@ -795,7 +869,7 @@ bool recoilMoveAllowed(const botCtx *c) {
 
 void scriptedAgentShoot(const droneEntity *drone, agentActions *actions) {
     // release a full charge to fire it, otherwise hold the trigger
-    const weaponSlot *weapon = &drone->activeWeapon;
+    const weaponSlot *weapon = &drone->weapon;
     actions->trigger = !(weapon->weaponInfo->maxCharge != 0.0f && weapon->charge == weapon->weaponInfo->maxCharge);
 }
 
@@ -1125,10 +1199,8 @@ float weaponTypeIdealRangeSquared(const enum weaponType type) {
         return SQUARED(FLAK_CANNON_SAFE_DISTANCE + 5.0f);
     case SNIPER_WEAPON:
     case ACCELERATOR_WEAPON:
-    case MINE_LAUNCHER_WEAPON:
     case BLACK_HOLE_WEAPON:
     case NUKE_WEAPON:
-    case GRAPPLE_WEAPON:
         return FLT_MAX;
 
     default:
@@ -1137,13 +1209,13 @@ float weaponTypeIdealRangeSquared(const enum weaponType type) {
 }
 
 float weaponIdealRangeSquared(const droneEntity *drone) {
-    return weaponTypeIdealRangeSquared(drone->activeWeapon.weaponInfo->type);
+    return weaponTypeIdealRangeSquared(drone->weapon.weaponInfo->type);
 }
 
 bool shouldShootAtEnemy(iwEnv *e, const droneEntity *drone, const droneEntity *enemyDrone, const b2Vec2 enemyDroneDirection) {
     // don't shoot at shielded enemies with railguns since it will likely
     // bounce back and hit us
-    if (drone->activeWeapon.weaponInfo->type == SNIPER_WEAPON && enemyDrone->shield != NULL) {
+    if (drone->weapon.weaponInfo->type == SNIPER_WEAPON && enemyDrone->shield != NULL) {
         return false;
     }
     if (!safeToFire(e, drone, enemyDroneDirection)) {
@@ -1154,7 +1226,7 @@ bool shouldShootAtEnemy(iwEnv *e, const droneEntity *drone, const droneEntity *e
     const float enemyDroneDistance = b2Distance(enemyDrone->pos, drone->pos);
     const b2Vec2 castEnd = b2MulAdd(drone->pos, enemyDroneDistance, enemyDroneDirection);
     const b2Vec2 translation = b2Sub(castEnd, drone->pos);
-    const b2ShapeProxy cirProxy = b2MakeProxy(&drone->pos, 1, drone->activeWeapon.weaponInfo->radius);
+    const b2ShapeProxy cirProxy = b2MakeProxy(&drone->pos, 1, drone->weapon.weaponInfo->radius);
     const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | DRONE_SHAPE};
 
     castCircleCtx ctx = {0};
@@ -1177,7 +1249,7 @@ bool shouldShootAtEnemy(iwEnv *e, const droneEntity *drone, const droneEntity *e
 
 // can the current weapon's projectile travel distance before it's destroyed
 bool shotReaches(const droneEntity *drone, const float distance) {
-    const float maxDistance = drone->activeWeapon.weaponInfo->maxDistance;
+    const float maxDistance = drone->weapon.weaponInfo->maxDistance;
     return maxDistance == INFINITE || distance <= maxDistance;
 }
 
@@ -1187,7 +1259,7 @@ bool shotReaches(const droneEntity *drone, const float distance) {
 bool shouldShootAtEnemyIntercept(botCtx *c, b2Vec2 *aim) {
     const droneEntity *drone = c->drone;
     const droneEntity *enemy = c->enemy;
-    if (drone->activeWeapon.weaponInfo->type == SNIPER_WEAPON && enemy->shield != NULL) {
+    if (drone->weapon.weaponInfo->type == SNIPER_WEAPON && enemy->shield != NULL) {
         return false;
     }
     float distance;
@@ -1388,7 +1460,7 @@ bool defendAgainstProjectiles(botCtx *c, agentActions *actions) {
 
     // 1. shoot it away if the collision would happen far enough away
     bool shotAtThreat = false;
-    if (drone->activeWeapon.cooldown <= 0.0f && drone->activeWeapon.weaponInfo->maxCharge == 0.0f && drone->activeWeapon.weaponInfo->type != MINE_LAUNCHER_WEAPON) {
+    if (drone->weapon.cooldown <= 0.0f && drone->weapon.weaponInfo->maxCharge == 0.0f) {
         b2Vec2 aim;
         float distance;
         if (interceptAim(drone, threat->pos, threat->velocity, threat->weaponInfo->damping, &aim, &distance) && distance > threatBlast && safeToFire(e, drone, aim) && shotPathClear(c, aim, distance, NULL)) {
@@ -1434,10 +1506,10 @@ bool defendAgainstProjectiles(botCtx *c, agentActions *actions) {
 bool dodgeSniper(botCtx *c, agentActions *actions) {
     const droneEntity *drone = c->drone;
     const droneEntity *enemy = c->enemy;
-    if (enemy == NULL || enemy->activeWeapon.weaponInfo->type != SNIPER_WEAPON || drone->shield != NULL) {
+    if (enemy == NULL || enemy->weapon.weaponInfo->type != SNIPER_WEAPON || drone->shield != NULL) {
         return false;
     }
-    const float charge = enemy->activeWeapon.charge / SNIPER_CHARGE;
+    const float charge = enemy->weapon.charge / SNIPER_CHARGE;
     if (charge < SNIPER_TELL_CHARGE) {
         return false;
     }
@@ -1492,14 +1564,7 @@ static inline float ammoFraction(const weaponSlot *slot) {
     if (slot->ammo == INFINITE) {
         return 1.0f;
     }
-    return (float)slot->ammo / (float)weaponAmmo(slot->weaponInfo->type);
-}
-
-// value of a weapon in a fight; personalities fall back to the standard
-// bot's value for weapons they don't go out of their way for
-static inline float botCombatValue(const botCtx *c, const enum weaponType type) {
-    const float value = c->preset->weaponValue[type];
-    return value != 0.0f ? value : botWeaponValue[type];
+    return (float)slot->ammo / (float)slot->weaponInfo->ammo;
 }
 
 // how much a held weapon is worth keeping when a pickup would replace it
@@ -1511,107 +1576,50 @@ static float slotWorth(const botCtx *c, const weaponSlot *slot) {
     return c->preset->weaponValue[type] * (0.3f + (0.7f * ammoFraction(slot)));
 }
 
-// what picking up a weapon adds: a weapon for the hand or the holster, ammo
-// for a held weapon, or a better weapon in place of the worse held one
+// what picking up a weapon adds: a weapon in place of the standard one, ammo
+// for the held weapon, or a better weapon in place of the held one
 static float pickupGain(const botCtx *c, const enum weaponType type) {
     const float value = c->preset->weaponValue[type];
     if (value == 0.0f) {
         return 0.0f;
     }
-    const weaponSlot *active = &c->drone->activeWeapon;
-    const weaponSlot *inactive = &c->drone->inactiveWeapon;
-    const enum weaponType activeType = active->weaponInfo->type;
-    const enum weaponType inactiveType = inactive->weaponInfo->type;
-    if (type == activeType) {
-        return value * (1.0f - ammoFraction(active));
+    const weaponSlot *weapon = &c->drone->weapon;
+    const enum weaponType heldType = weapon->weaponInfo->type;
+    if (type == heldType) {
+        return value * (1.0f - ammoFraction(weapon));
     }
-    if (type == inactiveType) {
-        return value * (1.0f - ammoFraction(inactive));
-    }
-    if (activeType == STANDARD_WEAPON) {
+    if (heldType == STANDARD_WEAPON) {
         return value;
     }
-    const float scale = c->preset->holsterPickupScale;
-    if (inactiveType == UNSET_WEAPON) {
-        return value * scale;
-    }
-    if (scale == 0.0f) {
+    if (!c->preset->replacesWeapon) {
         return 0.0f;
     }
-    return value - fminf(slotWorth(c, active), slotWorth(c, inactive)) - PICKUP_REPLACE_MARGIN;
+    return value - slotWorth(c, weapon) - PICKUP_REPLACE_MARGIN;
 }
 
-// how well a held weapon suits the fight right now; drawing a charged
-// weapon costs the time to charge it
-static float weaponFitness(const botCtx *c, const weaponSlot *slot, const bool drawn) {
-    if (!slotUsable(slot)) {
-        return -FLT_MAX;
+// what picking up a utility adds: a utility where there was none, ammo for
+// the held one, or a better utility in place of the held one
+static float utilityPickupGain(const botCtx *c, const enum utilityType type) {
+    if (!botHas(c, BOT_FEAT_UTILITY)) {
+        return 0.0f;
     }
-    const weaponInformation *info = slot->weaponInfo;
-    const enum weaponType type = info->type;
-    float fitness = botCombatValue(c, type);
-    if (!drawn && info->maxCharge != 0.0f) {
-        fitness -= info->maxCharge - slot->charge;
+    const float value = c->preset->utilityValue[type];
+    if (value == 0.0f) {
+        return 0.0f;
     }
-    if (c->enemy == NULL) {
-        return fitness;
+    const utilitySlot *utility = &c->drone->utility;
+    const enum utilityType heldType = utility->utilityInfo->type;
+    if (heldType == UNSET_UTILITY) {
+        return value;
     }
-
-    const float dist = c->enemyDist;
-    float range = type == FLAK_CANNON_WEAPON ? FLAK_RANGE : sqrtf(weaponTypeIdealRangeSquared(type));
-    if (c->preset->rangeScale != 1.0f && type != FLAK_CANNON_WEAPON && type != IMPLODER_WEAPON) {
-        range *= c->preset->rangeScale;
+    if (type == heldType) {
+        return value * (1.0f - ((float)utility->ammo / utility->utilityInfo->ammo));
     }
-    if (dist > range) {
-        fitness -= (dist - range) / 10.0f;
-    }
-    switch (type) {
-    case SHOTGUN_WEAPON:
-        if (dist < SHOTGUN_CLOSE_RANGE) {
-            fitness += 1.5f;
-        }
-        break;
-    case FLAK_CANNON_WEAPON:
-        if (dist < FLAK_CANNON_SAFE_DISTANCE) {
-            fitness -= 2.0f;
-        }
-        break;
-    case SNIPER_WEAPON:
-        if (c->enemy->shield != NULL) {
-            fitness -= 10.0f;
-        }
-        if (dist < CHARGED_WEAPON_MIN_RANGE) {
-            fitness -= 2.0f;
-        }
-        break;
-    case IMPLODER_WEAPON:
-    case BLACK_HOLE_WEAPON:
-    case ACCELERATOR_WEAPON:
-        if (dist < CHARGED_WEAPON_MIN_RANGE) {
-            fitness -= 2.0f;
-        }
-        break;
-    case NUKE_WEAPON:
-        if (dist < NUKE_MIN_RANGE) {
-            fitness -= 10.0f;
-        }
-        break;
-    case MINE_LAUNCHER_WEAPON:
-        if (dist < MINE_MIN_RANGE) {
-            fitness -= 2.0f;
-        }
-        break;
-    case GRAPPLE_WEAPON:
-        fitness -= 3.0f;
-        break;
-    default:
-        break;
-    }
-    return fitness;
+    return value - c->preset->utilityValue[heldType] - PICKUP_REPLACE_MARGIN;
 }
 
-// scores the weapon pickups and returns the best one worth leaving the
-// current fight for, or NULL
+// scores the weapon and utility pickups and returns the best one worth
+// leaving the current fight for, or NULL
 weaponPickupEntity *choosePickup(botCtx *c) {
     iwEnv *e = c->e;
     const droneEntity *drone = c->drone;
@@ -1631,18 +1639,20 @@ weaponPickupEntity *choosePickup(botCtx *c) {
     for (uint8_t i = 0; i < cc_array_size(e->pickups); i++) {
         weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
         // bots don't seek ammo crates yet
-        if (pickup->isCrate || pickup->floatingWallsTouching > 0 || pickup->bodyDestroyed || !safeFromSuddenDeath(c, pickup->pos)) {
+        if (pickup->kind == CRATE_PICKUP || pickup->floatingWallsTouching > 0 || pickup->bodyDestroyed || !safeFromSuddenDeath(c, pickup->pos)) {
             continue;
         }
-        float value = c->preset->weaponValue[pickup->weapon];
-        if (botHas(c, BOT_FEAT_WEAPON_SLOTS)) {
+        float value;
+        if (pickup->kind == UTILITY_PICKUP) {
+            value = utilityPickupGain(c, pickup->utility);
+        } else {
             value = pickupGain(c, pickup->weapon);
         }
         if (value <= 0.0f) {
             continue;
         }
         const float distance = b2Distance(pickup->pos, drone->pos);
-        // the evader only takes weapons that keep it at least as far from
+        // the evader only takes pickups that keep it at least as far from
         // the enemy as it is now
         if (c->personality == BOT_EVADER && c->enemy != NULL) {
             const float enemyDistance = b2Distance(pickup->pos, c->enemy->pos);
@@ -1714,7 +1724,7 @@ void deliberateBurst(botCtx *c, agentActions *actions) {
 // speeds up the just fired projectile
 void burstBoost(botCtx *c, agentActions *actions) {
     const droneEntity *drone = c->drone;
-    const enum weaponType type = drone->activeWeapon.weaponInfo->type;
+    const enum weaponType type = drone->weapon.weaponInfo->type;
     bool worthIt = false;
     if (type == FLAK_CANNON_WEAPON) {
         worthIt = drone->energyLeft >= BOOST_ENERGY_RESERVE;
@@ -1731,7 +1741,7 @@ void burstBoost(botCtx *c, agentActions *actions) {
         return;
     }
     // release with the shot, keep charging until the weapon is ready
-    if (drone->activeWeapon.cooldown > 0.0f) {
+    if (drone->weapon.cooldown > 0.0f) {
         actions->chargingBurst = true;
     } else {
         botEvent(c, BOT_EVENT_BOOST_RELEASE);
@@ -1752,7 +1762,7 @@ void shotgunBoost(botCtx *c, agentActions *actions) {
         }
         return;
     }
-    if (drone->activeWeapon.cooldown > 0.0f || (drone->burstCharge < SHOTGUN_BOOST_CHARGE && drone->energyLeft > 0.05f)) {
+    if (drone->weapon.cooldown > 0.0f || (drone->burstCharge < SHOTGUN_BOOST_CHARGE && drone->energyLeft > 0.05f)) {
         actions->chargingBurst = true;
         actions->trigger = false;
         return;
@@ -1768,7 +1778,7 @@ bool recoilBoost(botCtx *c, agentActions *actions, const b2Vec2 moveDir) {
     if (b2Equal(moveDir, b2Vec2_zero) || !b2Equal(actions->aim, b2Vec2_zero) || !weaponSafeForMovement(drone)) {
         return false;
     }
-    if (drone->activeWeapon.cooldown > 0.0f || drone->activeWeapon.charge < drone->activeWeapon.weaponInfo->maxCharge - c->e->deltaTime) {
+    if (drone->weapon.cooldown > 0.0f || drone->weapon.charge < drone->weapon.weaponInfo->maxCharge - c->e->deltaTime) {
         return false;
     }
     if (b2Dot(drone->velocity, moveDir) >= BOOST_TOP_SPEED) {
@@ -2022,7 +2032,7 @@ static inline bool camperWeapon(const enum weaponType type) {
 // takes fully charged shots; returns false to fall back to the default
 // behavior
 bool camperActions(botCtx *c, agentActions *actions) {
-    if (!camperWeapon(c->drone->activeWeapon.weaponInfo->type)) {
+    if (!camperWeapon(c->drone->weapon.weaponInfo->type)) {
         return false;
     }
     // the spot is re-chosen every CAMPER_SHOT_WAIT seconds, or right away
@@ -2034,7 +2044,7 @@ bool camperActions(botCtx *c, agentActions *actions) {
     if (spot == -1) {
         return false;
     }
-    const bool charged = c->drone->activeWeapon.charge >= c->drone->activeWeapon.weaponInfo->maxCharge - c->e->deltaTime;
+    const bool charged = c->drone->weapon.charge >= c->drone->weapon.weaponInfo->maxCharge - c->e->deltaTime;
     if (charged && c->enemyDist >= CAMPER_MIN_RANGE && shootAtEnemy(c, actions)) {
         return true;
     }
@@ -2042,12 +2052,20 @@ bool camperActions(botCtx *c, agentActions *actions) {
     return true;
 }
 
-// fires a mine at the wall nearest the middle of the path between the
-// drone and the enemy, unless one of our mines is already there
-bool placeMine(botCtx *c, agentActions *actions) {
+// finds the aim of a mine shot at the wall nearest a point on the path
+// between the drone and the enemy, far enough that the mine won't go off
+// on the drone
+bool mineAim(botCtx *c, b2Vec2 *aim) {
     iwEnv *e = c->e;
     const droneEntity *drone = c->drone;
-    const b2Vec2 mid = b2Lerp(drone->pos, c->enemy->pos, 0.5f);
+    float pathFraction = 0.5f;
+    if (c->preset->grappleCloses) {
+        pathFraction = MINE_CLOSING_PATH_FRACTION;
+    }
+    // the mine has to be outside of its blast from the drone when the
+    // enemy sets it off
+    const float pathDistance = fminf(fmaxf(c->enemyDist * pathFraction, MINE_SELF_SAFE_DISTANCE + 3.0f), c->enemyDist);
+    const b2Vec2 mid = b2MulAdd(drone->pos, pathDistance, c->enemyDir);
     const int16_t midIdx = entityPosToCellIdx(e, mid);
     if (midIdx == -1) {
         return false;
@@ -2056,33 +2074,24 @@ bool placeMine(botCtx *c, agentActions *actions) {
     for (uint8_t i = 0; i < MAX_NEAREST_WALLS; i++) {
         const b2Vec2 wallPos = walls[i].pos;
         const float distance = b2Distance(wallPos, drone->pos);
-        if (distance > TRAPPER_MINE_RANGE || distance < SPOT_WALL_DISTANCE) {
+        if (distance > TRAPPER_MINE_RANGE || distance < MINE_SELF_SAFE_DISTANCE) {
             continue;
         }
-        bool mined = false;
-        for (uint8_t j = 0; j < cc_array_size(e->projectiles); j++) {
-            const projectileEntity *proj = safe_array_get_at(e->projectiles, j);
-            if (proj->droneIdx == drone->idx && proj->weaponInfo->type == MINE_LAUNCHER_WEAPON && b2Distance(proj->pos, wallPos) < MINE_LAUNCHER_PROXIMITY_RADIUS + WALL_THICKNESS) {
-                mined = true;
-                break;
-            }
-        }
-        if (mined) {
-            continue;
-        }
-        // the shot must reach this wall and not stop at a closer one
-        const b2Vec2 aim = b2Normalize(b2Sub(wallPos, drone->pos));
+        // the mine must reach this wall and not stop at a closer one; it's
+        // cast as its full circle, as clipping a corner next to the drone
+        // would weld it there and set it off on the drone
+        const b2Vec2 wallAim = b2Normalize(b2Sub(wallPos, drone->pos));
         const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | DRONE_SHAPE};
-        const b2RayResult ray = b2World_CastRayClosest(e->worldID, drone->pos, b2MulSV(distance, aim), filter);
-        if (!ray.hit || b2Distance(ray.point, wallPos) > WALL_THICKNESS) {
+        const b2ShapeProxy mineProxy = b2MakeProxy(&drone->pos, 1, MINE_LAUNCHER_RADIUS);
+        castCircleCtx cast = {0};
+        b2World_CastShape(e->worldID, &mineProxy, b2MulSV(distance, wallAim), filter, castCircleCallback, &cast);
+        if (!cast.hit || b2Distance(cast.point, wallPos) > WALL_THICKNESS) {
             continue;
         }
-        if (!safeToFire(e, drone, aim)) {
+        if (!safeToFireUtility(e, drone, wallAim)) {
             continue;
         }
-        botEvent(c, BOT_EVENT_MINE_PLACED);
-        actions->aim = aim;
-        scriptedAgentShoot(drone, actions);
+        *aim = wallAim;
         return true;
     }
     return false;
@@ -2097,15 +2106,10 @@ void keepRange(botCtx *c, agentActions *actions, const float range) {
     }
 }
 
-// mines chokepoints between it and the enemy and fires area weapons from
-// mid range; returns false to fall back to the default behavior
+// fires area weapons from mid range; mines are placed by the utility
+// actions. Returns false to fall back to the default behavior
 bool trapperActions(botCtx *c, agentActions *actions) {
-    switch (c->drone->activeWeapon.weaponInfo->type) {
-    case MINE_LAUNCHER_WEAPON:
-        if (!placeMine(c, actions)) {
-            keepRange(c, actions, TRAPPER_RANGE);
-        }
-        return true;
+    switch (c->drone->weapon.weaponInfo->type) {
     case BLACK_HOLE_WEAPON:
     case IMPLODER_WEAPON:
         if (c->enemyDist >= TRAPPER_MIN_RANGE && c->enemyDist <= TRAPPER_MAX_RANGE && shootAtEnemy(c, actions)) {
@@ -2191,8 +2195,281 @@ void avoidKillGeometry(botCtx *c, agentActions *actions) {
     actions->move = b2Normalize(b2MulAdd(actions->move, weight, away));
 }
 
+enum botGrappleIntent {
+    GRAPPLE_INTENT_NONE,
+    GRAPPLE_INTENT_CLOSE,
+    GRAPPLE_INTENT_ESCAPE,
+};
+
+// whether the utility can be used now rather than acting on what's out
+static inline bool utilityReady(const botCtx *c) {
+    const utilitySlot *utility = &c->drone->utility;
+    return utility->ammo > 0 && utility->cooldown <= 0.0f && droneUtilityActive(c->e, c->drone) < utility->utilityInfo->maxActive;
+}
+
+// presses the utility button; a held button doesn't register a press, so
+// it's released this step and pressed the next instead
+static bool pressUtility(const droneEntity *drone, agentActions *actions) {
+    actions->utility = !drone->utilityHeld;
+    return actions->utility;
+}
+
+// fires the utility along aim this step instead of the weapon; a charged
+// weapon keeps its charge held rather than firing in the wrong direction
+static bool fireUtility(const droneEntity *drone, agentActions *actions, const b2Vec2 aim) {
+    if (!pressUtility(drone, actions)) {
+        return false;
+    }
+    actions->aim = aim;
+    actions->trigger = drone->weapon.weaponInfo->maxCharge != 0.0f;
+    return true;
+}
+
+// what the grapple would attach to fired along aim: returns false if it
+// wouldn't reach anything or would attach to a death wall, otherwise sets
+// distance and whether it would attach to a drone
+static bool grappleTarget(const iwEnv *e, const droneEntity *drone, const b2Vec2 aim, float *distance, bool *hitDrone) {
+    const b2QueryFilter filter = {.categoryBits = PROJECTILE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | DRONE_SHAPE};
+    const b2RayResult ray = b2World_CastRayClosest(e->worldID, drone->pos, b2MulSV(GRAPPLE_MAX_DISTANCE, aim), filter);
+    if (!ray.hit) {
+        return false;
+    }
+    const entity *ent = b2Shape_GetUserData(ray.shapeId);
+    if (ent == NULL || ent->type == DEATH_WALL_ENTITY || (ent->type != DRONE_ENTITY && !entityTypeIsWall(ent->type))) {
+        return false;
+    }
+    if (ent->type == DRONE_ENTITY && ((const droneEntity *)ent->entity)->idx == drone->idx) {
+        return false;
+    }
+    *distance = b2Distance(drone->pos, ray.point);
+    *hitDrone = ent->type == DRONE_ENTITY;
+    return true;
+}
+
+// grapples the enemy, or a wall behind it, when it's well out of the
+// weapon's range
+static bool grappleClose(botCtx *c, agentActions *actions) {
+    if (!c->preset->grappleCloses || c->enemy->shield != NULL) {
+        return false;
+    }
+    const float idealRange = sqrtf(weaponIdealRangeSquared(c->drone));
+    if (c->enemyDist < fmaxf(idealRange + GRAPPLE_CLOSE_MARGIN, GRAPPLE_CLOSE_MIN_DISTANCE)) {
+        return false;
+    }
+    const droneEntity *drone = c->drone;
+    // lead the enemy by the hook's travel time
+    const float travelTime = c->enemyDist / grapple.initialSpeed;
+    const b2Vec2 target = b2MulAdd(c->enemy->pos, travelTime, c->enemy->velocity);
+    const b2Vec2 aim = b2Normalize(b2Sub(target, drone->pos));
+    float distance;
+    bool hitDrone;
+    if (!grappleTarget(c->e, drone, aim, &distance, &hitDrone) || (!hitDrone && distance < c->enemyDist)) {
+        return false;
+    }
+    if (!safeToFireUtility(c->e, drone, aim) || !fireUtility(drone, actions, aim)) {
+        return false;
+    }
+    botEvent(c, BOT_EVENT_GRAPPLE_CLOSE);
+    c->state->grappleIntent = GRAPPLE_INTENT_CLOSE;
+    c->state->grappleUntilStep = botStep(c->e) + (uint16_t)(GRAPPLE_CLOSE_TIME * c->e->frameRate);
+    return true;
+}
+
+// grapples a wall away from a close enemy to get away from it
+static bool grappleEscape(botCtx *c, agentActions *actions) {
+    const droneEntity *drone = c->drone;
+    if (!c->preset->grappleEscapes || c->enemyDist > GRAPPLE_ESCAPE_ENEMY_DISTANCE) {
+        return false;
+    }
+    if (c->personality != BOT_EVADER && drone->energyLeft >= GRAPPLE_ESCAPE_ENERGY) {
+        return false;
+    }
+    // straight away from the enemy, then further and further to the sides
+    static const float angles[] = {0.0f, 0.6f, -0.6f, 1.2f, -1.2f};
+    const b2Vec2 away = b2MulSV(-1.0f, c->enemyDir);
+    for (uint8_t i = 0; i < sizeof(angles) / sizeof(angles[0]); i++) {
+        const b2Vec2 aim = b2RotateVector(b2MakeRot(angles[i]), away);
+        float distance;
+        bool hitDrone;
+        if (!grappleTarget(c->e, drone, aim, &distance, &hitDrone) || hitDrone || distance < GRAPPLE_ESCAPE_MIN_ANCHOR) {
+            continue;
+        }
+        if (!safeToFireUtility(c->e, drone, aim) || !fireUtility(drone, actions, aim)) {
+            continue;
+        }
+        botEvent(c, BOT_EVENT_GRAPPLE_ESCAPE);
+        c->state->grappleIntent = GRAPPLE_INTENT_ESCAPE;
+        c->state->grappleUntilStep = botStep(c->e) + (uint16_t)(GRAPPLE_ESCAPE_TIME * c->e->frameRate);
+        return true;
+    }
+    return false;
+}
+
+// whether the grapple that's out has done what it was fired for, or should
+// be let go of
+static bool grappleDone(botCtx *c) {
+    const droneEntity *drone = c->drone;
+    const scriptedBotState *state = c->state;
+    if (botStep(c->e) >= state->grappleUntilStep || c->enemy == NULL) {
+        return true;
+    }
+    // don't get reeled or pulled into a death wall
+    b2Vec2 wallDir;
+    float wallDistance;
+    if (droneDeathWall(c->e, drone, GRAPPLE_DANGER_WALL_DISTANCE, &wallDir, &wallDistance) && b2Dot(drone->velocity, wallDir) * GRAPPLE_DANGER_WALL_TIME > wallDistance) {
+        botEvent(c, BOT_EVENT_GRAPPLE_DANGER_RELEASE);
+        return true;
+    }
+    if (state->grappleIntent == GRAPPLE_INTENT_CLOSE) {
+        const float idealRange = sqrtf(weaponIdealRangeSquared(drone));
+        return c->enemyDist <= fmaxf(idealRange, GRAPPLE_CLOSE_STOP_DISTANCE);
+    }
+    return b2Distance(drone->pos, drone->grapple->pos) <= GRAPPLE_ESCAPE_DONE_ANCHOR || c->enemyDist >= GRAPPLE_ESCAPE_DONE_ENEMY;
+}
+
+// holds the grapple out until it's done what it was fired for, then lets
+// go; the hook reels as soon as it attaches while held
+static void holdGrapple(botCtx *c, agentActions *actions) {
+    const droneEntity *drone = c->drone;
+    scriptedBotState *state = c->state;
+    // the hook was destroyed before attaching, or was shot off
+    if (drone->grapple == NULL) {
+        state->grappleIntent = GRAPPLE_INTENT_NONE;
+        return;
+    }
+    if (drone->grapple->welded && grappleDone(c)) {
+        botEvent(c, BOT_EVENT_GRAPPLE_RELEASE);
+        state->grappleIntent = GRAPPLE_INTENT_NONE;
+        return;
+    }
+    actions->utility = true;
+}
+
+// sets off the drone's welded mine when the enemy is close to it and the
+// drone isn't
+static bool detonateMine(botCtx *c, agentActions *actions) {
+    const projectileEntity *mine = droneMine(c->e, c->drone);
+    if (mine == NULL || !mine->welded) {
+        return false;
+    }
+    if (b2Distance(mine->pos, c->enemy->pos) > MINE_DETONATE_DISTANCE || b2Distance(mine->pos, c->drone->pos) < MINE_SELF_SAFE_DISTANCE) {
+        return false;
+    }
+    if (!pressUtility(c->drone, actions)) {
+        return false;
+    }
+    botEvent(c, BOT_EVENT_MINE_DETONATE);
+    return true;
+}
+
+// places a mine between the drone and the enemy when the weapon isn't
+// being fired this step; the trapper places one whenever it can
+static bool placeMine(botCtx *c, agentActions *actions) {
+    const iwEnv *e = c->e;
+    const droneEntity *drone = c->drone;
+    if (c->enemyDist < MINE_PLACE_MIN_ENEMY_DISTANCE || !utilityReady(c)) {
+        return false;
+    }
+    if (c->personality != BOT_TRAPPER && !b2Equal(actions->aim, b2Vec2_zero) && actions->trigger) {
+        return false;
+    }
+    for (size_t i = 0; i < cc_array_size(e->projectiles); i++) {
+        const projectileEntity *proj = safe_array_get_at(e->projectiles, i);
+        if (proj->droneIdx != drone->idx && !proj->welded && b2DistanceSquared(proj->pos, drone->pos) < SQUARED(MINE_PLACE_PROJECTILE_CLEARANCE)) {
+            return false;
+        }
+    }
+    b2Vec2 aim;
+    if (!mineAim(c, &aim)) {
+        return false;
+    }
+    if (b2Dot(aim, c->enemyDir) > MINE_PLACE_ENEMY_AIM_COS && segmentClear(e, drone->pos, c->enemy->pos, 0.0f)) {
+        return false;
+    }
+    if (!fireUtility(drone, actions, aim)) {
+        return false;
+    }
+    botEvent(c, BOT_EVENT_MINE_PLACED);
+    return true;
+}
+
+// keeps the drone from setting off its own mine: doesn't burst with the mine
+// in reach of the burst, holds fire while the mine is in flight close by as
+// any shot that hits it sets it off, and steers away from it once it's
+// welded, out of its blast if the enemy is about to set it off
+static void avoidOwnMine(botCtx *c, agentActions *actions) {
+    const droneEntity *drone = c->drone;
+    const projectileEntity *mine = droneMine(c->e, drone);
+    if (mine == NULL) {
+        return;
+    }
+    const float distance = b2Distance(mine->pos, drone->pos);
+    if (distance < MINE_BURST_DISTANCE) {
+        // releasing a burst being charged would set it off, so keep charging
+        actions->chargingBurst = drone->chargingBurst;
+    }
+    if (!mine->welded) {
+        if (distance < MINE_SELF_SAFE_DISTANCE) {
+            // a charged weapon is kept charged rather than fired
+            actions->trigger = actions->trigger && drone->weapon.weaponInfo->maxCharge != 0.0f;
+        }
+        return;
+    }
+    float avoidDistance = OWN_MINE_AVOID_DISTANCE;
+    if (c->enemy != NULL && b2Distance(mine->pos, c->enemy->pos) < MINE_LAUNCHER_PROXIMITY_RADIUS + MINE_ENEMY_NEAR_MARGIN) {
+        avoidDistance = MINE_SELF_SAFE_DISTANCE;
+    }
+    if (distance > avoidDistance) {
+        return;
+    }
+    const b2Vec2 away = b2Normalize(b2Sub(drone->pos, mine->pos));
+    // only the part of the move towards the mine is taken out, the rest of
+    // where the drone was heading is kept
+    const float towards = -b2Dot(actions->move, away);
+    if (towards > 0.0f) {
+        actions->move = b2MulAdd(actions->move, towards, away);
+    }
+    actions->move = b2Normalize(b2MulAdd(actions->move, 1.0f, away));
+}
+
+// everything the bot does with its utility, on top of what it decided to
+// do with its weapon
+static void utilityActions(botCtx *c, agentActions *actions) {
+    const droneEntity *drone = c->drone;
+    avoidOwnMine(c, actions);
+    switch (drone->utility.utilityInfo->type) {
+    case GRAPPLE_UTILITY:
+        if (c->state->grappleIntent != GRAPPLE_INTENT_NONE) {
+            holdGrapple(c, actions);
+            return;
+        }
+        // detach an attached grapple the bot isn't using: releasing the
+        // button only detaches it after holding it
+        if (drone->grapple != NULL) {
+            actions->utility = drone->grapple->welded && !drone->utilityHeld;
+            return;
+        }
+        if (c->enemy == NULL || !utilityReady(c)) {
+            return;
+        }
+        if (!grappleEscape(c, actions)) {
+            grappleClose(c, actions);
+        }
+        return;
+    case MINE_UTILITY:
+        if (c->enemy == NULL) {
+            return;
+        }
+        if (!detonateMine(c, actions)) {
+            placeMine(c, actions);
+        }
+        return;
+    default:
+        return;
+    }
+}
+
 static agentActions botActions(const botCtx *ctx);
-static agentActions slotActions(botCtx *c);
 
 agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
     agentActions actions = {0};
@@ -2215,6 +2492,7 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
         if (randInt(&e->rng, 0, 1) == 1) {
             scriptedAgentBurst(drone, &actions);
         }
+        actions.utility = randInt(&e->rng, 0, 1) == 1;
         return actions;
     }
 
@@ -2233,6 +2511,7 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
     // spots are chosen per life
     if (c.state->livesLeft != drone->livesLeft) {
         c.state->livesLeft = drone->livesLeft;
+        c.state->grappleIntent = GRAPPLE_INTENT_NONE;
         forgetSpot(&c);
     }
 
@@ -2260,10 +2539,11 @@ agentActions scriptedAgentActions(iwEnv *e, droneEntity *drone) {
         c.enemyDir = b2Normalize(b2Sub(enemyDrone->pos, drone->pos));
         c.enemyPredPos = b2MulAdd(enemyDrone->pos, EVADER_PREDICT_TIME, enemyDrone->velocity);
     }
-    if (botHas(&c, BOT_FEAT_WEAPON_SLOTS) || botHas(&c, BOT_FEAT_MINE_DETONATE) || botHas(&c, BOT_FEAT_CHARGE_DRAIN)) {
-        return slotActions(&c);
+    actions = botActions(&c);
+    if (botHas(&c, BOT_FEAT_UTILITY)) {
+        utilityActions(&c, &actions);
     }
-    return botActions(&c);
+    return actions;
 }
 
 // everything the bot does with the weapon it has drawn
@@ -2278,24 +2558,24 @@ static agentActions botActions(const botCtx *ctx) {
 
     c.suddenDeath = suddenDeathSafeArea(e, SUDDEN_DEATH_MARGIN, &c.suddenDeathSafe);
     c.idealRangeSquared = weaponIdealRangeSquared(drone);
-    if (drone->activeWeapon.weaponInfo->type == FLAK_CANNON_WEAPON) {
+    if (drone->weapon.weaponInfo->type == FLAK_CANNON_WEAPON) {
         c.idealRangeSquared = SQUARED(FLAK_RANGE);
     }
     // flak shells need distance to arm and imploders pull the drone in too
-    const enum weaponType weaponType = drone->activeWeapon.weaponInfo->type;
+    const enum weaponType weaponType = drone->weapon.weaponInfo->type;
     if (c.preset->rangeScale != 1.0f && c.idealRangeSquared != FLT_MAX && weaponType != FLAK_CANNON_WEAPON && weaponType != IMPLODER_WEAPON) {
         c.idealRangeSquared *= SQUARED(c.preset->rangeScale);
     }
 
     // stay out of reach of a shotgun
     bool kiting = false;
-    if (botHas(&c, BOT_FEAT_KITE) && enemyDrone != NULL && weaponType != SHOTGUN_WEAPON && enemyDrone->activeWeapon.weaponInfo->type == SHOTGUN_WEAPON && enemyDrone->activeWeapon.ammo != 0) {
+    if (botHas(&c, BOT_FEAT_KITE) && enemyDrone != NULL && weaponType != SHOTGUN_WEAPON && enemyDrone->weapon.weaponInfo->type == SHOTGUN_WEAPON && enemyDrone->weapon.ammo != 0) {
         c.idealRangeSquared = fmaxf(c.idealRangeSquared, SQUARED(KITE_RANGE));
         kiting = c.enemyDist < KITE_RANGE;
     }
 
     // keep the weapon charged and ready
-    if (drone->activeWeapon.weaponInfo->maxCharge != 0.0f) {
+    if (drone->weapon.weaponInfo->maxCharge != 0.0f) {
         actions.trigger = true;
     }
 
@@ -2440,11 +2720,13 @@ static agentActions botActions(const botCtx *ctx) {
         return actions;
     }
 
-    // get a weapon if the standard weapon is active; managing both slots,
-    // also fill the holster, top up ammo or replace the worse held weapon
-    if ((drone->activeWeapon.weaponInfo->type == STANDARD_WEAPON || botHas(&c, BOT_FEAT_WEAPON_SLOTS)) && cc_array_size(e->pickups) != 0) {
+    // get a weapon, top up ammo or replace the held weapon with a better one
+    if (cc_array_size(e->pickups) != 0) {
         const weaponPickupEntity *pickup = choosePickup(&c);
         if (pickup != NULL) {
+            if (pickup->kind == UTILITY_PICKUP) {
+                botEvent(&c, BOT_EVENT_UTILITY_PICKUP);
+            }
             moveTo(&c, &actions, pickup->pos);
             return actions;
         }
@@ -2517,7 +2799,7 @@ static agentActions botActions(const botCtx *ctx) {
     }
 
     if (shoot) {
-        if (drone->activeWeapon.cooldown <= 0.0f && drone->activeWeapon.charge >= drone->activeWeapon.weaponInfo->maxCharge - e->deltaTime) {
+        if (drone->weapon.cooldown <= 0.0f && drone->weapon.charge >= drone->weapon.weaponInfo->maxCharge - e->deltaTime) {
             actions.move.x += enemyDroneDirection.x;
             actions.move.y += enemyDroneDirection.y;
             actions.move = b2Normalize(actions.move);
@@ -2569,153 +2851,6 @@ static agentActions botActions(const botCtx *ctx) {
         actions.move = b2MulSV(-1.0f, b2Normalize(drone->velocity));
     }
 
-    return actions;
-}
-
-// the pickup the drone is heading for, if picking it up would replace a held
-// weapon
-static const weaponPickupEntity *replacingPickup(const botCtx *c) {
-    const int8_t idx = c->state->pickupIdx;
-    if (idx < 0 || idx >= (int8_t)cc_array_size(c->e->pickups)) {
-        return NULL;
-    }
-    const weaponPickupEntity *pickup = safe_array_get_at(c->e->pickups, idx);
-    const enum weaponType activeType = c->drone->activeWeapon.weaponInfo->type;
-    const enum weaponType inactiveType = c->drone->inactiveWeapon.weaponInfo->type;
-    if (pickup->isCrate || pickup->weapon == activeType || pickup->weapon == inactiveType || activeType == STANDARD_WEAPON || inactiveType == UNSET_WEAPON) {
-        return NULL;
-    }
-    if (b2DistanceSquared(pickup->pos, c->drone->pos) > SQUARED(PICKUP_SWAP_DISTANCE)) {
-        return NULL;
-    }
-    return pickup;
-}
-
-enum slotChoice {
-    SLOT_KEEP,
-    SLOT_SWAP,
-    // the drawn weapon's full charge has to be canceled before swapping
-    SLOT_CANCEL_CHARGE,
-};
-
-// decides whether to swap weapons this step
-static enum slotChoice chooseSlot(botCtx *c) {
-    const droneEntity *drone = c->drone;
-    const weaponSlot *active = &drone->activeWeapon;
-    const weaponSlot *inactive = &drone->inactiveWeapon;
-    if (drone->swapCooldown > 0.0f || !slotUsable(inactive)) {
-        return SLOT_KEEP;
-    }
-
-    bool swap = false;
-    if (!slotUsable(active)) {
-        // an empty mine launcher or grapple stays drawn while its
-        // projectiles are live
-        swap = true;
-    } else if (replacingPickup(c) != NULL) {
-        // pickups replace the drawn weapon, so draw the one worth less
-        swap = slotWorth(c, inactive) < slotWorth(c, active);
-        if (swap) {
-            botEvent(c, BOT_EVENT_PICKUP_SWAP);
-        }
-    } else {
-        const float activeFitness = weaponFitness(c, active, true);
-        const float inactiveFitness = weaponFitness(c, inactive, false);
-        swap = inactiveFitness > activeFitness + SWAP_MARGIN;
-        if (!swap && botHas(c, BOT_FEAT_SWAP_CYCLE) && c->enemy != NULL && active->cooldown > SWAP_CYCLE_MIN_COOLDOWN && inactive->cooldown <= 0.0f && inactive->weaponInfo->maxCharge == 0.0f && inactiveFitness > activeFitness - SWAP_MARGIN) {
-            swap = true;
-            botEvent(c, BOT_EVENT_SWAP_CYCLE);
-        }
-    }
-    if (!swap) {
-        return SLOT_KEEP;
-    }
-    // a full charge stays charged in the holster and drains energy
-    if (active->weaponInfo->maxCharge != 0.0f && active->charge >= active->weaponInfo->maxCharge) {
-        return SLOT_CANCEL_CHARGE;
-    }
-    return SLOT_SWAP;
-}
-
-// whether setting off the drone's mines stuck to walls now would catch the
-// enemy and not the drone; every one of them goes off at once
-static bool mineDetonateReady(const botCtx *c) {
-    const iwEnv *e = c->e;
-    const droneEntity *drone = c->drone;
-    if (c->enemy == NULL || e->minesCreated[drone->idx] == 0) {
-        return false;
-    }
-    bool catches = false;
-    for (uint8_t i = 0; i < cc_array_size(e->projectiles); i++) {
-        const projectileEntity *proj = safe_array_get_at(e->projectiles, i);
-        if (proj->droneIdx != drone->idx || proj->weaponInfo->type != MINE_LAUNCHER_WEAPON || !proj->welded || proj->needsToBeDestroyed) {
-            continue;
-        }
-        if (b2DistanceSquared(proj->pos, drone->pos) < SQUARED(MINE_DETONATE_SELF_DISTANCE)) {
-            return false;
-        }
-        if (b2DistanceSquared(proj->pos, c->enemy->pos) <= SQUARED(MINE_DETONATE_DISTANCE)) {
-            catches = true;
-        }
-    }
-    return catches;
-}
-
-// sets off mines next to the enemy, picks the weapon to fight with and
-// plans the rest of the step with the weapon that will be drawn, as a swap
-// happens before shooting in the same frame
-static agentActions slotActions(botCtx *c) {
-    droneEntity *drone = c->drone;
-    agentActions actions;
-
-    if (botHas(c, BOT_FEAT_MINE_DETONATE) && mineDetonateReady(c)) {
-        const bool drawn = drone->activeWeapon.weaponInfo->type == MINE_LAUNCHER_WEAPON;
-        if (drawn || (drone->inactiveWeapon.weaponInfo->type == MINE_LAUNCHER_WEAPON && drone->swapCooldown <= 0.0f)) {
-            botEvent(c, BOT_EVENT_MINE_DETONATE);
-            actions = botActions(c);
-            // the weapon action applies after the swap, to the launcher
-            actions.weaponAction = true;
-            if (!drawn) {
-                actions.swapWeapon = true;
-                actions.trigger = false;
-            }
-            return actions;
-        }
-    }
-
-    const enum slotChoice choice = botHas(c, BOT_FEAT_WEAPON_SLOTS) ? chooseSlot(c) : SLOT_KEEP;
-    if (choice == SLOT_SWAP) {
-        botEvent(c, BOT_EVENT_SWAP);
-        const weaponSlot drawn = drone->activeWeapon;
-        drone->activeWeapon = drone->inactiveWeapon;
-        drone->inactiveWeapon = drawn;
-        actions = botActions(c);
-        drone->inactiveWeapon = drone->activeWeapon;
-        drone->activeWeapon = drawn;
-        actions.swapWeapon = true;
-        // swapping away from a charge or a grapple in use with the trigger
-        // down holds the drawn weapon's fire until the trigger is released
-        if (drawn.charge > 0.0f || (drawn.weaponInfo->type == GRAPPLE_WEAPON && drone->grapple != NULL)) {
-            actions.trigger = false;
-        }
-    } else {
-        actions = botActions(c);
-        // cancel the charge unless it's being fired
-        if (choice == SLOT_CANCEL_CHARGE && actions.trigger) {
-            botEvent(c, BOT_EVENT_CHARGE_CANCEL);
-            actions.weaponAction = true;
-        }
-    }
-    // a full charge held too long drains energy until it's empty, which
-    // slows the drone down; cancel it instead
-    const weaponSlot *active = &drone->activeWeapon;
-    if (botHas(c, BOT_FEAT_CHARGE_DRAIN) && !actions.swapWeapon && actions.trigger && active->weaponInfo->maxCharge != 0.0f && active->charge >= active->weaponInfo->maxCharge && active->fullChargeHoldTime >= DRONE_CHARGE_FULL_DRAIN_WAIT - (c->e->frameSkip * c->e->deltaTime) && drone->energyLeft < CHARGE_DRAIN_ENERGY) {
-        botEvent(c, BOT_EVENT_CHARGE_CANCEL);
-        actions.weaponAction = true;
-    }
-    if (drone->triggerSuppressed) {
-        actions.trigger = false;
-    }
     return actions;
 }
 

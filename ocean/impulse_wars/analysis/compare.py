@@ -10,14 +10,19 @@ game or per event rates side by side.
 Opponents are bot personalities or, for runs made with --opponent, the
 opponent policy's name. --side b summarizes the opponent instead of the
 policy. Sections: opp, map, grid, weapons, boost, deaths, behavior, slots,
-pace, mapweapons, standoff, shadow; all by default. Combo tournament runs
-(iw_analyze --combos) get a combos section instead of opp, map and grid;
+utilities, pace, mapweapons, standoff, shadow; all by default. Combo
+tournament runs (iw_analyze --combos, weapon + utility loadouts from the
+utility slot on) get a combos section instead of opp, map and grid;
 --sections combos shows only it.
+
+slots: weapon pickups and combo and setup kills, or the weapon slot stats
+for results from before the utility slot. utilities: use, kills and the
+grapple's and mines' own stats per utility.
 
 pace: game length, draws, line of sight, firing without it and crate
 refills, which together show passive play (e.g. combo drills farming
-crates). mapweapons: kill share of each weapon by map, with each map's
-featured weapon marked. standoff: time in each situation (line of sight,
+crates). mapweapons: kill share of each weapon by map, utilities as their
+projectiles, with each map's featured weapon or utility marked. standoff: time in each situation (line of sight,
 blocked by a wall close or far) by who's ahead on lives, and what happens
 when a drone ends a standoff by peeking.
 """
@@ -36,15 +41,45 @@ WEAPON_SETS = {
          'grapple'],
     12: ['unset', 'standard', 'machinegun', 'sniper', 'shotgun', 'imploder', 'accelerator', 'flak', 'mine', 'blackhole',
          'nuke', 'grapple'],
+    # from the utility slot on the grapple and mine launcher are utility
+    # projectiles, ordered after the weapons
+    'utilities': ['unset', 'standard', 'machinegun', 'sniper', 'shotgun', 'imploder', 'accelerator', 'flak',
+                  'blackhole', 'nuke', 'grapple', 'mine'],
 }
-WEAPONS = WEAPON_SETS[12]
-ATNS = ['move', 'aim coarse', 'aim fine', 'trigger', 'brake', 'burst', 'swap', 'context']
-SOURCES = ['invalid', 'movement', 'recoil', 'burst', 'projectile', 'explosion', 'drone']
+# weapons whose projectiles are only fired by a utility, as weaponIsUtility
+# in settings.h
+UTILITY_PROJECTILES = ('grapple', 'mine')
+WEAPONS = WEAPON_SETS['utilities']
+
+
+def weapon_names(drone):
+    """Weapon names in the order a result's per weapon arrays use."""
+    if 'utilitiesPickedUp' in drone:
+        return WEAPON_SETS['utilities']
+    return WEAPON_SETS[len(drone['shotsFired'])]
+# action heads by how many there are; 8 is from before the utility slot
+ATNS = {
+    7: ['move', 'aim coarse', 'aim fine', 'trigger', 'utility', 'brake', 'burst'],
+    8: ['move', 'aim coarse', 'aim fine', 'trigger', 'brake', 'burst', 'swap', 'context'],
+}
+
+
+def atn_names(n):
+    return ATNS.get(n, [f'head {i}' for i in range(n)])
+SOURCES = ['invalid', 'movement', 'recoil', 'burst', 'projectile', 'explosion', 'grapple', 'drone']
+# from before grapples were their own physics source
+SOURCES_NO_GRAPPLE = ['invalid', 'movement', 'recoil', 'burst', 'projectile', 'explosion', 'drone']
+# utilities by type, and the weapons their projectiles are
+UTILITIES = ['none', 'grapple', 'mines']
+UTILITY_WEAPONS = {1: 'grapple', 2: 'mine'}
+GRAPPLE_TARGETS = ['wall', 'floating wall', 'drone']
 OPPS = ['scripted', 'evader', 'camper', 'rusher', 'trapper', 'turtle', 'fundamentals']
-SECTIONS = ['opp', 'map', 'grid', 'weapons', 'boost', 'deaths', 'behavior', 'slots', 'pace', 'mapweapons', 'standoff',
-            'shadow']
+SECTIONS = ['opp', 'map', 'grid', 'weapons', 'boost', 'deaths', 'behavior', 'slots', 'utilities', 'pace', 'mapweapons',
+            'standoff', 'shadow']
 # each map's featured weapon (its spawn weight override in map.h), marked in
-# the mapweapons section; only applies to builds from fe03156a on
+# the mapweapons section; only applies to builds from fe03156a on. From the
+# utility slot on siege and moat feature the grapple and mines utilities,
+# which kill as the weapons their projectiles are
 FEATURED = {'prototypeArena': 'machinegun', 'snipers': 'sniper', 'rooms': 'shotgun', 'xArena': 'nuke',
             'foamPit': 'imploder', 'siege': 'grapple', 'pinball': 'accelerator', 'moat': 'mine',
             'hourglass': 'blackhole', 'crossroads': 'flak'}
@@ -256,7 +291,8 @@ def section_deaths(runs, side):
                      fmt(sum(g[side].get('assists', 0) for g in games) / n, 3)])
     table('kills and deaths per game', ['run', 'kills', 'deaths', 'self', 'floatSelf', 'floatDeaths', 'unknown', 'assists'], rows)
     rows = []
-    for t, src in enumerate(SOURCES[1:], 1):
+    sources = SOURCES if len(games[0][side]['deathsBySource']) == len(SOURCES) else SOURCES_NO_GRAPPLE
+    for t, src in enumerate(sources[1:], 1):
         row = [src]
         for _, games in runs:
             n = len(games)
@@ -374,8 +410,45 @@ def slot_metrics(games, side):
     ]
 
 
+def weapon_metrics(games, side):
+    n = len(games)
+    s = lambda k: sum(g[side].get(k, 0) for g in games)
+    alive = s('alive')
+    kills = sum(sum(g[side]['killsByWeapon']) for g in games)
+    pickups = s('pickupTopUp') + s('pickupToHand') + s('pickupReplace')
+    return [
+        ('auto switches/g', s('autoSwitches') / n, 2),
+        ('only the standard gun', ratio(s('standardOnly'), alive), 3),
+        ('pickups: top up', ratio(s('pickupTopUp'), pickups), 3),
+        ('pickups: into hand', ratio(s('pickupToHand'), pickups), 3),
+        ('pickups: replace', ratio(s('pickupReplace'), pickups), 3),
+        ('kills with 2+ weapons in 3s', ratio(s('multiWeaponKills'), kills), 3),
+        ('kills set up by another weapon hit in 2s', ratio(s('setupKillsAny'), kills), 3),
+    ]
+
+
+def combo_tables(runs, side, used):
+    nw = len(WEAPONS)
+    for name, games in runs:
+        n = len(games)
+        kills = [total(games, side, 'killsByWeapon', w) for w in range(nw)]
+        combos = sorted(((sum(g[side]['comboKills'][k * nw + o] for g in games), k, o) for k in used for o in used if k != o),
+                        reverse=True)
+        rows = [[WEAPONS[k], WEAPONS[o], fmt(v / n, 3), fmt(100 * ratio(v, kills[k]), 1)] for v, k, o in combos[:20] if v > 0]
+        table(f'{name}: kills with another weapon fired in the 3s before', ['killing weapon', 'also fired', 'per game',
+                                                                            '% of its kills'], rows)
+        if 'setupKills' not in games[0][side]:
+            continue
+        setups = sorted(((sum(g[side]['setupKills'][k * nw + o] for g in games), k, o) for k in used for o in used if k != o),
+                        reverse=True)
+        rows = [[WEAPONS[o], WEAPONS[k], fmt(v / n, 3), fmt(100 * ratio(v, kills[k]), 1)] for v, k, o in setups[:20] if v > 0]
+        table(f'{name}: kills set up by another weapon hitting (or grappling) the enemy in the 2s before',
+              ['setup weapon', 'killing weapon', 'per game', '% of its kills'], rows)
+
+
 def section_slots(runs, side):
     if 'swaps' not in runs[0][1][0][side]:
+        section_weapon_pickups(runs, side)
         return
     cols = [(name, slot_metrics(games, side)) for name, games in runs]
     other = 'b' if side == 'p' else 'p'
@@ -410,19 +483,71 @@ def section_slots(runs, side):
                        reverse=True)
         rows = [[f'{WEAPONS[a]} -> {WEAPONS[b]}', fmt(v, 3)] for v, a, b in pairs[:15] if v > 0]
         table(f'{name}: most common swaps (put away -> drawn), per game', ['swap', 'per game'], rows)
-        kills = [total(games, side, 'killsByWeapon', w) for w in range(nw)]
-        combos = sorted(((sum(g[side]['comboKills'][k * nw + o] for g in games), k, o) for k in used for o in used if k != o),
-                        reverse=True)
-        rows = [[WEAPONS[k], WEAPONS[o], fmt(v / n, 3), fmt(100 * ratio(v, kills[k]), 1)] for v, k, o in combos[:20] if v > 0]
-        table(f'{name}: kills with another weapon fired in the 3s before', ['killing weapon', 'also fired', 'per game',
-                                                                            '% of its kills'], rows)
-        if 'setupKills' not in games[0][side]:
-            continue
-        setups = sorted(((sum(g[side]['setupKills'][k * nw + o] for g in games), k, o) for k in used for o in used if k != o),
-                        reverse=True)
-        rows = [[WEAPONS[o], WEAPONS[k], fmt(v / n, 3), fmt(100 * ratio(v, kills[k]), 1)] for v, k, o in setups[:20] if v > 0]
-        table(f'{name}: kills set up by another weapon hitting (or grappling) the enemy in the 2s before',
-              ['setup weapon', 'killing weapon', 'per game', '% of its kills'], rows)
+    combo_tables(runs, side, used)
+
+
+# results from the utility slot on have one weapon slot
+def section_weapon_pickups(runs, side):
+    cols = [(name, weapon_metrics(games, side)) for name, games in runs]
+    other = 'b' if side == 'p' else 'p'
+    ref = weapon_metrics(runs[0][1], other)
+    rows = []
+    for i, (label, _, digits) in enumerate(cols[0][1]):
+        rows.append([label] + [fmt(c[i][1], digits) for _, c in cols] + [fmt(ref[i][1], digits)])
+    table('weapons and pickups', ['metric'] + [name for name, _ in runs] + [f'{runs[0][0]} {"opponent" if side == "p" else "policy"}'], rows)
+
+    nw = len(WEAPONS)
+    used = [w for w in range(nw) if WEAPONS[w] not in ('unset',)]
+    for name, games in runs:
+        n = len(games)
+        alive = total(games, side, 'alive')
+        rows = [[WEAPONS[w], fmt(100 * ratio(total(games, side, 'held', w), alive), 1),
+                 fmt(total(games, side, 'dropped', w) / n, 3)] for w in used if WEAPONS[w] not in UTILITY_PROJECTILES]
+        table(f'{name}: weapons in hand', ['weapon', 'hand%', 'dropped/g'], rows)
+    combo_tables(runs, side, used)
+
+
+def section_utilities(runs, side):
+    if 'utilityPresses' not in runs[0][1][0][side]:
+        return
+    other = 'b' if side == 'p' else 'p'
+    for name, games in runs:
+        n = len(games)
+        alive = total(games, side, 'alive')
+        rows = []
+        for u in range(1, len(UTILITIES)):
+            w = WEAPONS.index(UTILITY_WEAPONS[u])
+            held = total(games, side, 'utilityHeld', u)
+            presses = total(games, side, 'utilityPresses', u)
+            ammo = total(games, side, 'utilityAmmoSpent', u)
+            kills = total(games, side, 'killsByWeapon', w)
+            rows.append([UTILITIES[u], fmt(100 * ratio(held, alive), 1), fmt(100 * ratio(total(games, side, 'utilityReady', u), held), 1),
+                         fmt(total(games, side, 'utilitiesPickedUp', u) / n, 2), fmt(presses / n, 2),
+                         fmt(100 * ratio(total(games, side, 'utilityPressesUseful', u), presses), 1), fmt(ammo / n, 2),
+                         fmt(total(games, side, 'utilityHits', u) / n, 2), fmt(kills / n, 3),
+                         fmt(total(games, side, 'assistsByWeapon', w) / n, 3), fmt(total(games, side, 'selfKillsByWeapon', w) / n, 3),
+                         fmt(ratio(kills, ammo), 3), fmt(total(games, other, 'killsByWeapon', w) / n, 3)])
+        table(f'{name}: utilities (held% of live steps, ready% of held steps with ammo, useful% of presses that fired, '
+              'reeled or detonated, hits on drones, kills/ammo; enemy k/g = kills on this side by it)',
+              ['utility', 'held%', 'ready%', 'picked/g', 'press/g', 'useful%', 'ammo/g', 'hits/g', 'kills/g', 'assist/g',
+               'self/g', 'kills/ammo', 'enemy k/g'], rows)
+
+        grappleHeld = total(games, side, 'utilityHeld', 1)
+        attached = total(games, side, 'grappleTethered') + total(games, side, 'grappleReeling')
+        reeling = total(games, side, 'grappleReeling')
+        rows = [[GRAPPLE_TARGETS[t], fmt(total(games, side, 'grappleAttaches', t) / n, 3)] for t in range(len(GRAPPLE_TARGETS))]
+        rows += [['attached % of held', fmt(100 * ratio(attached, grappleHeld), 1)],
+                 ['reeling % of attached', fmt(100 * ratio(reeling, attached), 1)],
+                 ['reel speed / mean speed', fmt(ratio(ratio(total(games, side, 'grappleReelSpeed'), reeling),
+                                                       ratio(total(games, side, 'speed'), alive)), 2)],
+                 ['deaths attached/g', fmt(total(games, side, 'grappleAttachedDeaths') / n, 3)],
+                 ['pulled into walls (kills)/g', fmt(total(games, side, 'killsByWeapon', WEAPONS.index('grapple')) / n, 3)]]
+        table(f'{name}: grapple (attaches per game by target)', ['metric', 'value'], rows)
+        mine = WEAPONS.index('mine')
+        rows = [['detonations/g', fmt(total(games, side, 'minesDetonated') / n, 3)],
+                ['kills/g', fmt(total(games, side, 'killsByWeapon', mine) / n, 3)],
+                ['self kills/g', fmt(total(games, side, 'selfKillsByWeapon', mine) / n, 3)]]
+        table(f'{name}: mines', ['metric', 'value'], rows)
 
 
 def section_pace(runs, side):
@@ -457,7 +582,8 @@ def section_mapweapons(runs, side):
                 cell = fmt(100 * ratio(kills[w], t), 1)
                 cells.append(cell + '*' if WEAPONS[w] == featured else cell)
             rows.append([MAPS[m], f"{sum(g['length'] for g in gs) / len(gs):.0f}"] + cells)
-        table(f'{name}: % of kills by weapon on each map (* = the map\'s featured weapon)',
+        table(f'{name}: % of kills by weapon on each map, utilities as their projectiles (grapple, mine); * = the map\'s '
+              'featured weapon or utility',
               ['map', 'len'] + [WEAPONS[w][:6] for w in used], rows)
 
 
@@ -504,7 +630,7 @@ def section_shadow(runs, side):
                         [fmt(sum(g['shadow'][k]['dv'] for g in games) / n, 4), fmt(sum(g['shadow'][k]['absDv'] for g in games) / n, 4)])
         rows.sort(key=lambda r: -float(r[1]))
         table(f'{name}: shadow ablations, KL(policy || ablated) per step and value change',
-              ['obs group', 'KL total'] + ATNS[:len(games[0]['shadow'][0]['kl'])] + ['dV', '|dV|'], rows)
+              ['obs group', 'KL total'] + atn_names(len(games[0]['shadow'][0]['kl'])) + ['dV', '|dV|'], rows)
 
 
 def combo_name(a, b):
@@ -512,6 +638,9 @@ def combo_name(a, b):
 
 
 def section_combos(runs, side):
+    if any('utilityLoadout' in g for _, games in runs for g in games):
+        section_utility_loadouts(runs, side)
+        return
     for name, games in runs:
         games = [g for g in games if 'loadout' in g]
         if not games:
@@ -610,6 +739,62 @@ def section_combos(runs, side):
         table(f'{name}: score of loadouts with weapon (row) vs loadouts with weapon (column)', ['weapon'] + [WEAPONS[b][:6] for b in ws], rows)
 
 
+# from the utility slot on a loadout is a weapon and a utility per drone
+def section_utility_loadouts(runs, side):
+    for name, games in runs:
+        games = [g for g in games if 'utilityLoadout' in g]
+        if not games:
+            continue
+        loadout_scores = defaultdict(list)
+        weapon_scores = defaultdict(list)
+        utility_scores = defaultdict(list)
+        utility_matchup = defaultdict(list)
+        loadout_kills = defaultdict(lambda: [0.0] * len(WEAPONS))
+        for g in games:
+            l, u = g['loadout'], g['utilityLoadout']
+            for sd, own, opp in (('p', 0, 1), ('b', 1, 0)):
+                sc = g[sd]['score']
+                lo = (l[own], u[own])
+                loadout_scores[lo].append(sc)
+                weapon_scores[l[own]].append(sc)
+                utility_scores[u[own]].append(sc)
+                utility_matchup[(u[own], u[opp])].append(sc)
+                for w in range(len(WEAPONS)):
+                    loadout_kills[lo][w] += g[sd]['killsByWeapon'][w]
+        mean = lambda xs: sum(xs) / len(xs)
+
+        rows = []
+        for u, xs in sorted(utility_scores.items(), key=lambda kv: -mean(kv[1])):
+            m, ci = mean_ci(xs)
+            rows.append([UTILITIES[u], f'{fmt(m)}±{fmt(ci)}', len(xs)])
+        table(f'{name}: score of loadouts with each utility', ['utility', 'score', 'n'], rows)
+        us = sorted(utility_scores)
+        rows = [[UTILITIES[a]] + [fmt(mean(utility_matchup[(a, b)]), 3) if utility_matchup[(a, b)] else '-' for b in us] for a in us]
+        table(f'{name}: score of loadouts with utility (row) vs utility (column)', ['utility'] + [UTILITIES[b] for b in us], rows)
+
+        rows = []
+        for w, xs in sorted(weapon_scores.items(), key=lambda kv: -mean(kv[1])):
+            m, ci = mean_ci(xs)
+            rows.append([WEAPONS[w], f'{fmt(m)}±{fmt(ci)}', len(xs)])
+        table(f'{name}: score of loadouts with each weapon', ['weapon', 'score', 'n'], rows)
+
+        ws = sorted(weapon_scores, key=lambda w: -mean(weapon_scores[w]))
+        rows = []
+        for w in ws:
+            row = [WEAPONS[w]]
+            for u in us:
+                xs = loadout_scores[(w, u)]
+                if not xs:
+                    row += ['-', '-']
+                    continue
+                kills = loadout_kills[(w, u)]
+                tot = sum(kills)
+                row += [fmt(mean(xs), 3), fmt(100 * ratio(kills[WEAPONS.index(UTILITY_WEAPONS[u])], tot), 0)]
+            rows.append(row)
+        table(f'{name}: score of each weapon + utility loadout, and % of its kills by the utility',
+              ['weapon'] + [c for u in us for c in (UTILITIES[u], 'util k%')], rows)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('runs', nargs='+', help='[name=]games.jsonl, the first is the baseline')
@@ -621,11 +806,11 @@ def main():
         name, _, path = spec.rpartition('=')
         runs.append((name or os.path.splitext(os.path.basename(path))[0], load(path)))
     global WEAPONS
-    WEAPONS = WEAPON_SETS[len(runs[0][1][0]['p']['shotsFired'])]
+    WEAPONS = weapon_names(runs[0][1][0]['p'])
     sections = args.sections
     if sections is None:
         if 'loadout' in runs[0][1][0]:
-            sections = 'combos,pace,weapons,slots,behavior'
+            sections = 'combos,utilities,pace,weapons,slots,behavior'
         else:
             sections = ','.join(SECTIONS)
     for section in sections.split(','):

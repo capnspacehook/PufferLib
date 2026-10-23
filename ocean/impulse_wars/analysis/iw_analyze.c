@@ -10,7 +10,9 @@
 //
 // Games are paired: game i against every opponent uses the same map and
 // seed, and the seeds only depend on --seed, so runs of different
-// checkpoints or env builds can be compared game by game.
+// checkpoints or env builds can be compared game by game. The starting
+// utility pickups, one nearest each drone, cycle over every pair of
+// utilities across games, so each utility is played as much as the others.
 //
 // Observation studies, for the analyzed policy only:
 //   --ablate groups    the policy acts on observations with these groups
@@ -29,14 +31,14 @@
 //   Groups are comma separated names from obsGroups (--list-groups) or
 //   obs index ranges like 440-445.
 //
-// Combo tournament (--combos, needs --opponent): every pair of pickup
-// weapons (no standard gun) as a starting loadout against every other pair,
-// --episodes games per matchup, starting weapon order random per drone.
+// Combo tournament (--combos, needs --opponent): every loadout of a pickup
+// weapon (no standard gun) and a utility against every other one and
+// itself, --episodes games per matchup.
 // Pickups keep spawning, as in combo training episodes, unless
 // --no-pickups removes them, so drones keep their loadout all game. Maps
 // never lack pickups in training, so that's out of distribution. Weapons
 // still run out of ammo then, so --loadout-pickups instead turns any weapon
-// picked up into the drone's missing loadout weapon with full ammo,
+// or utility picked up into the drone's loadout one with full ammo,
 // keeping drones on their loadout all game; pickups still show their
 // spawned type in the obs until picked up. --crates plays every game as a
 // combo training episode, where all pickups are ammo crates, which is
@@ -164,16 +166,15 @@ static void iw_mingru(MinGRU *layer, const float *input) {
 // steps before a kill another weapon must have been fired in to count as
 // part of a combo
 #define COMBO_WINDOW 30
-// steps after a swap or charged draw that count as following it
-#define SWAP_WINDOW 10
 // steps before a kill another weapon must have hit the enemy in to count
 // as setting it up
 #define SETUP_WINDOW 20
-// pickup weapons that make up combo loadouts
+// combo loadouts are a pickup weapon and a utility: every weapon after the
+// standard one except utility projectiles, with every utility; counted in
+// main
 #define COMBO_FIRST (STANDARD_WEAPON + 1)
-#define NUM_COMBO_WEAPONS (NW - COMBO_FIRST)
-#define NUM_COMBOS (NUM_COMBO_WEAPONS * (NUM_COMBO_WEAPONS - 1) / 2)
-#define NUM_MATCHUPS (NUM_COMBOS * (NUM_COMBOS + 1) / 2)
+#define MAX_COMBOS (NW * _NUM_UTILITIES)
+#define MAX_MATCHUPS (MAX_COMBOS * (MAX_COMBOS + 1) / 2)
 
 static const char *policyNames[NUM_BOT_POLICIES] = {
     [BOT_SITTING_DUCK] = "sitting_duck",
@@ -188,13 +189,12 @@ static const char *policyNames[NUM_BOT_POLICIES] = {
 
 static const char *analysisWeaponNames[NW] = {
     "unset", "standard", "machinegun", "sniper", "shotgun", "imploder",
-    "accelerator", "flak", "mine", "blackhole", "nuke", "grapple",
+    "accelerator", "flak", "blackhole", "nuke", "grapple", "mine",
 };
 
 // per step behavior stats polled from the env, per drone
 typedef struct behaviorStats {
     double held[NW];
-    double heldHolster[NW];
     double fireDist[NW];
     double fireLos[NW];
     double alive;
@@ -246,59 +246,28 @@ typedef struct behaviorStats {
     double fireNoLos;
     double fireNoLosAim10;
 
-    // weapon slots
-    // steps holding two pickup weapons, only the standard gun, and an
-    // empty weapon kept in hand for its live projectiles
-    double bothSlots;
+    // weapons and pickups
+    // steps holding only the standard gun
     double standardOnly;
-    double emptyHeld;
-    double swapPressed;
-    // steps a swap could be made, and the swap action was pressed in them
-    double swapPossible;
-    double swapPressedPossible;
-    // swaps made by the swap action, by weapon put away (rows) and drawn
-    double swaps;
-    double swapsFrom[NW * NW];
-    // weapon in hand changed without a swap or pickup: ran out of ammo
+    // weapon in hand changed without a pickup: ran out of ammo
     double autoSwitches;
-    double triggerSuppressed;
-    double holsterCharged;
-    double holsterChargedBy[NW];
-    // swaps that drew a fully charged weapon, and those fired within
-    // SWAP_WINDOW steps
-    double chargedDraws;
-    double chargedDrawFired;
-    // context button presses by weapon in hand, and presses that did
-    // something (cancel a charge, detonate mines, detach a grapple)
-    double contextPressed[NW];
-    double contextUseful[NW];
-    // context presses: steps it went down after being up, which are the
-    // only ones that act with press semantics (1e168206 on), and those
-    // that did something
-    double contextPresses[NW];
-    double contextPressesUseful[NW];
-    // where pickups went: top up of a held weapon, into hand replacing the
-    // standard gun, into an empty holster, or replacing the weapon in hand
+    // where pickups went: top up of the held weapon, into hand replacing the
+    // standard gun, or replacing a pickup weapon
     double pickupTopUp;
     double pickupToHand;
-    double pickupToHolster;
     double pickupReplace;
     double dropped[NW];
-    double droppedWithAmmo;
-    double swapBeforeReplace;
-    // ammo crates: the mean ammo fraction of the drone's pickup weapons
-    // just before picking one up, summed, and crates picked up with no
-    // pickup weapon; ammoFrac over ammoSteps is the same mean over live
-    // steps with a pickup weapon, for reference
+    // ammo crates: the ammo fraction of the drone's pickup weapon just
+    // before picking one up, summed, and crates picked up with no pickup
+    // weapon; ammoFrac over ammoSteps is the same mean over live steps
+    // with a pickup weapon, for reference
     double crateAmmoFrac;
     double crateAmmoN;
     double crateNoWeapons;
     double ammoFrac;
     double ammoSteps;
-    // kills within SWAP_WINDOW steps of a swap; weapon kills with another
-    // weapon fired in the COMBO_WINDOW steps before, by killing weapon
-    // (rows) and the other weapon
-    double killsAfterSwap;
+    // weapon kills with another weapon fired in the COMBO_WINDOW steps
+    // before, by killing weapon (rows) and the other weapon
     double multiWeaponKills;
     double comboKills[NW * NW];
     // weapon kills where another weapon hit the enemy, or had its grapple
@@ -306,6 +275,15 @@ typedef struct behaviorStats {
     // (rows) and setup weapon; black hole pulls aren't hits
     double setupKills[NW * NW];
     double setupKillsAny;
+
+    // utilities, by utility type: steps holding it and with ammo to use it
+    double utilityHeld[_NUM_UTILITIES];
+    double utilityReady[_NUM_UTILITIES];
+    // steps with the grapple attached and the button up or reeling, and the
+    // drone's speed summed over the reeling steps
+    double grappleTethered;
+    double grappleReeling;
+    double grappleReelSpeed;
 } behaviorStats;
 
 typedef struct shadowStats {
@@ -321,9 +299,13 @@ typedef struct gameResult {
     uint8_t seat;
     uint8_t map;
     uint32_t seed;
-    // combo tournament: starting active and holstered weapons of the
-    // policy then the opponent
-    uint8_t loadout[4];
+    // combo tournament: starting weapons and utilities of the policy then
+    // the opponent
+    uint8_t loadout[2];
+    uint8_t utilityLoadout[2];
+    // utilities of the starting utility pickups nearest each drone,
+    // cycled over seeds; 0 without starting utility pickups
+    uint8_t startUtilities[2];
     float length;
     droneStats stats[2];
     droneAnalysisStats analysis[2];
@@ -346,17 +328,10 @@ typedef struct policyBatch {
     unsigned int *rng;
 } policyBatch;
 
-// weapon slot state of a drone at the start of a step
+// weapon state of a drone at the start of a step
 typedef struct slotState {
-    enum weaponType active;
-    enum weaponType holster;
-    int8_t activeAmmo;
-    int8_t holsterAmmo;
-    float activeCharge;
-    float holsterCharge;
-    float swapCooldown;
-    bool grapple;
-    uint8_t mines;
+    enum weaponType weapon;
+    int8_t ammo;
 } slotState;
 
 // a game slot of a worker's batch
@@ -366,12 +341,10 @@ typedef struct gameSlot {
     droneStats prev[2];
     slotState prevSlots[2];
     float prevKills[2][NW];
+    float prevUtilityAmmo[2][_NUM_UTILITIES];
+    float prevUtilityHits[2][_NUM_UTILITIES];
     int32_t lastFired[2][NW];
     int32_t lastHit[2][NW];
-    int32_t lastSwap[2];
-    bool prevContext[2];
-    int32_t chargedDraw[2];
-    enum weaponType chargedDrawWeapon[2];
     uint32_t step;
     // current run of STANDOFF_CLOSE steps, and the drone that peeked to
     // end the last standoff and when
@@ -404,55 +377,59 @@ static const obsGroup obsGroups[] = {
     {"floating_walls", {{IW_FLOATING_WALL_OFFSET, IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE}}},
     {"pickups", {{IW_PICKUP_OFFSET, IW_NUM_PICKUPS * IW_PICKUP_SIZE}}},
     {"projectiles", {{IW_PROJECTILE_OFFSET, IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE}}},
-    {"enemy_active_weapon", {{E_OBS + 0, 6}}},
-    {"enemy_holster_weapon", {{E_OBS + 6, 6}}},
-    {"enemy_swap_cd", {{E_OBS + 12, 1}}},
-    {"enemy_pos", {{E_OBS + 13, 3}}},
-    {"enemy_vel", {{E_OBS + 16, 2}}},
-    {"enemy_dir", {{E_OBS + 18, 2}}},
-    {"enemy_aim", {{E_OBS + 20, 2}}},
-    {"enemy_shield", {{E_OBS + 22, 2}}},
-    {"enemy_energy", {{E_OBS + 24, 7}}},
-    {"enemy_grapple", {{E_OBS + 31, 10}}},
+    {"enemy_weapon", {{E_OBS + 0, 5}}},
+    // the utility's type, ammo, regen and active count, and the mine's
+    // state; the grapple's state between them is its own group
+    {"enemy_utility", {{E_OBS + 5, 4}, {E_OBS + 19, 4}}},
+    {"enemy_grapple", {{E_OBS + 9, 10}}},
+    {"enemy_pos", {{E_OBS + 23, 3}}},
+    {"enemy_vel", {{E_OBS + 26, 2}}},
+    {"enemy_dir", {{E_OBS + 28, 2}}},
+    {"enemy_aim", {{E_OBS + 30, 2}}},
+    {"enemy_shield", {{E_OBS + 32, 2}}},
+    {"enemy_energy", {{E_OBS + 34, 7}}},
     {"hit_flags", {{E_OBS + 41, 2}, {D_OBS + 42, 3}}},
     {"enemy_lives", {{E_OBS + 43, 3}}},
     {"aim_to_enemy", {{E_OBS + 46, 2}}},
     {"enemy_ray", {{E_OBS + 48, 2}}},
-    {"own_active_weapon", {{D_OBS + 0, 6}}},
-    {"own_holster_weapon", {{D_OBS + 6, 6}}},
-    {"own_swap_cd", {{D_OBS + 12, 1}}},
-    {"own_trigger", {{D_OBS + 13, 2}}},
-    {"own_pos", {{D_OBS + 15, 2}}},
-    {"own_vel", {{D_OBS + 17, 2}}},
-    {"own_aim", {{D_OBS + 19, 2}}},
-    {"aim_vel", {{D_OBS + 21, 2}}},
-    {"own_shield", {{D_OBS + 23, 2}}},
-    {"own_energy", {{D_OBS + 25, 7}}},
-    {"own_grapple", {{D_OBS + 32, 10}}},
+    {"own_weapon", {{D_OBS + 0, 5}}},
+    {"own_utility", {{D_OBS + 5, 4}, {D_OBS + 19, 4}}},
+    {"own_grapple", {{D_OBS + 9, 10}}},
+    {"own_buttons", {{D_OBS + 23, 2}}},
+    {"own_pos", {{D_OBS + 25, 2}}},
+    {"own_vel", {{D_OBS + 27, 2}}},
+    {"own_aim", {{D_OBS + 29, 2}}},
+    {"aim_vel", {{D_OBS + 31, 2}}},
+    {"own_shield", {{D_OBS + 33, 2}}},
+    {"own_energy", {{D_OBS + 35, 7}}},
     {"own_lives", {{D_OBS + 45, 3}}},
     {"own_aim_ray", {{D_OBS + 48, 2}}},
     {"own_vel_ray", {{D_OBS + 50, 2}}},
     {"own_drift_ray", {{D_OBS + 52, 2}}},
     {"misc", {{M_OBS, 3}}},
     // finer groups, not used for the weights output
-    {"own_holster_type", {{D_OBS + 6, 1}}},
-    {"own_holster_state", {{D_OBS + 7, 5}}},
-    {"own_active_type", {{D_OBS + 0, 1}}},
-    {"own_active_state", {{D_OBS + 1, 5}}},
-    {"own_charges", {{D_OBS + 4, 2}, {D_OBS + 10, 2}}},
-    {"enemy_holster_type", {{E_OBS + 6, 1}}},
-    {"enemy_holster_state", {{E_OBS + 7, 5}}},
-    {"enemy_active_type", {{E_OBS + 0, 1}}},
-    {"enemy_active_state", {{E_OBS + 1, 5}}},
-    {"enemy_charges", {{E_OBS + 4, 2}, {E_OBS + 10, 2}}},
-    {"enemy_weapons", {{E_OBS + 0, 13}}},
-    {"own_weapons", {{D_OBS + 0, 15}}},
+    {"own_weapon_type", {{D_OBS + 0, 1}}},
+    {"own_weapon_state", {{D_OBS + 1, 4}}},
+    {"own_charge", {{D_OBS + 3, 2}}},
+    {"own_utility_type", {{D_OBS + 5, 1}}},
+    {"own_utility_state", {{D_OBS + 6, 17}}},
+    {"own_mine", {{D_OBS + 19, 4}}},
+    {"own_mine_pos", {{D_OBS + 21, 2}}},
+    {"enemy_weapon_type", {{E_OBS + 0, 1}}},
+    {"enemy_weapon_state", {{E_OBS + 1, 4}}},
+    {"enemy_charge", {{E_OBS + 3, 2}}},
+    {"enemy_utility_type", {{E_OBS + 5, 1}}},
+    {"enemy_utility_state", {{E_OBS + 6, 17}}},
+    {"enemy_mine", {{E_OBS + 19, 4}}},
+    {"enemy_mine_pos", {{E_OBS + 21, 2}}},
+    {"enemy_loadout", {{E_OBS + 0, 23}}},
+    {"own_loadout", {{D_OBS + 0, 25}}},
     {"steps_left", {{M_OBS + 1, 1}}},
     {"sudden_death", {{M_OBS + 2, 1}}},
 };
 #define NUM_OBS_GROUPS (sizeof(obsGroups) / sizeof(obsGroups[0]))
 // groups before this one partition the obs for the weights output
-#define NUM_PRIMARY_GROUPS 35
+#define NUM_PRIMARY_GROUPS 33
 
 typedef struct obsMask {
     char name[96];
@@ -483,8 +460,11 @@ static bool combos = false;
 static bool noPickups = false;
 static bool loadoutPickups = false;
 static bool crates = false;
-static uint8_t comboWeapons[NUM_COMBOS][2];
-static uint16_t matchups[NUM_MATCHUPS][2];
+// weapon and utility of each combo loadout
+static uint8_t comboLoadouts[MAX_COMBOS][2];
+static uint16_t numCombos = 0;
+static uint16_t matchups[MAX_MATCHUPS][2];
+static uint32_t numMatchups = 0;
 static obsMask ablateMask;
 static bool ablating = false;
 static enum ablateMode ablateMode = ABLATE_ZERO;
@@ -522,14 +502,16 @@ static uint32_t hashSeed(uint64_t x) {
 }
 
 static void buildObsNames(void) {
-    static const char *weaponFields[IW_WEAPON_SIZE] = {"type", "ammo", "useful", "cooldown", "charge", "hold"};
+    static const char *weaponFields[IW_WEAPON_SIZE] = {"type", "ammo", "cooldown", "charge", "hold"};
+    static const char *utilityFields[4] = {"type", "ammo", "regen", "active"};
+    static const char *mineFields[MINE_OBS_SIZE] = {"in_flight", "welded", "x", "y"};
     static const char *grappleFields[GRAPPLE_OBS_SIZE] = {"on", "x", "y", "tension", "reeling", "hp", "att_none", "att_wall", "att_floating", "att_drone"};
     static const char *rayFields[2] = {"type", "dist"};
-    static const char *enemyFields[] = {"swap_cd", "rel_x", "rel_y", "dist", "vel_x", "vel_y", "dir_x", "dir_y", "aim_x", "aim_y",
+    static const char *enemyFields[] = {"rel_x", "rel_y", "dist", "vel_x", "vel_y", "dir_x", "dir_y", "aim_x", "aim_y",
                                         "shield_hp", "shield_dur", "energy", "depleted", "refill_wait", "braking", "burst_cd",
                                         "charging_burst", "burst_charge"};
     static const char *enemyTail[] = {"took_shot", "hit_shot", "lives", "alive", "respawn", "aim_to_enemy_sin", "aim_to_enemy_cos"};
-    static const char *ownFields[] = {"swap_cd", "trigger_held", "trigger_suppressed", "pos_x", "pos_y", "vel_x", "vel_y", "aim_x", "aim_y",
+    static const char *ownFields[] = {"trigger_held", "utility_held", "pos_x", "pos_y", "vel_x", "vel_y", "aim_x", "aim_y",
                                       "aim_vel_sin", "aim_vel_cos", "shield_hp", "shield_dur", "energy", "depleted", "refill_wait",
                                       "braking", "burst_cd", "charging_burst", "burst_charge"};
     static const char *ownTail[] = {"hit_shot", "took_shot", "own_shot_taken", "lives", "alive", "respawn"};
@@ -567,16 +549,20 @@ static void buildObsNames(void) {
         }
     }
     int i = E_OBS;
-    for (int w = 0; w < IW_DRONE_WEAPONS; w++) {
-        for (int k = 0; k < IW_WEAPON_SIZE; k++) {
-            snprintf(obsNames[i++], 48, "enemy_%s_%s", w == 0 ? "active" : "holster", weaponFields[k]);
-        }
+    for (int k = 0; k < IW_WEAPON_SIZE; k++) {
+        snprintf(obsNames[i++], 48, "enemy_weapon_%s", weaponFields[k]);
     }
-    for (size_t k = 0; k < sizeof(enemyFields) / sizeof(enemyFields[0]); k++) {
-        snprintf(obsNames[i++], 48, "enemy_%s", enemyFields[k]);
+    for (int k = 0; k < 4; k++) {
+        snprintf(obsNames[i++], 48, "enemy_utility_%s", utilityFields[k]);
     }
     for (int k = 0; k < GRAPPLE_OBS_SIZE; k++) {
         snprintf(obsNames[i++], 48, "enemy_grapple_%s", grappleFields[k]);
+    }
+    for (int k = 0; k < MINE_OBS_SIZE; k++) {
+        snprintf(obsNames[i++], 48, "enemy_mine_%s", mineFields[k]);
+    }
+    for (size_t k = 0; k < sizeof(enemyFields) / sizeof(enemyFields[0]); k++) {
+        snprintf(obsNames[i++], 48, "enemy_%s", enemyFields[k]);
     }
     for (size_t k = 0; k < sizeof(enemyTail) / sizeof(enemyTail[0]); k++) {
         snprintf(obsNames[i++], 48, "enemy_%s", enemyTail[k]);
@@ -586,16 +572,20 @@ static void buildObsNames(void) {
         snprintf(obsNames[i++], 48, "enemy_ray_%s", rayFields[k]);
     }
     assert(i == D_OBS);
-    for (int w = 0; w < IW_DRONE_WEAPONS; w++) {
-        for (int k = 0; k < IW_WEAPON_SIZE; k++) {
-            snprintf(obsNames[i++], 48, "own_%s_%s", w == 0 ? "active" : "holster", weaponFields[k]);
-        }
+    for (int k = 0; k < IW_WEAPON_SIZE; k++) {
+        snprintf(obsNames[i++], 48, "own_weapon_%s", weaponFields[k]);
     }
-    for (size_t k = 0; k < sizeof(ownFields) / sizeof(ownFields[0]); k++) {
-        snprintf(obsNames[i++], 48, "own_%s", ownFields[k]);
+    for (int k = 0; k < 4; k++) {
+        snprintf(obsNames[i++], 48, "own_utility_%s", utilityFields[k]);
     }
     for (int k = 0; k < GRAPPLE_OBS_SIZE; k++) {
         snprintf(obsNames[i++], 48, "own_grapple_%s", grappleFields[k]);
+    }
+    for (int k = 0; k < MINE_OBS_SIZE; k++) {
+        snprintf(obsNames[i++], 48, "own_mine_%s", mineFields[k]);
+    }
+    for (size_t k = 0; k < sizeof(ownFields) / sizeof(ownFields[0]); k++) {
+        snprintf(obsNames[i++], 48, "own_%s", ownFields[k]);
     }
     for (size_t k = 0; k < sizeof(ownTail) / sizeof(ownTail[0]); k++) {
         snprintf(obsNames[i++], 48, "own_%s", ownTail[k]);
@@ -809,17 +799,10 @@ static void deathWallDistances(iwEnv *e, const droneEntity *d, float *staticDist
     }
 }
 
-static slotState readSlots(const iwEnv *e, const droneEntity *d) {
+static slotState readSlots(const droneEntity *d) {
     return (slotState){
-        .active = d->activeWeapon.weaponInfo->type,
-        .holster = d->inactiveWeapon.weaponInfo->type,
-        .activeAmmo = d->activeWeapon.ammo,
-        .holsterAmmo = d->inactiveWeapon.ammo,
-        .activeCharge = d->activeWeapon.charge,
-        .holsterCharge = d->inactiveWeapon.charge,
-        .swapCooldown = d->swapCooldown,
-        .grapple = d->grapple != NULL,
-        .mines = e->minesCreated[d->idx],
+        .weapon = d->weapon.weaponInfo->type,
+        .ammo = d->weapon.ammo,
     };
 }
 
@@ -827,8 +810,24 @@ static void snapshot(gameSlot *slot, const droneAnalysisStats *analysis) {
     iwEnv *e = slot->e;
     memcpy(slot->prev, e->stats, sizeof(slot->prev));
     for (uint8_t i = 0; i < 2; i++) {
-        slot->prevSlots[i] = readSlots(e, safe_array_get_at(e->drones, i));
+        slot->prevSlots[i] = readSlots(safe_array_get_at(e->drones, i));
         memcpy(slot->prevKills[i], analysis[i].killsByWeapon, sizeof(slot->prevKills[i]));
+        memcpy(slot->prevUtilityAmmo[i], analysis[i].utilityAmmoSpent, sizeof(slot->prevUtilityAmmo[i]));
+        memcpy(slot->prevUtilityHits[i], analysis[i].utilityHits, sizeof(slot->prevUtilityHits[i]));
+    }
+}
+
+// sets the types of the starting utility pickups, which are the first
+// pickups, created one nearest each drone in drone order
+static void setStartUtilities(iwEnv *e, const uint8_t *utilities) {
+    for (uint8_t i = 0; i < e->numDrones && i < cc_array_size(e->pickups); i++) {
+        weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
+        if (pickup->kind != UTILITY_PICKUP) {
+            return;
+        }
+        e->spawnedUtilityPickups[pickup->utility]--;
+        pickup->utility = utilities[i];
+        e->spawnedUtilityPickups[pickup->utility]++;
     }
 }
 
@@ -848,10 +847,10 @@ static void startGame(gameSlot *slot, policyBatch *p, policyBatch *opp, const in
     e->botFeatures[1] = botPresets[opps[g->opp]].feats;
     memset(&e->log, 0x0, sizeof(e->log));
     puf_reset(e);
+    setStartUtilities(e, g->startUtilities);
     if (combos) {
         for (uint8_t i = 0; i < 2; i++) {
-            const uint8_t *l = g->loadout + (i == 0 ? 0 : 2);
-            droneSetLoadout(safe_array_get_at(e->drones, i == 0 ? g->seat : 1 - g->seat), l[0], l[1]);
+            droneSetLoadout(safe_array_get_at(e->drones, i == 0 ? g->seat : 1 - g->seat), g->loadout[i], g->utilityLoadout[i]);
         }
     }
     if (noPickups) {
@@ -864,9 +863,7 @@ static void startGame(gameSlot *slot, policyBatch *p, policyBatch *opp, const in
             pickup->respawnWait = FLT_MAX;
         }
     }
-    if (combos || noPickups) {
-        computeObs(e);
-    }
+    computeObs(e);
     // a fresh recurrent state for every game
     p->terminals[b] = 1.0f;
     p->rng[b] = g->seed;
@@ -887,9 +884,6 @@ static void startGame(gameSlot *slot, policyBatch *p, policyBatch *opp, const in
             slot->lastFired[i][w] = -1000;
             slot->lastHit[i][w] = -1000;
         }
-        slot->lastSwap[i] = -1000;
-        slot->prevContext[i] = false;
-        slot->chargedDraw[i] = -1000;
         g->behavior[i].firstLosStep = -1;
         g->behavior[i].firstPickupStep = -1;
     }
@@ -909,11 +903,6 @@ static float recordFired(gameSlot *slot, const uint8_t i, const droneStats *cur)
         }
         fired += shots;
         slot->lastFired[i][w] = slot->step;
-        behaviorStats *s = droneBehavior(slot, i);
-        if (w == slot->chargedDrawWeapon[i] && (int32_t)slot->step - slot->chargedDraw[i] <= SWAP_WINDOW) {
-            s->chargedDrawFired++;
-            slot->chargedDraw[i] = -1000;
-        }
     }
     return fired;
 }
@@ -930,7 +919,24 @@ static void recordHits(gameSlot *slot, const uint8_t i, const droneStats *cur, c
     }
 }
 
-// attributes this step's weapon kills to swaps and combos
+// records the utilities each drone fired and hit with this step, as the
+// weapon their projectiles are, for combo and setup kills; utility
+// projectiles aren't counted as shots
+static void recordUtilityUse(gameSlot *slot, const droneAnalysisStats *analysis) {
+    for (uint8_t i = 0; i < 2; i++) {
+        for (uint8_t u = UNSET_UTILITY + 1; u < _NUM_UTILITIES; u++) {
+            const enum weaponType w = utilityInfos[u]->projectileInfo->type;
+            if (analysis[i].utilityAmmoSpent[u] > slot->prevUtilityAmmo[i][u]) {
+                slot->lastFired[i][w] = slot->step;
+            }
+            if (analysis[i].utilityHits[u] > slot->prevUtilityHits[i][u]) {
+                slot->lastHit[i][w] = slot->step;
+            }
+        }
+    }
+}
+
+// attributes this step's weapon kills to combos and setups
 static void recordKills(gameSlot *slot, const droneAnalysisStats *analysis) {
     for (uint8_t i = 0; i < 2; i++) {
         behaviorStats *s = droneBehavior(slot, i);
@@ -938,9 +944,6 @@ static void recordKills(gameSlot *slot, const droneAnalysisStats *analysis) {
             const float kills = analysis[i].killsByWeapon[w] - slot->prevKills[i][w];
             if (kills <= 0.0f) {
                 continue;
-            }
-            if ((int32_t)slot->step - slot->lastSwap[i] <= SWAP_WINDOW) {
-                s->killsAfterSwap += kills;
             }
             bool multi = false;
             for (uint8_t o = 0; o < NW; o++) {
@@ -962,88 +965,39 @@ static void recordKills(gameSlot *slot, const droneAnalysisStats *analysis) {
     }
 }
 
-static bool chargeWeapon(const enum weaponType w) {
-    return w == SNIPER_WEAPON || w == IMPLODER_WEAPON || w == BLACK_HOLE_WEAPON || w == NUKE_WEAPON;
-}
-
-// weapon slot changes of a live drone over the last step
-static void observeSlots(gameSlot *slot, const uint8_t i, const droneEntity *d, const agentActions *a) {
+// weapon changes of a live drone over the last step
+static void observeSlots(gameSlot *slot, const uint8_t i, const droneEntity *d) {
     iwEnv *e = slot->e;
     behaviorStats *s = droneBehavior(slot, i);
     const slotState *prev = &slot->prevSlots[i];
-    const slotState cur = readSlots(e, d);
+    const slotState cur = readSlots(d);
     const droneStats *stats = &e->stats[i];
 
-    s->held[cur.active]++;
-    s->heldHolster[cur.holster]++;
-    s->bothSlots += cur.active > STANDARD_WEAPON && cur.holster > STANDARD_WEAPON;
-    s->standardOnly += cur.active == STANDARD_WEAPON;
-    s->emptyHeld += cur.active != STANDARD_WEAPON && cur.activeAmmo == 0;
-    s->triggerSuppressed += d->triggerSuppressed;
-    if (d->inactiveWeapon.charge > 0.0f) {
-        s->holsterCharged++;
-        s->holsterChargedBy[cur.holster]++;
-    }
+    s->held[cur.weapon]++;
+    s->standardOnly += cur.weapon == STANDARD_WEAPON;
 
-    // a swap by the swap action resets the cooldown, which works with both
-    // hold and press semantics; pickups come after the swap in a frame
-    const bool canSwap = prev->swapCooldown < e->frameSkip * e->deltaTime && prev->holster != UNSET_WEAPON;
-    const bool swapped = cur.swapCooldown > prev->swapCooldown;
-    s->swapPressed += a->swapWeapon;
-    s->swapPossible += canSwap;
-    s->swapPressedPossible += swapped;
-    enum weaponType held = prev->active;
-    enum weaponType holstered = prev->holster;
-    if (swapped) {
-        s->swaps++;
-        s->swapsFrom[prev->active * NW + prev->holster]++;
-        slot->lastSwap[i] = slot->step;
-        held = prev->holster;
-        holstered = prev->active;
-        const weaponSlot *drawn = &d->activeWeapon;
-        if (cur.active == held && drawn->weaponInfo->maxCharge > 0.0f && drawn->charge >= drawn->weaponInfo->maxCharge) {
-            s->chargedDraws++;
-            slot->chargedDraw[i] = slot->step;
-            slot->chargedDrawWeapon[i] = held;
+    const enum utilityType utility = d->utility.utilityInfo->type;
+    s->utilityHeld[utility]++;
+    s->utilityReady[utility] += d->utility.ammo > 0;
+    if (d->grapple != NULL && d->grapple->welded) {
+        if (d->utilityHeld) {
+            s->grappleReeling++;
+            s->grappleReelSpeed += b2Length(d->velocity);
+        } else {
+            s->grappleTethered++;
         }
     }
 
-    if (a->weaponAction) {
-        s->contextPressed[held]++;
-        const bool charged = (swapped ? prev->holsterCharge : prev->activeCharge) > 0.0f;
-        bool useful = false;
-        if (chargeWeapon(held)) {
-            useful = charged;
-        } else if (held == MINE_LAUNCHER_WEAPON) {
-            useful = prev->mines > 0;
-        } else if (held == GRAPPLE_WEAPON) {
-            useful = prev->grapple;
-        }
-        s->contextUseful[held] += useful;
-        if (!slot->prevContext[i]) {
-            s->contextPresses[held]++;
-            s->contextPressesUseful[held] += useful;
-        }
-    }
-    slot->prevContext[i] = a->weaponAction;
-
-    float ammoSum = 0.0f;
-    uint8_t ammoN = 0;
-    const enum weaponType prevTypes[2] = {prev->active, prev->holster};
-    const int8_t prevAmmo[2] = {prev->activeAmmo, prev->holsterAmmo};
-    for (uint8_t k = 0; k < 2; k++) {
-        if (prevTypes[k] > STANDARD_WEAPON) {
-            ammoSum += (float)prevAmmo[k] / (float)weaponAmmo(prevTypes[k]);
-            ammoN++;
-        }
-    }
-    if (ammoN > 0) {
-        s->ammoFrac += ammoSum / ammoN;
+    const bool hadPickupWeapon = prev->weapon > STANDARD_WEAPON;
+    float ammoFrac = 0.0f;
+    if (hadPickupWeapon) {
+        ammoFrac = (float)prev->ammo / (float)weaponInfos[prev->weapon]->ammo;
+        s->ammoFrac += ammoFrac;
         s->ammoSteps++;
     }
     if (stats->cratesPickedUp > slot->prev[i].cratesPickedUp) {
-        if (ammoN > 0) {
-            s->crateAmmoFrac += ammoSum / ammoN;
+        if (hadPickupWeapon) {
+            s->crateAmmoFrac += ammoFrac;
             s->crateAmmoN++;
         } else {
             s->crateNoWeapons++;
@@ -1058,40 +1012,37 @@ static void observeSlots(gameSlot *slot, const uint8_t i, const droneEntity *d, 
                 pickup = w;
             }
         }
-        if (pickup == held || pickup == holstered) {
+        if (pickup == prev->weapon) {
             s->pickupTopUp++;
-        } else if (held == STANDARD_WEAPON) {
+        } else if (prev->weapon == STANDARD_WEAPON) {
             s->pickupToHand++;
-        } else if (holstered == UNSET_WEAPON) {
-            s->pickupToHolster++;
         } else {
             s->pickupReplace++;
-            s->dropped[held]++;
-            s->droppedWithAmmo += (swapped ? prev->holsterAmmo : prev->activeAmmo) != 0;
-            s->swapBeforeReplace += (int32_t)slot->step - slot->lastSwap[i] <= SWAP_WINDOW;
+            s->dropped[prev->weapon]++;
         }
-    } else if (!swapped && cur.active != prev->active) {
+    } else if (cur.weapon != prev->weapon) {
         s->autoSwitches++;
     }
 }
 
-// --loadout-pickups: replaces weapons outside the drone's loadout, which
-// only come from pickups, with its missing loadout weapon at full ammo;
-// returns true if a weapon was replaced
+// --loadout-pickups: replaces a weapon outside the drone's loadout, which
+// only comes from pickups, with its loadout weapon at full ammo; returns
+// true if the weapon was replaced
 static bool enforceLoadout(gameSlot *slot, const uint8_t i, droneEntity *d) {
-    const uint8_t *l = slot->g->loadout + (i == slot->g->seat ? 0 : 2);
-    weaponSlot *slots[2] = {&d->activeWeapon, &d->inactiveWeapon};
+    const uint8_t side = i == slot->g->seat ? 0 : 1;
+    const uint8_t loadout = slot->g->loadout[side];
+    const uint8_t utilityLoadout = slot->g->utilityLoadout[side];
     bool replaced = false;
-    for (uint8_t k = 0; k < 2; k++) {
-        const enum weaponType w = slots[k]->weaponInfo->type;
-        if (w == UNSET_WEAPON || w == STANDARD_WEAPON || w == l[0] || w == l[1]) {
-            continue;
-        }
-        const enum weaponType other = slots[1 - k]->weaponInfo->type;
-        const enum weaponType missing = other == l[0] ? l[1] : l[0];
-        slots[k]->weaponInfo = weaponInfos[missing];
-        resetWeapon(slots[k]);
-        slots[k]->ammo = weaponAmmo(missing);
+    weaponSlot *weapon = &d->weapon;
+    const enum weaponType w = weapon->weaponInfo->type;
+    if (w != STANDARD_WEAPON && w != loadout) {
+        weapon->weaponInfo = weaponInfos[loadout];
+        resetWeapon(weapon);
+        weapon->ammo = weapon->weaponInfo->ammo;
+        replaced = true;
+    }
+    if (d->utility.utilityInfo->type != utilityLoadout) {
+        droneChangeUtility(slot->e, d, utilityLoadout);
         replaced = true;
     }
     return replaced;
@@ -1185,14 +1136,12 @@ static void observeStep(gameSlot *slot) {
         const float fired = recordFired(slot, i, cur);
         recordHits(slot, i, cur, d);
         if (d->dead) {
-            // the env clears held buttons on death
-            slot->prevContext[i] = false;
             continue;
         }
 
         const agentActions *a = &e->cachedActions[i];
         const float speed = b2Length(d->velocity);
-        observeSlots(slot, i, d, a);
+        observeSlots(slot, i, d);
         s->alive++;
         s->speed += speed;
         s->energy += d->energyLeft;
@@ -1200,7 +1149,7 @@ static void observeStep(gameSlot *slot) {
         s->brake += a->brake;
         s->burstCharge += a->chargingBurst;
         s->moveNoop += b2Length(a->move) < 0.01f;
-        const weaponSlot *active = &d->activeWeapon;
+        const weaponSlot *active = &d->weapon;
         if (active->weaponInfo->maxCharge != 0.0f && d->triggerHeld) {
             s->charging++;
             s->chargeHeldFull += active->charge >= active->weaponInfo->maxCharge;
@@ -1251,6 +1200,7 @@ static void observeStep(gameSlot *slot) {
             }
         }
     }
+    recordUtilityUse(slot, e->analysisStats);
     recordKills(slot, e->analysisStats);
     if (loadoutPickups) {
         bool replaced = false;
@@ -1288,6 +1238,7 @@ static bool stepGame(gameSlot *slot, policyBatch *p, const int b) {
             recordFired(slot, i, &e->log.stats[i]);
             recordHits(slot, i, &e->log.stats[i], NULL);
         }
+        recordUtilityUse(slot, e->lastAnalysisStats);
         recordKills(slot, e->lastAnalysisStats);
         g->length = e->log.length;
         for (uint8_t i = 0; i < 2; i++) {
@@ -1319,19 +1270,22 @@ static bool nextGame(gameResult **out) {
         g->opp = 0;
         g->map = tourMaps[(m * 7 + gameIdx) % numMaps];
         g->seed = hashSeed(baseSeed * 1000003ull + m * 1009ull + gameIdx);
-        // random starting weapon order per drone, the same for both seats
-        const uint32_t order = hashSeed(g->seed);
         for (uint8_t i = 0; i < 2; i++) {
-            const uint8_t *c = comboWeapons[matchups[m][i]];
-            const uint8_t flip = (order >> i) & 1;
-            g->loadout[i * 2] = c[flip];
-            g->loadout[i * 2 + 1] = c[1 - flip];
+            g->loadout[i] = comboLoadouts[matchups[m][i]][0];
+            g->utilityLoadout[i] = comboLoadouts[matchups[m][i]][1];
         }
     } else {
         g->opp = job / gamesPerOpp;
         g->map = tourMaps[gameIdx % numMaps];
         g->seed = hashSeed(baseSeed * 1000003ull + gameIdx);
     }
+    // cycle the starting utility pickups over every pair of utilities,
+    // shifted every round of maps so each map gets every pair too; drone
+    // order, so a policy playing both drones of a seed plays both sides
+    const uint32_t numUtilities = _NUM_UTILITIES - 1;
+    const uint32_t pair = (gameIdx + gameIdx / numMaps) % (numUtilities * numUtilities);
+    g->startUtilities[0] = UNSET_UTILITY + 1 + pair / numUtilities;
+    g->startUtilities[1] = UNSET_UTILITY + 1 + pair % numUtilities;
     *out = g;
     return true;
 }
@@ -1561,6 +1515,7 @@ static void writeDrone(FILE *f, const gameResult *g, const uint8_t i) {
     WRITE_F(shieldsBroken);
     WRITE_F(ownShieldBroken);
     writeArray(f, "shotsFired", s->shotsFired, NW);
+    writeArray(f, "utilitiesPickedUp", s->utilitiesPickedUp, _NUM_UTILITIES);
     writeArray(f, "shotsHit", s->shotsHit, NW);
     writeArray(f, "weaponsPickedUp", s->weaponsPickedUp, NW);
     WRITE_A(killsByWeapon, NW);
@@ -1570,27 +1525,27 @@ static void writeDrone(FILE *f, const gameResult *g, const uint8_t i) {
     fprintf(f, "\"floatingWallDeaths\":%g,\"floatingWallSelfKills\":%g,", a->floatingWallDeaths, a->floatingWallSelfKills);
     WRITE_A(assistsByWeapon, NW);
     WRITE_A(diedHoldingActive, NW);
-    WRITE_A(diedHoldingInactive, NW);
     WRITE_A(pickupsFrom, NW * NW);
     WRITE_A(boostedShotsFired, NW);
     WRITE_A(boostedShotsHit, NW);
     WRITE_A(boostedKills, NW);
     WRITE_A(boostedSelfKills, NW);
     WRITE_A(boostedSpeedBefore, NW);
+    WRITE_A(utilityPresses, _NUM_UTILITIES);
+    WRITE_A(utilityPressesUseful, _NUM_UTILITIES);
+    WRITE_A(utilityAmmoSpent, _NUM_UTILITIES);
+    WRITE_A(utilityHits, _NUM_UTILITIES);
+    WRITE_A(grappleAttaches, 3);
+    fprintf(f, "\"grappleAttachedDeaths\":%g,\"minesDetonated\":%g,", a->grappleAttachedDeaths, a->minesDetonated);
     WRITE_A(boostedSpeedAfter, NW);
     WRITE_BA(held, NW);
-    WRITE_BA(heldHolster, NW);
     WRITE_BA(fireDist, NW);
     WRITE_BA(fireLos, NW);
-    WRITE_BA(swapsFrom, NW * NW);
-    WRITE_BA(holsterChargedBy, NW);
-    WRITE_BA(contextPressed, NW);
-    WRITE_BA(contextUseful, NW);
-    WRITE_BA(contextPresses, NW);
-    WRITE_BA(contextPressesUseful, NW);
     WRITE_BA(dropped, NW);
     WRITE_BA(comboKills, NW * NW);
     WRITE_BA(setupKills, NW * NW);
+    WRITE_BA(utilityHeld, _NUM_UTILITIES);
+    WRITE_BA(utilityReady, _NUM_UTILITIES);
     WRITE_B(alive);
     WRITE_B(trigger);
     WRITE_B(triggerLos);
@@ -1631,45 +1586,45 @@ static void writeDrone(FILE *f, const gameResult *g, const uint8_t i) {
     WRITE_B(fireAim10);
     WRITE_B(fireNoLos);
     WRITE_B(fireNoLosAim10);
-    WRITE_B(bothSlots);
     WRITE_B(standardOnly);
-    WRITE_B(emptyHeld);
-    WRITE_B(swapPressed);
-    WRITE_B(swapPossible);
-    WRITE_B(swapPressedPossible);
-    WRITE_B(swaps);
     WRITE_B(autoSwitches);
-    WRITE_B(triggerSuppressed);
-    WRITE_B(holsterCharged);
-    WRITE_B(chargedDraws);
-    WRITE_B(chargedDrawFired);
     WRITE_B(pickupTopUp);
     WRITE_B(pickupToHand);
-    WRITE_B(pickupToHolster);
     WRITE_B(pickupReplace);
-    WRITE_B(droppedWithAmmo);
-    WRITE_B(swapBeforeReplace);
     WRITE_B(crateAmmoFrac);
     WRITE_B(crateAmmoN);
     WRITE_B(crateNoWeapons);
     WRITE_B(ammoFrac);
     WRITE_B(ammoSteps);
-    WRITE_B(killsAfterSwap);
     WRITE_B(setupKillsAny);
+    WRITE_B(grappleTethered);
+    WRITE_B(grappleReeling);
+    WRITE_B(grappleReelSpeed);
     fprintf(f, "\"multiWeaponKills\":%g}", b->multiWeaponKills);
 }
 
-// weapon name of a weapon type obs value, which can also be an ammo crate
-static const char *weaponObsName(const int type) {
-    return type == AMMO_CRATE_OBS_TYPE ? "ammo_crate" : analysisWeaponNames[type];
+// name of a pickup type obs value: a weapon, an ammo crate or a utility
+static const char *pickupObsName(const int type) {
+    if (type == AMMO_CRATE_OBS_TYPE) {
+        return "ammo_crate";
+    }
+    if (type > AMMO_CRATE_OBS_TYPE) {
+        static const char *utilityPickups[] = {"utility_grapple", "utility_mines"};
+        return utilityPickups[type - AMMO_CRATE_OBS_TYPE - 1];
+    }
+    return analysisWeaponNames[type];
 }
 
 // one-hot class name of a type slot value
 static const char *className(const int vocab, const int cls) {
     static const char *walls[] = {"none", "standard", "bouncy", "death"};
     static const char *rays[] = {"none", "wall", "bouncy", "death", "fw", "fw_bouncy", "fw_death", "drone"};
-    if (vocab == IW_WEAPON_VOCAB) {
-        return weaponObsName(cls);
+    static const char *utilities[] = {"none", "grapple", "mines"};
+    if (vocab == IW_PICKUP_VOCAB || vocab == IW_WEAPON_VOCAB) {
+        return pickupObsName(cls);
+    }
+    if (vocab == IW_UTILITY_VOCAB) {
+        return utilities[cls];
     }
     if (vocab == IW_WALL_VOCAB) {
         return walls[cls];
@@ -1732,7 +1687,7 @@ static bool writeWeights(const char *path) {
     static const char *projScalars[] = {"own", "enemy", "x", "y", "vel_x", "vel_y"};
     for (int k = 0; k < IW_PROJ_USED_FEATURES; k++) {
         if (k < IW_WEAPON_VOCAB - 1) {
-            snprintf(name, sizeof(name), "type=%s", weaponObsName(k + 1));
+            snprintf(name, sizeof(name), "type=%s", analysisWeaponNames[k + 1]);
         } else {
             snprintf(name, sizeof(name), "%s", projScalars[k - (IW_WEAPON_VOCAB - 1)]);
         }
@@ -1922,23 +1877,24 @@ int main(int argc, char **argv) {
 
     totalGames = numOpps * gamesPerOpp;
     if (combos) {
-        int c = 0;
-        for (uint8_t a = 0; a < NUM_COMBO_WEAPONS; a++) {
-            for (uint8_t b = a + 1; b < NUM_COMBO_WEAPONS; b++) {
-                comboWeapons[c][0] = COMBO_FIRST + a;
-                comboWeapons[c][1] = COMBO_FIRST + b;
-                c++;
+        for (uint8_t w = COMBO_FIRST; w < NW; w++) {
+            if (weaponIsUtility(w)) {
+                continue;
+            }
+            for (uint8_t u = UNSET_UTILITY + 1; u < _NUM_UTILITIES; u++) {
+                comboLoadouts[numCombos][0] = w;
+                comboLoadouts[numCombos][1] = u;
+                numCombos++;
             }
         }
-        int m = 0;
-        for (uint16_t a = 0; a < NUM_COMBOS; a++) {
-            for (uint16_t b = a; b < NUM_COMBOS; b++) {
-                matchups[m][0] = a;
-                matchups[m][1] = b;
-                m++;
+        for (uint16_t a = 0; a < numCombos; a++) {
+            for (uint16_t b = a; b < numCombos; b++) {
+                matchups[numMatchups][0] = a;
+                matchups[numMatchups][1] = b;
+                numMatchups++;
             }
         }
-        totalGames = NUM_MATCHUPS * gamesPerOpp;
+        totalGames = numMatchups * gamesPerOpp;
     }
     results = calloc(totalGames, sizeof(gameResult));
     if (results == NULL) {
@@ -1971,11 +1927,13 @@ int main(int argc, char **argv) {
         const gameResult *g = &results[j];
         const char *opp = oppWeights != NULL ? oppName : policyNames[opps[g->opp]];
         fprintf(f, "{\"opp\":\"%s\",\"seat\":%u,\"map\":%u,\"seed\":%u,\"length\":%g,", opp, g->seat, g->map, g->seed, g->length);
+        // starting utility pickups by drone, the policy's first
+        fprintf(f, "\"startUtilities\":[%u,%u],", g->startUtilities[g->seat], g->startUtilities[1 - g->seat]);
         if (ablating) {
             fprintf(f, "\"ablate\":\"%s\",\"ablateMode\":\"%s\",", ablateMask.name, ablateMode == ABLATE_SWAP ? "swap" : "zero");
         }
         if (combos) {
-            fprintf(f, "\"loadout\":[%u,%u,%u,%u],", g->loadout[0], g->loadout[1], g->loadout[2], g->loadout[3]);
+            fprintf(f, "\"loadout\":[%u,%u],\"utilityLoadout\":[%u,%u],", g->loadout[0], g->loadout[1], g->utilityLoadout[0], g->utilityLoadout[1]);
         }
         if (numShadows > 0) {
             fprintf(f, "\"shadow\":[");

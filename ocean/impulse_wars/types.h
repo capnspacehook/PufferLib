@@ -76,10 +76,23 @@ enum weaponType {
     IMPLODER_WEAPON,
     ACCELERATOR_WEAPON,
     FLAK_CANNON_WEAPON,
-    MINE_LAUNCHER_WEAPON,
     BLACK_HOLE_WEAPON,
     NUKE_WEAPON,
     GRAPPLE_WEAPON,
+    MINE_LAUNCHER_WEAPON,
+};
+
+// utilities live in their own slot next to the weapon and survive death;
+// their ammo regenerates over time. Their projectiles are
+// still weapon types (see utilityInformation) so physics, kill credit and
+// per weapon stats treat them like any other projectile
+#define _NUM_UTILITIES 3
+static const uint8_t NUM_UTILITIES = _NUM_UTILITIES;
+
+enum utilityType {
+    UNSET_UTILITY,
+    GRAPPLE_UTILITY,
+    MINE_UTILITY,
 };
 
 typedef struct mapBounds {
@@ -125,12 +138,15 @@ typedef struct mapEntry {
     const bool hasSetFloatingWalls;
     const uint16_t weaponPickups;
     const uint8_t maxSuddenDeathWalls;
-    // overrides of the default pickup spawn weights, indexed by weapon type
+    // overrides of the default pickup spawn weights, indexed by weapon
+    // and utility type
     const spawnWeightOverride weaponSpawnWeights[_NUM_WEAPONS];
+    const spawnWeightOverride utilitySpawnWeights[_NUM_UTILITIES];
     const spawnWeightOverride crateSpawnWeight;
 
     // pickup spawn weights with overrides applied, set in initMaps
     float weaponWeights[_NUM_WEAPONS];
+    float utilityWeights[_NUM_UTILITIES];
     float crateWeight;
     mapBounds bounds;
     mapBounds spawnQuads[4];
@@ -168,6 +184,8 @@ typedef struct wallEntity {
 
 typedef struct weaponInformation {
     const enum weaponType type;
+    // max ammo, INFINITE for the standard weapon
+    const int8_t ammo;
     // should the body be treated as a bullet by box2d; if so CCD
     // (continuous collision detection) will be enabled to prevent
     // tunneling through static bodies which is expensive so it's
@@ -198,12 +216,32 @@ typedef struct weaponInformation {
     const float spawnWeight;
 } weaponInformation;
 
+typedef struct utilityInformation {
+    const enum utilityType type;
+    // the weapon whose projectile the utility fires
+    const weaponInformation *projectileInfo;
+    const uint8_t ammo;
+    // seconds to regenerate one ammo
+    const float regenTime;
+    // how many of its projectiles can exist at once
+    const uint8_t maxActive;
+    const float spawnWeight;
+} utilityInformation;
+
+enum pickupKind {
+    WEAPON_PICKUP,
+    UTILITY_PICKUP,
+    CRATE_PICKUP,
+};
+
 typedef struct weaponPickupEntity {
     b2BodyId bodyID;
     b2ShapeId shapeID;
-    // UNSET_WEAPON for an ammo crate
+    enum pickupKind kind;
+    // UNSET_WEAPON unless kind is WEAPON_PICKUP
     enum weaponType weapon;
-    bool isCrate;
+    // UNSET_UTILITY unless kind is UTILITY_PICKUP
+    enum utilityType utility;
     float respawnWait;
     // how many floating walls are touching this pickup
     uint8_t floatingWallsTouching;
@@ -344,6 +382,15 @@ typedef struct weaponSlot {
     float fullChargeHoldTime;
 } weaponSlot;
 
+typedef struct utilitySlot {
+    const utilityInformation *utilityInfo;
+
+    uint8_t ammo;
+    // seconds spent regenerating the next ammo
+    float regen;
+    float cooldown;
+} utilitySlot;
+
 // setup weapons that earn assists
 enum assistWeapon {
     ASSIST_BLACK_HOLE,
@@ -355,16 +402,15 @@ typedef struct droneEntity {
     b2BodyId bodyID;
     b2ShapeId shapeID;
 
-    weaponSlot activeWeapon;
-    weaponSlot inactiveWeapon;
-    float swapCooldown;
-
-    bool swapHeld;
-    bool weaponActionHeld;
+    weaponSlot weapon;
+    utilitySlot utility;
+    // the utility button was held last step
+    bool utilityHeld;
     bool triggerHeld;
-    bool triggerSuppressed;
 
     projectileEntity *grapple;
+    // the drone's live mine, see droneMine
+    projectileEntity *mine;
     float grappleLength;
     b2JointId grappleJointID;
     // episode frame + 1 this drone last pulled each drone with a black
@@ -443,6 +489,7 @@ typedef struct droneStats {
     float ownShotsTaken[_NUM_WEAPONS];
     float weaponsPickedUp[_NUM_WEAPONS];
     float shotDistances[_NUM_WEAPONS];
+    float utilitiesPickedUp[_NUM_UTILITIES];
 
     float totalShotsFired;
     float totalShotsHit;
@@ -470,7 +517,6 @@ typedef struct droneAnalysisStats {
     float floatingWallSelfKills;
     float assistsByWeapon[_NUM_WEAPONS];
     float diedHoldingActive[_NUM_WEAPONS];
-    float diedHoldingInactive[_NUM_WEAPONS];
     // pickups by the weapon held before and the weapon picked up
     float pickupsFrom[_NUM_WEAPONS][_NUM_WEAPONS];
     // projectiles boosted by their owner's burst on the frame they were fired
@@ -482,6 +528,17 @@ typedef struct droneAnalysisStats {
     // when boosted so they're excluded
     float boostedSpeedBefore[_NUM_WEAPONS];
     float boostedSpeedAfter[_NUM_WEAPONS];
+    // utility button presses by utility, and presses that did something:
+    // fired, started reeling in an attached grapple or detonated mines
+    float utilityPresses[_NUM_UTILITIES];
+    float utilityPressesUseful[_NUM_UTILITIES];
+    float utilityAmmoSpent[_NUM_UTILITIES];
+    // utility projectile hits on other drones, kept out of the shot stats
+    float utilityHits[_NUM_UTILITIES];
+    // grapples attached to a static wall, a floating wall and a drone
+    float grappleAttaches[3];
+    float grappleAttachedDeaths;
+    float minesDetonated;
 } droneAnalysisStats;
 
 struct Log {
@@ -584,8 +641,7 @@ typedef struct agentActions {
     bool trigger;
     bool brake;
     bool chargingBurst;
-    bool swapWeapon;
-    bool weaponAction;
+    bool utility;
 } agentActions;
 
 typedef struct debugPoint {
@@ -617,11 +673,11 @@ enum botPolicy {
 
 // scripted bot behaviors, toggled per drone so variants of the bot can be
 // played against each other in the same env (see bot_tournament.c). Ammo
-// reserve, weapon slots, safe geometry and shotgun boosting are on by
-// default, and personalities add others for their playstyle (see
-// botPresets); the rest are experiments that measured neutral or worse and
-// are kept for evaluating against learned policies. Smart reserve only has
-// an effect with ammo reserve on
+// reserve, safe geometry and shotgun boosting are on by default, and
+// personalities add others for their playstyle (see botPresets); the rest
+// are experiments that measured neutral or worse and are kept for
+// evaluating against learned policies. Smart reserve only has an effect
+// with ammo reserve on
 enum botFeature {
     BOT_FEAT_AMMO_RESERVE = 1 << 0,
     BOT_FEAT_PROJ_DEFENSE = 1 << 1,
@@ -630,28 +686,22 @@ enum botFeature {
     BOT_FEAT_KILL_GEOMETRY = 1 << 4,
     BOT_FEAT_SNIPER_DODGE = 1 << 5,
     BOT_FEAT_SMART_RESERVE = 1 << 6,
-    // fill and manage both weapon slots: pickups for the holster, swapping
-    // to the weapon that suits the situation and away from empty ones
-    BOT_FEAT_WEAPON_SLOTS = 1 << 7,
-    // detonate own mines next to the enemy with the weapon action
-    BOT_FEAT_MINE_DETONATE = 1 << 8,
-    // swap to the holstered weapon while the drawn one is cooling down
-    BOT_FEAT_SWAP_CYCLE = 1 << 9,
     // keep death walls from being behind the drone as seen from the enemy,
     // so hits don't knock it into them
-    BOT_FEAT_SAFE_GEOMETRY = 1 << 10,
+    BOT_FEAT_SAFE_GEOMETRY = 1 << 7,
     // stay out of shotgun range of an enemy with a shotgun drawn
-    BOT_FEAT_KITE = 1 << 11,
-    // cancel a full charge held long enough to start draining energy
-    BOT_FEAT_CHARGE_DRAIN = 1 << 12,
+    BOT_FEAT_KITE = 1 << 8,
     // charge a burst before a close shotgun shot and release it with the
     // shot so the burst speeds up the pellets
-    BOT_FEAT_SHOTGUN_BOOST = 1 << 13,
+    BOT_FEAT_SHOTGUN_BOOST = 1 << 9,
     // only fire the shotgun from close enough for the pellets to keep
     // their speed and stay together
-    BOT_FEAT_SHOTGUN_RANGE = 1 << 14,
+    BOT_FEAT_SHOTGUN_RANGE = 1 << 10,
+    // use the utility: place and detonate mines, and grapple to close in
+    // on or escape the enemy as the personality does
+    BOT_FEAT_UTILITY = 1 << 11,
 };
-#define BOT_FEAT_ALL 0x7FFF
+#define BOT_FEAT_ALL 0xFFF
 
 // how many cells ahead along a planned route the scripted bot remembers
 #define BOT_PATH_WAYPOINTS 4
@@ -681,6 +731,10 @@ typedef struct scriptedBotState {
     uint16_t lastEnemyShotStep;
     // lives left when the spot was chosen; a respawn re-chooses it
     uint8_t livesLeft;
+    // what the grapple is out for (see botGrappleIntent), and the step the
+    // bot gives up on it
+    uint8_t grappleIntent;
+    uint16_t grappleUntilStep;
 } scriptedBotState;
 
 // counts of scripted bot decisions, for tuning the bot; never reset by
@@ -709,14 +763,15 @@ enum botEvent {
     BOT_EVENT_MINE_PLACED,
     BOT_EVENT_COUNTER_SHOT,
     BOT_EVENT_SUDDEN_DEATH_AVOID,
-    BOT_EVENT_SWAP,
-    BOT_EVENT_SWAP_CYCLE,
-    BOT_EVENT_CHARGE_CANCEL,
-    BOT_EVENT_PICKUP_SWAP,
-    BOT_EVENT_MINE_DETONATE,
     BOT_EVENT_SAFE_GEOMETRY,
     BOT_EVENT_KITE,
     BOT_EVENT_SHOTGUN_BOOST,
+    BOT_EVENT_GRAPPLE_CLOSE,
+    BOT_EVENT_GRAPPLE_ESCAPE,
+    BOT_EVENT_GRAPPLE_RELEASE,
+    BOT_EVENT_GRAPPLE_DANGER_RELEASE,
+    BOT_EVENT_MINE_DETONATE,
+    BOT_EVENT_UTILITY_PICKUP,
     NUM_BOT_EVENTS,
 };
 
@@ -793,6 +848,7 @@ struct Env {
     mapEntry *map;
     int8_t lastSpawnQuad;
     uint8_t spawnedWeaponPickups[_NUM_WEAPONS];
+    uint8_t spawnedUtilityPickups[_NUM_UTILITIES];
     uint8_t spawnedCrates;
     b2IdPool idPool;
     CC_Array *entities;

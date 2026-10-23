@@ -575,14 +575,89 @@ void destroyWall(iwEnv *e, wallEntity *wall, const bool full) {
     fastFree(wall);
 }
 
-// picks what a pickup spawns as: in combo episodes always an ammo crate,
-// otherwise a weapon or a crate by spawn weight and how many pickups of
-// each are currently spawned; the map's spawn weights are used, which are
-// the default weights unless the map overrides them
-void randPickupType(iwEnv *e, weaponPickupEntity *pickup, const bool episodeStart) {
-    pickup->isCrate = e->comboEp;
+int8_t mapQuad(const iwEnv *e, const b2Vec2 pos) {
+    return (int8_t)(pos.x >= 0.0f) + 2 * (int8_t)(pos.y >= 0.0f);
+}
+
+// sets the spawn weight of each utility, discounted by how many of each are
+// currently spawned or held the same way weapons are, and returns the total
+static float utilitySpawnWeights(const iwEnv *e, const float *heldWeights, float *spawnWeights) {
+    float totalWeight = 0.0f;
+    for (uint8_t i = 1; i < NUM_UTILITIES; i++) {
+        const float discount = (float)e->spawnedUtilityPickups[i] + (heldWeights[i] * PICKUP_HELD_WEAPON_WEIGHT_COEF) + 1.0f;
+        spawnWeights[i - 1] = e->map->utilityWeights[i] / discount;
+        totalWeight += spawnWeights[i - 1];
+    }
+    return totalWeight;
+}
+
+// how much each utility is held, for discounting its spawn weight; utilities
+// with the max weight aren't discounted so featured ones stay common
+static void heldUtilityWeights(const iwEnv *e, float *heldWeights) {
+    for (uint8_t i = 0; i < e->numDrones; i++) {
+        const droneEntity *drone = safe_array_get_at(e->drones, i);
+        const enum utilityType type = drone->utility.utilityInfo->type;
+        if (type != UNSET_UTILITY && e->map->utilityWeights[type] < MAX_PICKUP_SPAWN_WEIGHT) {
+            heldWeights[type] += 1.0f;
+        }
+    }
+}
+
+static void countSpawnedPickup(iwEnv *e, const weaponPickupEntity *pickup) {
+    switch (pickup->kind) {
+    case WEAPON_PICKUP:
+        ASSERT(pickup->weapon != STANDARD_WEAPON && pickup->weapon != UNSET_WEAPON);
+        e->spawnedWeaponPickups[pickup->weapon]++;
+        break;
+    case UTILITY_PICKUP:
+        ASSERT(pickup->utility != UNSET_UTILITY);
+        e->spawnedUtilityPickups[pickup->utility]++;
+        break;
+    case CRATE_PICKUP:
+        e->spawnedCrates++;
+        break;
+    }
+}
+
+// makes a pickup a utility picked by spawn weight
+void randUtilityPickupType(iwEnv *e, weaponPickupEntity *pickup) {
+    float heldWeights[_NUM_UTILITIES] = {0};
+    heldUtilityWeights(e, heldWeights);
+    float spawnWeights[_NUM_UTILITIES - 1] = {0};
+    const float totalWeight = utilitySpawnWeights(e, heldWeights, spawnWeights);
+
+    pickup->kind = UTILITY_PICKUP;
     pickup->weapon = UNSET_WEAPON;
-    if (!pickup->isCrate) {
+    pickup->utility = GRAPPLE_UTILITY;
+    if (totalWeight > 0.0f) {
+        const float randPick = randFloat(&e->rng, 0.0f, totalWeight);
+        float cumulativeWeight = 0.0f;
+        for (uint8_t i = 1; i < NUM_UTILITIES; i++) {
+            cumulativeWeight += spawnWeights[i - 1];
+            if (randPick < cumulativeWeight) {
+                pickup->utility = i;
+                break;
+            }
+        }
+    } else {
+        // every utility has a 0 weight on this map, pick evenly
+        pickup->utility = randInt(&e->rng, 1, NUM_UTILITIES - 1);
+    }
+
+    countSpawnedPickup(e, pickup);
+}
+
+// picks what a pickup spawns as: in combo episodes always an ammo crate,
+// otherwise a weapon, utility or crate by spawn weight and how many pickups
+// of each are currently spawned; the map's spawn weights are used, which
+// are the default weights unless the map overrides them. Pickups spawned
+// at the start of an episode are always weapons, utilities get their own
+// starting pickups
+void randPickupType(iwEnv *e, weaponPickupEntity *pickup, const bool episodeStart) {
+    pickup->kind = CRATE_PICKUP;
+    pickup->weapon = UNSET_WEAPON;
+    pickup->utility = UNSET_UTILITY;
+    if (!e->comboEp) {
         float totalWeight = 0.0f;
         float heldWeights[_NUM_WEAPONS] = {0};
         float spawnWeights[_NUM_WEAPONS - 1] = {0};
@@ -597,13 +672,9 @@ void randPickupType(iwEnv *e, weaponPickupEntity *pickup, const bool episodeStar
             // if the weapon has the max weight don't reduce it based
             // off of players holding it; this will make it very unlikely
             // for both players to have it at once
-            const enum weaponType activeType = drone->activeWeapon.weaponInfo->type;
-            const enum weaponType inactiveType = drone->inactiveWeapon.weaponInfo->type;
-            if (drone->activeWeapon.ammo != 0 && activeType != STANDARD_WEAPON && e->map->weaponWeights[activeType] < MAX_PICKUP_SPAWN_WEIGHT) {
-                heldWeights[activeType] += 1.0f;
-            }
-            if (drone->inactiveWeapon.ammo != 0 && inactiveType != STANDARD_WEAPON && inactiveType != UNSET_WEAPON && e->map->weaponWeights[inactiveType] < MAX_PICKUP_SPAWN_WEIGHT) {
-                heldWeights[inactiveType] += 1.0f;
+            const enum weaponType heldType = drone->weapon.weaponInfo->type;
+            if (heldType != STANDARD_WEAPON && e->map->weaponWeights[heldType] < MAX_PICKUP_SPAWN_WEIGHT) {
+                heldWeights[heldType] += 1.0f;
             }
         }
 
@@ -613,31 +684,41 @@ void randPickupType(iwEnv *e, weaponPickupEntity *pickup, const bool episodeStar
             totalWeight += spawnWeights[i - 1];
         }
 
+        float utilityWeights[_NUM_UTILITIES - 1] = {0};
         float crateWeight = 0.0f;
         if (!episodeStart) {
+            float heldUtilities[_NUM_UTILITIES] = {0};
+            heldUtilityWeights(e, heldUtilities);
+            totalWeight += utilitySpawnWeights(e, heldUtilities, utilityWeights);
+
             crateWeight = e->map->crateWeight / (e->spawnedCrates + 1);
             totalWeight += crateWeight;
         }
 
+        // the crate is what's left over past the weapons and utilities
         const float randPick = randFloat(&e->rng, 0.0f, totalWeight);
         float cumulativeWeight = 0.0f;
-        pickup->isCrate = true;
         for (uint8_t i = 1; i < NUM_WEAPONS; i++) {
             cumulativeWeight += spawnWeights[i - 1];
             if (randPick < cumulativeWeight) {
+                pickup->kind = WEAPON_PICKUP;
                 pickup->weapon = i;
-                pickup->isCrate = false;
                 break;
+            }
+        }
+        if (pickup->kind == CRATE_PICKUP) {
+            for (uint8_t i = 1; i < NUM_UTILITIES; i++) {
+                cumulativeWeight += utilityWeights[i - 1];
+                if (randPick < cumulativeWeight) {
+                    pickup->kind = UTILITY_PICKUP;
+                    pickup->utility = i;
+                    break;
+                }
             }
         }
     }
 
-    if (pickup->isCrate) {
-        e->spawnedCrates++;
-        return;
-    }
-    ASSERT(pickup->weapon != STANDARD_WEAPON && pickup->weapon != UNSET_WEAPON);
-    e->spawnedWeaponPickups[pickup->weapon]++;
+    countSpawnedPickup(e, pickup);
 }
 
 void createWeaponPickupBodyShape(const iwEnv *e, weaponPickupEntity *pickup) {
@@ -661,20 +742,7 @@ void createWeaponPickupBodyShape(const iwEnv *e, weaponPickupEntity *pickup) {
     pickup->shapeID = b2CreatePolygonShape(pickup->bodyID, &pickupShapeDef, &pickupPolygon);
 }
 
-void createWeaponPickup(iwEnv *e) {
-    // ensure weapon pickups are initially spawned somewhat uniformly
-    b2Vec2 pos;
-    e->lastSpawnQuad = (e->lastSpawnQuad + 1) % 4;
-    if (!findOpenPos(e, WEAPON_PICKUP_SHAPE, &pos, e->lastSpawnQuad)) {
-        // if we couldn't find a position in a specific quad fallback to
-        // searching across the whole map
-        if (!findOpenPos(e, WEAPON_PICKUP_SHAPE, &pos, -1)) {
-            ERRORF("no open position for weapon pickup %zu; map %d", cc_array_size(e->pickups), e->mapIdx);
-        }
-    }
-
-    weaponPickupEntity *pickup = fastCalloc(1, sizeof(weaponPickupEntity));
-    randPickupType(e, pickup, true);
+static void addWeaponPickup(iwEnv *e, weaponPickupEntity *pickup, const b2Vec2 pos) {
     pickup->respawnWait = 0.0f;
     pickup->floatingWallsTouching = 0;
     pickup->pos = pos;
@@ -693,6 +761,58 @@ void createWeaponPickup(iwEnv *e) {
     createWeaponPickupBodyShape(e, pickup);
 
     cc_array_add(e->pickups, pickup);
+}
+
+void createWeaponPickup(iwEnv *e) {
+    // ensure weapon pickups are initially spawned somewhat uniformly
+    b2Vec2 pos;
+    e->lastSpawnQuad = (e->lastSpawnQuad + 1) % 4;
+    if (!findOpenPos(e, WEAPON_PICKUP_SHAPE, &pos, e->lastSpawnQuad)) {
+        // if we couldn't find a position in a specific quad fallback to
+        // searching across the whole map
+        if (!findOpenPos(e, WEAPON_PICKUP_SHAPE, &pos, -1)) {
+            ERRORF("no open position for weapon pickup %zu; map %d", cc_array_size(e->pickups), e->mapIdx);
+        }
+    }
+
+    weaponPickupEntity *pickup = fastCalloc(1, sizeof(weaponPickupEntity));
+    randPickupType(e, pickup, true);
+    addWeaponPickup(e, pickup, pos);
+}
+
+// creates one of the utility pickups spawned at the start of an episode;
+// each is placed nearer one drone than the others so every drone can reach
+// one fairly. Once picked up it respawns as any type, like other pickups
+void createUtilityPickup(iwEnv *e, const uint8_t droneIdx) {
+    const droneEntity *drone = safe_array_get_at(e->drones, droneIdx);
+    b2Vec2 pos;
+    bool found = false;
+    for (uint8_t attempt = 0; attempt < UTILITY_PICKUP_PLACE_ATTEMPTS && !found; attempt++) {
+        if (!findOpenPos(e, WEAPON_PICKUP_SHAPE, &pos, -1)) {
+            break;
+        }
+        const float distance = b2DistanceSquared(pos, drone->pos);
+        if (distance < UTILITY_PICKUP_MIN_DRONE_DISTANCE_SQUARED || distance > UTILITY_PICKUP_MAX_DRONE_DISTANCE_SQUARED) {
+            continue;
+        }
+        found = true;
+        for (uint8_t i = 0; i < e->numDrones; i++) {
+            const droneEntity *other = safe_array_get_at(e->drones, i);
+            if (i != droneIdx && b2DistanceSquared(pos, other->pos) <= distance) {
+                found = false;
+                break;
+            }
+        }
+    }
+    if (!found && !findOpenPos(e, WEAPON_PICKUP_SHAPE, &pos, mapQuad(e, drone->pos))) {
+        if (!findOpenPos(e, WEAPON_PICKUP_SHAPE, &pos, -1)) {
+            ERRORF("no open position for utility pickup %zu; map %d", cc_array_size(e->pickups), e->mapIdx);
+        }
+    }
+
+    weaponPickupEntity *pickup = fastCalloc(1, sizeof(weaponPickupEntity));
+    randUtilityPickupType(e, pickup);
+    addWeaponPickup(e, pickup, pos);
 }
 
 void destroyWeaponPickup(iwEnv *e, weaponPickupEntity *pickup) {
@@ -726,10 +846,16 @@ void disableWeaponPickup(iwEnv *e, weaponPickupEntity *pickup) {
     ASSERT(cell->ent != NULL);
     cell->ent = NULL;
 
-    if (pickup->isCrate) {
-        e->spawnedCrates--;
-    } else {
+    switch (pickup->kind) {
+    case WEAPON_PICKUP:
         e->spawnedWeaponPickups[pickup->weapon]--;
+        break;
+    case UTILITY_PICKUP:
+        e->spawnedUtilityPickups[pickup->utility]--;
+        break;
+    case CRATE_PICKUP:
+        e->spawnedCrates--;
+        break;
     }
 }
 
@@ -793,10 +919,16 @@ void resetWeapon(weaponSlot *weapon) {
     weapon->fullChargeHoldTime = 0.0f;
 }
 
-void droneUnsetInactiveWeapon(droneEntity *drone) {
-    drone->inactiveWeapon.weaponInfo = weaponInfos[UNSET_WEAPON];
-    resetWeapon(&drone->inactiveWeapon);
-    drone->inactiveWeapon.ammo = 0;
+// fills the utility's ammo and restarts its regen
+void droneRefillUtility(droneEntity *drone) {
+    drone->utility.ammo = drone->utility.utilityInfo->ammo;
+    drone->utility.regen = 0.0f;
+}
+
+void droneSetUtility(droneEntity *drone, const enum utilityType type) {
+    drone->utility.utilityInfo = utilityInfos[type];
+    drone->utility.cooldown = 0.0f;
+    droneRefillUtility(drone);
 }
 
 void createDroneTrails(droneEntity *drone) {
@@ -844,9 +976,9 @@ void createDrone(iwEnv *e, const uint8_t idx) {
 
     droneEntity *drone = fastCalloc(1, sizeof(droneEntity));
     drone->bodyID = droneBodyID;
-    drone->activeWeapon.weaponInfo = weaponInfos[STANDARD_WEAPON];
-    drone->activeWeapon.ammo = weaponAmmo(drone->activeWeapon.weaponInfo->type);
-    droneUnsetInactiveWeapon(drone);
+    drone->weapon.weaponInfo = weaponInfos[STANDARD_WEAPON];
+    drone->weapon.ammo = drone->weapon.weaponInfo->ammo;
+    droneSetUtility(drone, UNSET_UTILITY);
     drone->energyLeft = DRONE_ENERGY_MAX;
     drone->idx = idx;
     drone->team = idx;
@@ -1128,94 +1260,59 @@ void trackWallBounce(const iwEnv *e, const entity *e1, const entity *e2, const b
     cc_array_add(physicsTracking, physicsStep);
 }
 
-// returns true if a weapon has no more use; some can be useful even
-// without ammo with the weapon action
-bool weaponUseless(const iwEnv *e, const droneEntity *drone, const weaponSlot weapon) {
-    switch (weapon.weaponInfo->type) {
-    case GRAPPLE_WEAPON:
-        return drone->grapple == NULL;
-    case MINE_LAUNCHER_WEAPON:
-        return e->minesCreated[drone->idx] == 0;
-    default:
-        return true;
+// a pickup always replaces the weapon, or tops up its ammo if it's the
+// same weapon; returns true if it replaced the standard weapon
+bool droneChangeWeapon(droneEntity *drone, const enum weaponType newWeapon) {
+    weaponSlot *weapon = &drone->weapon;
+    const bool replacedStandard = weapon->weaponInfo->type == STANDARD_WEAPON;
+    if (weapon->weaponInfo->type != newWeapon) {
+        weapon->weaponInfo = weaponInfos[newWeapon];
+        resetWeapon(weapon);
     }
+    weapon->ammo = weapon->weaponInfo->ammo;
+    return replacedStandard;
 }
 
-// returns true if the new weapon filled an unset slot, replaced the
-// standard weapon or refilled an empty weapon of the same type
-bool droneChangeWeapon(iwEnv *e, droneEntity *drone, const enum weaponType newWeapon) {
-    const enum weaponType activeType = drone->activeWeapon.weaponInfo->type;
-    const enum weaponType inactiveType = drone->inactiveWeapon.weaponInfo->type;
-    weaponSlot *weapon = &drone->activeWeapon;
-    bool slotFilled = false;
-    bool slotReplaced = false;
-
-    if (activeType != newWeapon) {
-        if (activeType != STANDARD_WEAPON && inactiveType == UNSET_WEAPON) {
-            // if the active weapon is already set but the inactive one
-            // isn't, update the inactive weapon
-            drone->inactiveWeapon.weaponInfo = weaponInfos[newWeapon];
-            resetWeapon(&drone->inactiveWeapon);
-            weapon = &drone->inactiveWeapon;
-            slotFilled = true;
-        } else if (inactiveType != newWeapon) {
-            if (activeType == GRAPPLE_WEAPON && drone->grapple != NULL) {
-                destroyProjectile(e, drone->grapple, false, true);
-            }
-
-            // a holstered standard weapon is removed in droneStep now
-            // that the active weapon can shoot
-            slotFilled = activeType == STANDARD_WEAPON || inactiveType == STANDARD_WEAPON;
-            slotReplaced = !slotFilled;
-            drone->activeWeapon.weaponInfo = weaponInfos[newWeapon];
-            resetWeapon(&drone->activeWeapon);
-        } else {
-            // new weapon is the same as the inactive one, just top up
-            // the inactive weapon's ammo
-            weapon = &drone->inactiveWeapon;
-        }
+// returns true if the new utility filled an unset slot; the new utility
+// starts with full ammo. Refilling a utility isn't counted since utility
+// ammo regenerates on its own
+bool droneChangeUtility(iwEnv *e, droneEntity *drone, const enum utilityType newUtility) {
+    const enum utilityType curType = drone->utility.utilityInfo->type;
+    if (curType == newUtility) {
+        droneRefillUtility(drone);
+        return false;
     }
 
-    // only empty weapons kept for their live projectiles (mines,
-    // attached grapples) can be refilled from empty
-    const bool refilledEmpty = !slotFilled && !slotReplaced && weapon->ammo == 0;
-    weapon->ammo = weaponAmmo(weapon->weaponInfo->type);
-    return slotFilled || refilledEmpty;
+    // a grapple can't be held without the grapple utility; placed mines
+    // are kept and can still go off by proximity
+    if (drone->grapple != NULL) {
+        destroyProjectile(e, drone->grapple, false, true);
+    }
+    droneSetUtility(drone, newUtility);
+    return curType == UNSET_UTILITY;
 }
 
-// an ammo crate fills both slots' pickup weapons to full ammo, including
-// empty ones kept for their live projectiles; returns true if it added
-// any ammo, and sets refilledEmpty if it refilled a weapon from empty
-bool droneRefillAmmo(droneEntity *drone, bool *refilledEmpty) {
-    weaponSlot *slots[2] = {&drone->activeWeapon, &drone->inactiveWeapon};
+// an ammo crate fills the weapon, unless it's the standard weapon, and the
+// utility to full ammo; returns true if it added any ammo
+bool droneRefillAmmo(droneEntity *drone) {
     bool refilled = false;
-    *refilledEmpty = false;
-    for (uint8_t i = 0; i < 2; i++) {
-        const enum weaponType type = slots[i]->weaponInfo->type;
-        if (type == UNSET_WEAPON || type == STANDARD_WEAPON) {
-            continue;
-        }
+    weaponSlot *weapon = &drone->weapon;
+    if (weapon->weaponInfo->type != STANDARD_WEAPON && weapon->ammo < weapon->weaponInfo->ammo) {
+        weapon->ammo = weapon->weaponInfo->ammo;
+        refilled = true;
+    }
 
-        const int8_t curAmmo = slots[i]->ammo;
-        const int8_t maxAmmo = weaponAmmo(type);
-        if (curAmmo < maxAmmo) {
-            slots[i]->ammo = maxAmmo;
-            refilled = true;
-            *refilledEmpty |= curAmmo == 0;
-        }
+    if (drone->utility.ammo < drone->utility.utilityInfo->ammo) {
+        droneRefillUtility(drone);
+        refilled = true;
     }
 
     return refilled;
 }
 
-void droneEmptyCharge(droneEntity *drone, const bool inactiveAlso) {
-    drone->activeWeapon.charge = 0.0f;
-    drone->activeWeapon.fullChargeHoldTime = 0.0f;
-
-    if (inactiveAlso) {
-        drone->inactiveWeapon.charge = 0.0f;
-        drone->inactiveWeapon.fullChargeHoldTime = 0.0f;
-    }
+void droneEmptyCharge(droneEntity *drone) {
+    drone->weapon.charge = 0.0f;
+    drone->weapon.fullChargeHoldTime = 0.0f;
 }
 
 // contribution of a single drone from a single physics source; kept
@@ -1406,8 +1503,7 @@ static inline bool physicsSourceIsWeapon(const physicsSource source) {
 
 void recordDeathAnalysis(iwEnv *e, const droneEntity *drone, const int8_t killer, const wallEntity *killWall) {
     droneAnalysisStats *stats = &e->analysisStats[drone->idx];
-    stats->diedHoldingActive[drone->activeWeapon.weaponInfo->type]++;
-    stats->diedHoldingInactive[drone->inactiveWeapon.weaponInfo->type]++;
+    stats->diedHoldingActive[drone->weapon.weaponInfo->type]++;
 
     if (killer == -1) {
         return;
@@ -1486,46 +1582,11 @@ void destroyGrapplesAttachedTo(iwEnv *e, const entity *ent) {
     }
 }
 
-bool droneSwapWeapon(droneEntity *drone, const bool triggerDown, const bool respectCooldown) {
-    const enum weaponType inactiveWeaponType = drone->inactiveWeapon.weaponInfo->type;
-    if ((respectCooldown && drone->swapCooldown > 0.0f) || inactiveWeaponType == UNSET_WEAPON) {
-        return false;
-    }
-
-    // swapping a charged weapon while holding the trigger shouldn't
-    // fire the newly active weapon until the trigger is pulled again
-    const weaponSlot *inactive = &drone->inactiveWeapon;
-    const bool inactiveCharged = inactive->weaponInfo->maxCharge > 0.0f && inactive->charge == inactive->weaponInfo->maxCharge;
-    if (triggerDown && ((drone->activeWeapon.charge > 0.0f && !inactiveCharged) || (drone->activeWeapon.weaponInfo->type == GRAPPLE_WEAPON & drone->grapple != NULL))) {
-        drone->triggerSuppressed = true;
-    }
-
-    // charge is only held if the active weapon is fully charged
-    if (drone->activeWeapon.charge < drone->activeWeapon.weaponInfo->maxCharge) {
-        droneEmptyCharge(drone, false);
-    }
-
-    weaponSlot temp = drone->activeWeapon;
-    drone->activeWeapon = drone->inactiveWeapon;
-    drone->inactiveWeapon = temp;
-
-    if (respectCooldown) {
-        drone->swapCooldown = DRONE_SWAP_COOLDOWN;
-    }
-
-    return true;
-}
-
-void droneUnsetActiveWeapon(iwEnv *e, droneEntity *drone) {
-    const weaponSlot inactive = drone->inactiveWeapon;
-    if (inactive.weaponInfo->type == UNSET_WEAPON || (inactive.ammo == 0 && !weaponUseless(e, drone, inactive))) {
-        drone->activeWeapon.weaponInfo = weaponInfos[STANDARD_WEAPON];
-        resetWeapon(&drone->activeWeapon);
-        drone->activeWeapon.ammo = weaponAmmo(drone->activeWeapon.weaponInfo->type);
-    } else {
-        droneSwapWeapon(drone, false, false);
-        droneUnsetInactiveWeapon(drone);
-    }
+// falls back to the standard weapon once the weapon runs dry
+void droneUnsetWeapon(droneEntity *drone) {
+    drone->weapon.weaponInfo = weaponInfos[STANDARD_WEAPON];
+    resetWeapon(&drone->weapon);
+    drone->weapon.ammo = drone->weapon.weaponInfo->ammo;
 }
 
 void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
@@ -1550,6 +1611,7 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     drone->respawnWait = DRONE_RESPAWN_WAIT;
 
     if (drone->grapple != NULL) {
+        e->analysisStats[drone->idx].grappleAttachedDeaths += drone->grapple->welded;
         destroyProjectile(e, drone->grapple, false, true);
     }
     destroyGrapplesAttachedTo(e, drone->ent);
@@ -1573,21 +1635,11 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
         cc_array_add(drone->brakeTrailPoints, trailPoint);
     }
 
-    if (drone->activeWeapon.weaponInfo->type == GRAPPLE_WEAPON && drone->activeWeapon.ammo == 0) {
-        droneUnsetActiveWeapon(e, drone);
-    } else if (drone->inactiveWeapon.weaponInfo->type == GRAPPLE_WEAPON && drone->inactiveWeapon.ammo == 0) {
-        droneUnsetInactiveWeapon(drone);
-    }
-
-    resetWeapon(&drone->activeWeapon);
-    resetWeapon(&drone->inactiveWeapon);
+    resetWeapon(&drone->weapon);
 
     b2Body_Disable(drone->bodyID);
-    drone->swapCooldown = 0.0f;
-    drone->swapHeld = false;
-    drone->weaponActionHeld = false;
     drone->triggerHeld = false;
-    drone->triggerSuppressed = false;
+    drone->utilityHeld = false;
     drone->braking = false;
     drone->chargingBurst = false;
     drone->burstCharge = 0.0f;
@@ -1601,10 +1653,6 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     drone->shotThisStep = false;
     drone->velocity = b2Vec2_zero;
     drone->lastVelocity = b2Vec2_zero;
-}
-
-int8_t mapQuad(const iwEnv *e, const b2Vec2 pos) {
-    return (int8_t)(pos.x >= 0.0f) + 2 * (int8_t)(pos.y >= 0.0f);
 }
 
 bool respawnDrone(iwEnv *e, droneEntity *drone) {
@@ -1674,6 +1722,9 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
     drone->killedBy = -1;
 
     droneAddEnergy(drone, DRONE_ENERGY_RESPAWN_REFILL);
+    // utilities survive death and come back with full ammo
+    droneRefillUtility(drone);
+    drone->utility.cooldown = 0.0f;
 
     createDroneShield(e, drone, -(drone->idx + 1));
 
@@ -1684,13 +1735,8 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
     return true;
 }
 
-void createProjectile(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
+void createProjectile(iwEnv *e, droneEntity *drone, const weaponInformation *weaponInfo, const b2Vec2 normAim) {
     ASSERT_VEC_NORMALIZED(normAim);
-
-    if (drone->activeWeapon.weaponInfo->type == MACHINEGUN_WEAPON) {
-        drone->activeWeapon.heat += MACHINEGUN_HEAT_BUILDUP;
-    }
-    const weaponInformation *weaponInfo = drone->activeWeapon.weaponInfo;
 
     const float radius = weaponInfo->radius;
     float droneRadius = DRONE_RADIUS;
@@ -1752,7 +1798,7 @@ void createProjectile(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
     projectile->droneIdx = drone->idx;
     projectile->bodyID = projectileBodyID;
     projectile->shapeID = projectileShapeID;
-    projectile->weaponInfo = weaponInfo;
+    projectile->weaponInfo = (weaponInformation *)weaponInfo;
     projectile->pos = projectileBodyDef.position;
     projectile->lastPos = projectileBodyDef.position;
     projectile->velocity = b2Body_GetLinearVelocity(projectileBodyID);
@@ -1780,6 +1826,7 @@ void createProjectile(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
 
     if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON) {
         e->minesCreated[drone->idx]++;
+        drone->mine = projectile;
     } else if (projectile->weaponInfo->type == GRAPPLE_WEAPON) {
         projectile->grappleHealth = GRAPPLE_HEALTH;
         ASSERT(drone->grapple == NULL);
@@ -1879,6 +1926,41 @@ typedef struct explosionCtx {
     int8_t closestWallIdx;
     uint8_t wallsHit;
 } explosionCtx;
+
+// utility projectiles aren't shots, so they're kept out of the shot stats;
+// hits with them are tracked separately in utilityHits
+static inline void recordShotHit(iwEnv *e, const uint8_t shooterIdx, const enum weaponType type) {
+    if (weaponIsUtility(type)) {
+        e->analysisStats[shooterIdx].utilityHits[weaponUtility(type)]++;
+        return;
+    }
+    e->stats[shooterIdx].shotsHit[type]++;
+    e->stats[shooterIdx].totalShotsHit++;
+}
+
+static inline void recordShotTaken(iwEnv *e, const uint8_t droneIdx, const enum weaponType type) {
+    if (weaponIsUtility(type)) {
+        return;
+    }
+    e->stats[droneIdx].shotsTaken[type]++;
+    e->stats[droneIdx].totalShotsTaken++;
+}
+
+static inline void recordOwnShotTaken(iwEnv *e, const uint8_t droneIdx, const enum weaponType type) {
+    if (weaponIsUtility(type)) {
+        return;
+    }
+    e->stats[droneIdx].ownShotsTaken[type]++;
+    e->stats[droneIdx].totalOwnShotsTaken++;
+}
+
+static inline void recordShotDistance(iwEnv *e, const uint8_t droneIdx, const enum weaponType type, const float distance) {
+    if (weaponIsUtility(type)) {
+        return;
+    }
+    e->stats[droneIdx].shotDistances[type] += distance;
+    e->stats[droneIdx].totalShotDistances += distance;
+}
 
 const float COS_85_DEGREES = 0.087155743f;
 
@@ -2192,8 +2274,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     case DRONE_ENTITY:
         if (drone->idx == ctx->parentDrone->idx && !ctx->isBurst) {
             drone->stepInfo.ownShotTaken = true;
-            ctx->e->stats[drone->idx].ownShotsTaken[ctx->projectile->weaponInfo->type]++;
-            ctx->e->stats[drone->idx].totalOwnShotsTaken++;
+            recordOwnShotTaken(ctx->e, drone->idx, ctx->projectile->weaponInfo->type);
             DEBUG_LOGF("drone %d hit itself with explosion from weapon %d", drone->idx, ctx->projectile->weaponInfo->type);
         } else if (ctx->isBurst) {
             DEBUG_LOGF("drone %d hit drone %d with burst", ctx->parentDrone->idx, drone->idx);
@@ -2201,9 +2282,8 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
             DEBUG_LOGF("drone %d hit by burst from drone %d", drone->idx, ctx->parentDrone->idx);
         } else {
             DEBUG_LOGF("drone %d hit drone %d with explosion from weapon %d", ctx->parentDrone->idx, drone->idx, ctx->projectile->weaponInfo->type);
-            ctx->e->stats[ctx->parentDrone->idx].shotsHit[ctx->projectile->weaponInfo->type]++;
+            recordShotHit(ctx->e, ctx->parentDrone->idx, ctx->projectile->weaponInfo->type);
             ctx->e->analysisStats[ctx->parentDrone->idx].boostedShotsHit[ctx->projectile->weaponInfo->type] += ctx->projectile->boosted;
-            ctx->e->stats[ctx->parentDrone->idx].totalShotsHit++;
             DEBUG_LOGF("drone %d hit by explosion from weapon %d from drone %d", drone->idx, ctx->projectile->weaponInfo->type, ctx->parentDrone->idx);
         }
 
@@ -2215,7 +2295,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         // currently exploding if it hit another drone
         shieldEntity *shield = drone->shield;
         const float explosionStrength = fabsf(magnitude);
-        if (!ctx->isBurst && drone->team != ctx->parentDrone->team && shield == NULL) {
+        if (!ctx->isBurst && drone->team != ctx->parentDrone->team && shield == NULL && (ctx->projectile == NULL || !weaponIsUtility(ctx->projectile->weaponInfo->type))) {
             const float energyRefill = explosionStrength * (DRONE_INV_MASS / MAX_SPEED) * EXPLOSION_ENERGY_REFILL_COEF;
             droneAddEnergy(ctx->parentDrone, energyRefill);
         } else if (shield != NULL && shield->health > 0.0f) {
@@ -2373,8 +2453,7 @@ void destroyProjectile(iwEnv *e, projectileEntity *projectile, const bool proces
         ASSERT(res == CC_OK);
     }
 
-    e->stats[projectile->droneIdx].shotDistances[projectile->weaponInfo->type] += projectile->distance;
-    e->stats[projectile->droneIdx].totalShotDistances += projectile->distance;
+    recordShotDistance(e, projectile->droneIdx, projectile->weaponInfo->type, projectile->distance);
 
     if (projectile->entsInBlackHole != NULL) {
         for (uint8_t i = 0; i < cc_array_size(projectile->entsInBlackHole); i++) {
@@ -2385,6 +2464,10 @@ void destroyProjectile(iwEnv *e, projectileEntity *projectile, const bool proces
     }
     if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON) {
         e->minesCreated[projectile->droneIdx]--;
+        droneEntity *drone = safe_array_get_at(e->drones, projectile->droneIdx);
+        if (drone->mine == projectile) {
+            drone->mine = NULL;
+        }
     } else if (projectile->weaponInfo->type == GRAPPLE_WEAPON) {
         droneEntity *drone = safe_array_get_at(e->drones, projectile->droneIdx);
         if (drone->grapple == projectile) {
@@ -2658,24 +2741,35 @@ void droneChargeEnergyDrain(const iwEnv *e, droneEntity *drone, const float hold
     }
 
     if (drone->energyLeft == 0.0f) {
-        droneEmptyCharge(drone, true);
+        droneEmptyCharge(drone);
         if (!drone->chargingBurst) {
             droneEmptyEnergy(e, drone);
         }
     }
 }
 
+// fires a weapon's projectiles along aim with recoil; used by both weapons
+// and utilities
+static void droneFireProjectiles(iwEnv *e, droneEntity *drone, const weaponInformation *weaponInfo, const uint16_t heat, const b2Vec2 aim) {
+    b2Vec2 normAim = drone->lastAim;
+    if (!b2Equal(aim, b2Vec2_zero)) {
+        normAim = b2Normalize(aim);
+    }
+    ASSERT_VEC_NORMALIZED(normAim);
+    const b2Vec2 recoil = b2MulSV(-weaponInfo->recoilMagnitude, normAim);
+    const physicsSource source = {.type = RECOIL_PHYSICS, .weapon = weaponInfo->type};
+    applyTrackedImpulse(e, drone->bodyID, drone->physicsTracking, recoil, drone->idx, source);
+
+    for (int i = 0; i < weaponInfo->numProjectiles; i++) {
+        const b2Vec2 projAim = weaponAdjustAim(&e->rng, weaponInfo->type, heat, normAim, i);
+        createProjectile(e, drone, weaponInfo, projAim);
+    }
+}
+
 void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool triggerDown) {
     drone->shotThisStep = true;
 
-    weaponSlot *weapon = &drone->activeWeapon;
-    if (weapon->weaponInfo->type == GRAPPLE_WEAPON && drone->grapple != NULL) {
-        if (drone->grapple->welded) {
-            b2DistanceJoint_SetMaxMotorForce(drone->grappleJointID, GRAPPLE_MOTOR_FORCE);
-        }
-        return;
-    }
-
+    weaponSlot *weapon = &drone->weapon;
     if (weapon->cooldown > 0.0f || weapon->ammo == 0) {
         return;
     }
@@ -2685,13 +2779,13 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool trigg
             // charges cannot be held with no energy, and can't be started
             // when energy is depleted
             if (drone->energyFullyDepleted && (drone->energyRefillWait != 0.0f || drone->chargingBurst)) {
-                droneEmptyCharge(drone, true);
+                droneEmptyCharge(drone);
                 return;
             }
 
             weapon->charge = min(weapon->charge + e->deltaTime, weapon->weaponInfo->maxCharge);
         } else if (weapon->charge < weapon->weaponInfo->maxCharge) {
-            droneEmptyCharge(drone, false);
+            droneEmptyCharge(drone);
         }
     }
     // if the weapon needs to be charged, only fire the weapon if it's
@@ -2704,40 +2798,145 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool trigg
         weapon->ammo--;
     }
     weapon->cooldown += weapon->weaponInfo->cooldown;
-    droneEmptyCharge(drone, false);
+    droneEmptyCharge(drone);
 
-    b2Vec2 normAim = drone->lastAim;
     if (!b2Equal(aim, b2Vec2_zero)) {
-        normAim = b2Normalize(aim);
+        recordAimError(e, drone, b2Normalize(aim));
+    } else {
+        recordAimError(e, drone, drone->lastAim);
     }
-    ASSERT_VEC_NORMALIZED(normAim);
-    recordAimError(e, drone, normAim);
-    const b2Vec2 recoil = b2MulSV(-weapon->weaponInfo->recoilMagnitude, normAim);
-    const physicsSource source = {.type = RECOIL_PHYSICS, .weapon = weapon->weaponInfo->type};
-    applyTrackedImpulse(e, drone->bodyID, drone->physicsTracking, recoil, drone->idx, source);
-
-    for (int i = 0; i < weapon->weaponInfo->numProjectiles; i++) {
-        const b2Vec2 projAim = weaponAdjustAim(&e->rng, weapon->weaponInfo->type, weapon->heat, normAim, i);
-        createProjectile(e, drone, projAim);
-
-        e->stats[drone->idx].shotsFired[weapon->weaponInfo->type]++;
-        e->stats[drone->idx].totalShotsFired++;
-    }
+    droneFireProjectiles(e, drone, weapon->weaponInfo, weapon->heat, aim);
     drone->stepInfo.firedShot = true;
+    // only weapon shots are counted, utility projectiles aren't
+    e->stats[drone->idx].shotsFired[weapon->weaponInfo->type] += weapon->weaponInfo->numProjectiles;
+    e->stats[drone->idx].totalShotsFired += weapon->weaponInfo->numProjectiles;
+
+    // heat builds up after the shot so it only affects the shots after it
+    if (weapon->weaponInfo->type == MACHINEGUN_WEAPON) {
+        weapon->heat += MACHINEGUN_HEAT_BUILDUP;
+    }
 
     if (weapon->ammo == 0) {
-        if (weaponUseless(e, drone, drone->activeWeapon)) {
-            droneUnsetActiveWeapon(e, drone);
-        } else if (drone->inactiveWeapon.weaponInfo->type == UNSET_WEAPON) {
-            // the active weapon is empty but still useful, and the inactive
-            // weapon is unset so set it to the standard weapon
-            drone->inactiveWeapon.weaponInfo = weaponInfos[STANDARD_WEAPON];
-            drone->inactiveWeapon.ammo = weaponAmmo(drone->inactiveWeapon.weaponInfo->type);
-            resetWeapon(&drone->inactiveWeapon);
-        } else {
-            // the active weapon is empty but still useful and the inactive
-            // weapon is set; nothing to do
+        droneUnsetWeapon(drone);
+    }
+}
+
+// sets off all of a drone's mines that are stuck to walls
+static void droneDetonateMines(iwEnv *e, const droneEntity *drone) {
+    e->analysisStats[drone->idx].minesDetonated++;
+    CC_ArrayIter projIter;
+    cc_array_iter_init(&projIter, e->projectiles);
+    projectileEntity *projectile;
+    while (cc_array_iter_next(&projIter, (void **)&projectile) != CC_ITER_END) {
+        if (projectile->needsToBeDestroyed || projectile->droneIdx != drone->idx || projectile->weaponInfo->type != MINE_LAUNCHER_WEAPON || !projectile->welded) {
+            continue;
         }
+
+        // we have to destroy the projectile using the iterator so
+        // we can continue to iterate correctly
+        destroyProjectile(e, projectile, true, false);
+        enum cc_stat res = cc_array_iter_remove_fast(&projIter, NULL);
+        MAYBE_UNUSED(res);
+        ASSERT(res == CC_OK);
+    }
+    destroyExplodedProjectiles(e);
+}
+
+// how many of the utility's projectiles are live
+uint8_t droneUtilityActive(const iwEnv *e, const droneEntity *drone) {
+    switch (drone->utility.utilityInfo->type) {
+    case GRAPPLE_UTILITY:
+        return drone->grapple != NULL;
+    case MINE_UTILITY:
+        return e->minesCreated[drone->idx];
+    default:
+        return 0;
+    }
+}
+
+// the drone's live mine, or NULL; the mines utility has a max active of 1
+// and placed mines are kept through utility switches, so a drone never has
+// more than one
+const projectileEntity *droneMine(const iwEnv *e, const droneEntity *drone) {
+    MAYBE_UNUSED(e);
+    const projectileEntity *mine = drone->mine;
+    if (mine == NULL || mine->needsToBeDestroyed) {
+        return NULL;
+    }
+    return mine;
+}
+
+static bool droneHasWeldedMine(const iwEnv *e, const droneEntity *drone) {
+    const projectileEntity *mine = droneMine(e, drone);
+    return mine != NULL && mine->welded;
+}
+
+// handles the utility button. A press uses the utility if it has ammo
+// and isn't at max active, otherwise it acts on what's already out: welded
+// mines are detonated. The button does nothing while the grapple is in
+// flight; once it's attached the drone is tethered, holding the button
+// reels it in and releasing it detaches it. A held button never repeats a
+// press
+void droneUtility(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool held) {
+    const bool pressed = held && !drone->utilityHeld;
+    const bool released = !held && drone->utilityHeld;
+    drone->utilityHeld = held;
+
+    utilitySlot *utility = &drone->utility;
+    const utilityInformation *info = utility->utilityInfo;
+    if (info->type == UNSET_UTILITY) {
+        return;
+    }
+    droneAnalysisStats *stats = &e->analysisStats[drone->idx];
+    stats->utilityPresses[info->type] += pressed;
+
+    if (info->type == GRAPPLE_UTILITY && drone->grapple != NULL) {
+        if (!drone->grapple->welded) {
+            return;
+        }
+        if (released) {
+            destroyProjectile(e, drone->grapple, false, true);
+        } else if (held) {
+            b2DistanceJoint_SetMaxMotorForce(drone->grappleJointID, GRAPPLE_MOTOR_FORCE);
+            stats->utilityPressesUseful[info->type] += pressed;
+        }
+        return;
+    }
+    if (!pressed) {
+        return;
+    }
+
+    if (droneUtilityActive(e, drone) >= info->maxActive) {
+        if (info->type == MINE_UTILITY && droneHasWeldedMine(e, drone)) {
+            droneDetonateMines(e, drone);
+            stats->utilityPressesUseful[info->type]++;
+        }
+        return;
+    }
+    if (utility->ammo == 0 || utility->cooldown > 0.0f) {
+        return;
+    }
+
+    stats->utilityPressesUseful[info->type]++;
+    stats->utilityAmmoSpent[info->type]++;
+    utility->ammo--;
+    utility->cooldown = info->projectileInfo->cooldown;
+    droneFireProjectiles(e, drone, info->projectileInfo, 0, aim);
+}
+
+// regenerates utility ammo and cools down the utility
+void utilityStep(const iwEnv *e, utilitySlot *utility) {
+    utility->cooldown = max(utility->cooldown - e->deltaTime, 0.0f);
+
+    const utilityInformation *info = utility->utilityInfo;
+    if (utility->ammo >= info->ammo) {
+        utility->regen = 0.0f;
+        return;
+    }
+    utility->regen += e->deltaTime;
+    if (utility->regen >= info->regenTime) {
+        utility->regen -= info->regenTime;
+        utility->ammo++;
     }
 }
 
@@ -2857,45 +3056,6 @@ void droneBurst(iwEnv *e, droneEntity *drone) {
     }
 }
 
-void droneWeaponAction(iwEnv *e, droneEntity *drone) {
-    switch (drone->activeWeapon.weaponInfo->type) {
-    case SNIPER_WEAPON:
-    case IMPLODER_WEAPON:
-    case BLACK_HOLE_WEAPON:
-    case NUKE_WEAPON:
-        droneEmptyCharge(drone, false);
-        break;
-    case MINE_LAUNCHER_WEAPON: {
-        // set off all mines from this drone that are stuck to walls
-        CC_ArrayIter projIter;
-        cc_array_iter_init(&projIter, e->projectiles);
-        projectileEntity *projectile;
-        while (cc_array_iter_next(&projIter, (void **)&projectile) != CC_ITER_END) {
-            if (projectile->needsToBeDestroyed || projectile->droneIdx != drone->idx || projectile->weaponInfo->type != MINE_LAUNCHER_WEAPON || !projectile->welded) {
-                continue;
-            }
-
-            // we have to destroy the projectile using the iterator so
-            // we can continue to iterate correctly
-            destroyProjectile(e, projectile, true, false);
-            enum cc_stat res = cc_array_iter_remove_fast(&projIter, NULL);
-            MAYBE_UNUSED(res);
-            ASSERT(res == CC_OK);
-        }
-        destroyExplodedProjectiles(e);
-        break;
-    }
-    case GRAPPLE_WEAPON:
-        if (drone->grapple == NULL) {
-            break;
-        }
-        destroyProjectile(e, drone->grapple, false, true);
-        break;
-    default:
-        break;
-    }
-}
-
 void weaponStep(const iwEnv *e, weaponSlot *weapon) {
     if (weapon->cooldown > 0.0f) {
         weapon->cooldown = max(weapon->cooldown - e->deltaTime, -e->deltaTime);
@@ -2936,28 +3096,12 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
         destroyExplodedProjectiles(e);
     }
 
-    // get rid of empty useless weapons
-    if (drone->activeWeapon.ammo == 0 && weaponUseless(e, drone, drone->activeWeapon)) {
-        droneUnsetActiveWeapon(e, drone);
-    }
-    // get rid of empty useless inactive weapons and don't let the
-    // standard weapon take a slot when another weapon can shoot
-    if ((drone->inactiveWeapon.ammo == 0 && weaponUseless(e, drone, drone->inactiveWeapon)) || (drone->activeWeapon.ammo > 0 && drone->inactiveWeapon.weaponInfo->type == STANDARD_WEAPON)) {
-        droneUnsetInactiveWeapon(drone);
-    }
-
-    // manage weapon charge and heat
-    weaponStep(e, &drone->activeWeapon);
-    weaponStep(e, &drone->inactiveWeapon);
-
-    if (drone->swapCooldown > 0.0f) {
-        drone->swapCooldown = max(drone->swapCooldown - e->deltaTime, -e->deltaTime);
-    } else {
-        drone->swapCooldown = 0.0f;
-    }
+    // manage weapon charge and heat, and utility ammo
+    weaponStep(e, &drone->weapon);
+    utilityStep(e, &drone->utility);
 
     // slowly drain energy if a charge is being held for a long time
-    weaponSlot *active = &drone->activeWeapon;
+    weaponSlot *active = &drone->weapon;
     if (active->weaponInfo->maxCharge > 0.0f && active->charge == active->weaponInfo->maxCharge) {
         active->fullChargeHoldTime += e->deltaTime;
         if (active->fullChargeHoldTime > DRONE_CHARGE_FULL_DRAIN_WAIT) {
@@ -2966,36 +3110,28 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
         }
     }
 
-    // the inactive weapon can only have an empty or full charge; start
-    // draining energy immediately when the inactive weapon is fully
-    // charged
-    if (drone->inactiveWeapon.charge > 0.0f) {
-        drone->inactiveWeapon.fullChargeHoldTime += e->deltaTime;
-        droneChargeEnergyDrain(e, drone, drone->inactiveWeapon.fullChargeHoldTime);
-    }
-
     if (!drone->shotThisStep) {
         // if the trigger is released while charging, the charge is
-        // emptied; if a fully charged weapon is swapped to, it stays
-        // charged until fired or canceled
-        if (drone->activeWeapon.charge < drone->activeWeapon.weaponInfo->maxCharge) {
-            droneEmptyCharge(drone, false);
-        }
-
-        if (drone->grapple != NULL && drone->grapple->welded) {
-            b2DistanceJoint_SetMaxMotorForce(drone->grappleJointID, 0.0f);
+        // emptied
+        if (drone->weapon.charge < drone->weapon.weaponInfo->maxCharge) {
+            droneEmptyCharge(drone);
         }
     } else {
         drone->shotThisStep = false;
-        // shorten the grapple line as it's being reeled in
-        if (drone->grapple != NULL && drone->grapple->welded && drone->activeWeapon.weaponInfo->type == GRAPPLE_WEAPON) {
+    }
+    ASSERT(!drone->shotThisStep);
+
+    if (drone->grapple != NULL && drone->grapple->welded) {
+        if (drone->utilityHeld) {
+            // shorten the grapple line as it's being reeled in
             const float curLen = b2DistanceJoint_GetCurrentLength(drone->grappleJointID);
             drone->grappleLength = fminf(curLen + GRAPPLE_SLACK, drone->grappleLength);
             b2DistanceJoint_SetLength(drone->grappleJointID, drone->grappleLength);
             b2DistanceJoint_SetLengthRange(drone->grappleJointID, 0.0f, drone->grappleLength + GRAPPLE_MAX_STRETCH);
+        } else {
+            b2DistanceJoint_SetMaxMotorForce(drone->grappleJointID, 0.0f);
         }
     }
-    ASSERT(!drone->shotThisStep);
 
     if (drone->grapple != NULL && drone->grapple->welded) {
         const bool stretched = b2DistanceJoint_GetCurrentLength(drone->grappleJointID) > drone->grappleLength;
@@ -3040,7 +3176,7 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
         drone->energyFullyDepletedThisStep = false;
     } else if (drone->energyRefillWait != 0.0f) {
         drone->energyRefillWait = max(drone->energyRefillWait - e->deltaTime, 0.0f);
-    } else if (drone->energyLeft != DRONE_ENERGY_MAX && !drone->chargingBurst && drone->activeWeapon.fullChargeHoldTime <= DRONE_CHARGE_FULL_DRAIN_WAIT && drone->inactiveWeapon.fullChargeHoldTime == 0.0f) {
+    } else if (drone->energyLeft != DRONE_ENERGY_MAX && !drone->chargingBurst && drone->weapon.fullChargeHoldTime <= DRONE_CHARGE_FULL_DRAIN_WAIT) {
         // don't start recharging energy until the burst charge is used
         // or while a held weapon charge is draining energy
         drone->energyLeft = min(drone->energyLeft + (DRONE_ENERGY_REFILL_RATE * e->deltaTime), DRONE_ENERGY_MAX);
@@ -3351,17 +3487,21 @@ void weaponPickupsOverlapStep(iwEnv *e) {
             droneEntity *drone = safe_array_get_at(e->drones, liveDrones[j]);
             disableWeaponPickup(e, pickup);
             drone->stepInfo.pickedUpWeapon = true;
-            if (pickup->isCrate) {
-                bool refilledEmpty;
-                const bool refilled = droneRefillAmmo(drone, &refilledEmpty);
-                drone->stepInfo.slotFilled |= refilledEmpty;
+            if (pickup->kind == CRATE_PICKUP) {
+                const bool refilled = droneRefillAmmo(drone);
                 e->stats[drone->idx].cratesPickedUp++;
                 e->stats[drone->idx].cratesRefilled += refilled;
                 DEBUG_LOGF("drone %d picked up an ammo crate", drone->idx);
                 break;
             }
-            e->analysisStats[drone->idx].pickupsFrom[drone->activeWeapon.weaponInfo->type][pickup->weapon]++;
-            drone->stepInfo.slotFilled |= droneChangeWeapon(e, drone, pickup->weapon);
+            if (pickup->kind == UTILITY_PICKUP) {
+                drone->stepInfo.slotFilled |= droneChangeUtility(e, drone, pickup->utility);
+                e->stats[drone->idx].utilitiesPickedUp[pickup->utility]++;
+                DEBUG_LOGF("drone %d picked up utility %d", drone->idx, pickup->utility);
+                break;
+            }
+            e->analysisStats[drone->idx].pickupsFrom[drone->weapon.weaponInfo->type][pickup->weapon]++;
+            drone->stepInfo.slotFilled |= droneChangeWeapon(drone, pickup->weapon);
 
             e->stats[drone->idx].weaponsPickedUp[pickup->weapon]++;
             e->stats[drone->idx].totalWeaponsPickedUp++;
@@ -3514,6 +3654,20 @@ void handleBodyMoveEvents(iwEnv *e) {
     }
 }
 
+bool projectileIgnoresBouncyWalls(projectileEntity *projectile) {
+    switch (projectile->weaponInfo->type) {
+    case ACCELERATOR_WEAPON:
+        // all accelerator wall bounces are counted
+    case GRAPPLE_WEAPON:
+        // grapples can attach to all walls
+    case MINE_LAUNCHER_WEAPON:
+        // mines can attach to all walls as well
+        return true;
+    default:
+        return false;
+    }
+}
+
 void createProjectileWeldJoint(iwEnv *e, projectileEntity *projectile, const b2BodyId bodyID, const b2Rot rot, const b2ContactId contactID, const bool projIsShapeA) {
     ASSERT(b2Contact_IsValid(contactID));
     const b2Manifold manifold = b2Contact_GetData(contactID).manifold;
@@ -3586,10 +3740,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             trackImpulse(e, wall->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), projectile->droneIdx, source);
         }
 
-        if (ent->type == BOUNCY_WALL_ENTITY && projectile->weaponInfo->type != GRAPPLE_WEAPON && projectile->weaponInfo->type != ACCELERATOR_WEAPON) {
-            // always allow projectiles to bounce off bouncy walls,
-            // except for grapples which attach to all walls and
-            // accelerator projectiles whose bounces are all counted
+        if (ent->type == BOUNCY_WALL_ENTITY && !projectileIgnoresBouncyWalls(projectile)) {
             return 0;
         }
     } else if (ent->type == SHIELD_ENTITY) {
@@ -3653,18 +3804,15 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
                 droneAddEnergy(shooterDrone, impulseEnergy);
             }
             shooterDrone->stepInfo.shotHit[hitDrone->idx] += hitStrength * SHOT_HIT_IMPULSE_SCALE;
-            e->stats[shooterDrone->idx].shotsHit[projectile->weaponInfo->type]++;
+            recordShotHit(e, shooterDrone->idx, projectile->weaponInfo->type);
             e->analysisStats[shooterDrone->idx].boostedShotsHit[projectile->weaponInfo->type] += projectile->boosted;
-            e->stats[shooterDrone->idx].totalShotsHit++;
             DEBUG_LOGF("drone %d hit drone %d with weapon %d", shooterDrone->idx, hitDrone->idx, projectile->weaponInfo->type);
             hitDrone->stepInfo.shotTaken[shooterDrone->idx] += hitStrength * SHOT_HIT_IMPULSE_SCALE;
-            e->stats[hitDrone->idx].shotsTaken[projectile->weaponInfo->type]++;
-            e->stats[hitDrone->idx].totalShotsTaken++;
+            recordShotTaken(e, hitDrone->idx, projectile->weaponInfo->type);
             DEBUG_LOGF("drone %d hit by drone %d with weapon %d", hitDrone->idx, shooterDrone->idx, projectile->weaponInfo->type);
         } else {
             hitDrone->stepInfo.ownShotTaken = true;
-            e->stats[hitDrone->idx].ownShotsTaken[projectile->weaponInfo->type]++;
-            e->stats[hitDrone->idx].totalOwnShotsTaken++;
+            recordOwnShotTaken(e, hitDrone->idx, projectile->weaponInfo->type);
             DEBUG_LOGF("drone %d hit by own weapon %d", hitDrone->idx, projectile->weaponInfo->type);
         }
 
@@ -3715,6 +3863,11 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         createProjectileWeldJoint(e, projectile, bodyID, b2Body_GetRotation(bodyID), contactID, projIsShapeA);
         projectile->grappledEnt = ent;
         droneEntity *drone = safe_array_get_at(e->drones, projectile->droneIdx);
+        uint8_t attachedTo = 2;
+        if (entityTypeIsWall(ent->type)) {
+            attachedTo = ((const wallEntity *)ent->entity)->isFloating;
+        }
+        e->analysisStats[drone->idx].grappleAttaches[attachedTo]++;
         drone->grappleLength = b2Distance(drone->pos, projectile->pos) + GRAPPLE_SLACK;
 
         b2DistanceJointDef def = b2DefaultDistanceJointDef();
@@ -3728,7 +3881,8 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         def.maxLength = drone->grappleLength + GRAPPLE_MAX_STRETCH;
         def.length = drone->grappleLength;
         def.enableMotor = true;
-        def.maxMotorForce = 0.0f;
+        // start reeling right away if the utility button is held
+        def.maxMotorForce = drone->utilityHeld ? GRAPPLE_MOTOR_FORCE : 0.0f;
         def.motorSpeed = -GRAPPLE_MOTOR_SPEED;
 
         drone->grappleJointID = b2CreateDistanceJoint(e->worldID, &def);

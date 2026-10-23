@@ -102,8 +102,14 @@ static const uint8_t NUM_DRONE_RAY_OBS = 3;
 // many seconds
 static const float RAY_TIME_HORIZON = 2.0f;
 
-static const uint8_t WEAPON_OBS_SIZE = 6;
+// type, ammo, cooldown, charge and full charge hold time
+static const uint8_t WEAPON_OBS_SIZE = 5;
 static const uint8_t GRAPPLE_OBS_SIZE = 10;
+// own mine in flight, own mine welded and its relative position
+static const uint8_t MINE_OBS_SIZE = 4;
+// type, ammo, regen progress and active count, then the grapple and mine
+// state
+static const uint8_t UTILITY_OBS_SIZE = 4 + GRAPPLE_OBS_SIZE + MINE_OBS_SIZE;
 
 static const uint16_t ENEMY_DRONE_OBS_OFFSET = PROJECTILE_INFO_OBS_OFFSET + PROJECTILE_OBS_SIZE;
 // the ray to the enemy is last
@@ -176,6 +182,11 @@ static const float PICKUP_RESPAWN_WAIT = 4.0f;
 static const float SUDDEN_DEATH_PICKUP_RESPAWN_WAIT = 2.0f;
 
 static const float PICKUP_HELD_WEAPON_WEIGHT_COEF = 0.33f;
+// the utility pickups spawned at the start of an episode are placed this far
+// from the drone they're nearest to
+static const uint8_t UTILITY_PICKUP_PLACE_ATTEMPTS = 64;
+static const float UTILITY_PICKUP_MIN_DRONE_DISTANCE_SQUARED = SQUARED(8.0f);
+static const float UTILITY_PICKUP_MAX_DRONE_DISTANCE_SQUARED = SQUARED(30.0f);
 // pickup spawn weights default to a 0-10 scale where 5 is an average
 // spawn rate; only the ratios between weights matter. These are the
 // defaults, maps can override any of them (see mapEntry). The max is
@@ -186,8 +197,10 @@ static const float PICKUP_HELD_WEAPON_WEIGHT_COEF = 0.33f;
 // ammo crates refill the picking drone's weapons; in combo training
 // episodes they're the only pickups
 #define AMMO_CRATE_SPAWN_WEIGHT 5.0f
-// pickup type of an ammo crate in the obs, one past the last weapon
+// pickup type of an ammo crate in the obs, one past the last weapon, and
+// of a utility pickup, the utility type past the crate
 #define AMMO_CRATE_OBS_TYPE _NUM_WEAPONS
+#define UTILITY_PICKUP_OBS_TYPE(utility) (AMMO_CRATE_OBS_TYPE + (utility))
 
 // drone settings
 static const float DRONE_WALL_SPAWN_DISTANCE = 2.0f;
@@ -204,7 +217,6 @@ static const float DRONE_MOVE_MAGNITUDE = 35.0f;
 static const float DRONE_LINEAR_DAMPING = 1.0f;
 static const float DRONE_MOVE_AIM_COEF = 0.1f;
 
-static const float DRONE_SWAP_COOLDOWN = 0.35f;
 // seconds after a black hole pull or grapple attachment that the enemy
 // dying earns the setter an assist
 static const float DRONE_ASSIST_WINDOW = 2.0f;
@@ -357,7 +369,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define ACCELERATOR_DENSITY 2.0f
 #define ACCELERATOR_MASS MASS(ACCELERATOR_DENSITY, ACCELERATOR_RADIUS)
 #define ACCELERATOR_INV_MASS INV_MASS(ACCELERATOR_MASS)
-#define ACCELERATOR_BOUNCE 3
+#define ACCELERATOR_BOUNCE 2
 #define ACCELERATOR_BOUNCE_SPEED_COEF 2.0f
 #define ACCELERATOR_MAX_SPEED 500.f
 #define ACCELERATOR_SPAWN_WEIGHT 5.0f
@@ -381,24 +393,6 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define FLAK_CANNON_SPAWN_WEIGHT 5.0f
 #define FLAK_CANNON_EXPLOSION_RADIUS 7.5f
 #define FLAK_CANNON_EXPLOSION_IMPULSE 15.0f
-
-#define MINE_LAUNCHER_AMMO 3
-#define MINE_LAUNCHER_PROJECTILES 1
-#define MINE_LAUNCHER_RECOIL_MAGNITUDE 20.0f
-#define MINE_LAUNCHER_FIRE_MAGNITUDE 25.0f
-#define MINE_LAUNCHER_DAMPING 0.2f
-#define MINE_LAUNCHER_CHARGE 0.0f
-#define MINE_LAUNCHER_COOL_DOWN 0.6f
-#define MINE_LAUNCHER_MAX_DISTANCE INFINITE
-#define MINE_LAUNCHER_RADIUS 0.5f
-#define MINE_LAUNCHER_DENSITY 0.5f
-#define MINE_LAUNCHER_MASS MASS(MINE_LAUNCHER_DENSITY, MINE_LAUNCHER_RADIUS)
-#define MINE_LAUNCHER_INV_MASS INV_MASS(MINE_LAUNCHER_MASS)
-#define MINE_LAUNCHER_BOUNCE INFINITE // this is to avoid mines sometimes exploding when hitting walls
-#define MINE_LAUNCHER_SPAWN_WEIGHT 5.0f
-#define MINE_LAUNCHER_EXPLOSION_RADIUS 15.0f
-#define MINE_LAUNCHER_EXPLOSION_IMPULSE 200.0f
-#define MINE_LAUNCHER_PROXIMITY_RADIUS 7.5f
 
 #define BLACK_HOLE_AMMO 3
 #define BLACK_HOLE_PROJECTILES 1
@@ -439,7 +433,6 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define NUKE_EXPLOSION_RADIUS 35.0f
 #define NUKE_EXPLOSION_IMPULSE 500.0f
 
-#define GRAPPLE_AMMO 3
 #define GRAPPLE_PROJECTILES 1
 #define GRAPPLE_RECOIL_MAGNITUDE 25.0f
 #define GRAPPLE_FIRE_MAGNITUDE 55.0f
@@ -452,7 +445,6 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define GRAPPLE_MASS MASS(GRAPPLE_DENSITY, GRAPPLE_RADIUS)
 #define GRAPPLE_INV_MASS INV_MASS(GRAPPLE_MASS)
 #define GRAPPLE_BOUNCE INFINITE // this is to avoid grapples getting destroyed before they can create a weld joint
-#define GRAPPLE_SPAWN_WEIGHT 4.0f
 #define GRAPPLE_MOTOR_SPEED 100.0f
 #define GRAPPLE_MOTOR_FORCE 250.0f
 #define GRAPPLE_SLACK 3.0f
@@ -462,8 +454,36 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define GRAPPLE_HEALTH 100.0f
 #define GRAPPLE_BURST_REDUCTION 0.8f
 
+#define MINE_LAUNCHER_PROJECTILES 1
+#define MINE_LAUNCHER_RECOIL_MAGNITUDE 20.0f
+#define MINE_LAUNCHER_FIRE_MAGNITUDE 25.0f
+#define MINE_LAUNCHER_DAMPING 0.0f
+#define MINE_LAUNCHER_CHARGE 0.0f
+#define MINE_LAUNCHER_COOL_DOWN 0.6f
+#define MINE_LAUNCHER_MAX_DISTANCE INFINITE
+#define MINE_LAUNCHER_RADIUS 0.5f
+#define MINE_LAUNCHER_DENSITY 0.5f
+#define MINE_LAUNCHER_MASS MASS(MINE_LAUNCHER_DENSITY, MINE_LAUNCHER_RADIUS)
+#define MINE_LAUNCHER_INV_MASS INV_MASS(MINE_LAUNCHER_MASS)
+#define MINE_LAUNCHER_BOUNCE INFINITE // this is to avoid mines sometimes exploding when hitting walls
+#define MINE_LAUNCHER_EXPLOSION_RADIUS 15.0f
+#define MINE_LAUNCHER_EXPLOSION_IMPULSE 200.0f
+#define MINE_LAUNCHER_PROXIMITY_RADIUS 7.5f
+
+// utility settings
+#define GRAPPLE_UTILITY_AMMO 3
+#define GRAPPLE_UTILITY_REGEN_TIME 3.0f
+#define GRAPPLE_UTILITY_MAX_ACTIVE 1
+#define GRAPPLE_UTILITY_SPAWN_WEIGHT 2.5f
+
+#define MINE_UTILITY_AMMO 1
+#define MINE_UTILITY_REGEN_TIME 6.0f
+#define MINE_UTILITY_MAX_ACTIVE 1
+#define MINE_UTILITY_SPAWN_WEIGHT 2.5f
+
 static const weaponInformation unsetWeapon = {
     .type = UNSET_WEAPON,
+    .ammo = 0,
     .isPhysicsBullet = false,
     .canSleep = false,
     .numProjectiles = 0,
@@ -490,6 +510,7 @@ static const weaponInformation unsetWeapon = {
 
 static const weaponInformation standard = {
     .type = STANDARD_WEAPON,
+    .ammo = STANDARD_AMMO,
     .isPhysicsBullet = true,
     .canSleep = false,
     .numProjectiles = STANDARD_PROJECTILES,
@@ -516,6 +537,7 @@ static const weaponInformation standard = {
 
 static const weaponInformation machineGun = {
     .type = MACHINEGUN_WEAPON,
+    .ammo = MACHINEGUN_AMMO,
     .isPhysicsBullet = true,
     .canSleep = false,
     .numProjectiles = MACHINEGUN_PROJECTILES,
@@ -542,6 +564,7 @@ static const weaponInformation machineGun = {
 
 static const weaponInformation sniper = {
     .type = SNIPER_WEAPON,
+    .ammo = SNIPER_AMMO,
     .isPhysicsBullet = true,
     .canSleep = false,
     .numProjectiles = SNIPER_PROJECTILES,
@@ -568,6 +591,7 @@ static const weaponInformation sniper = {
 
 static const weaponInformation shotgun = {
     .type = SHOTGUN_WEAPON,
+    .ammo = SHOTGUN_AMMO,
     .isPhysicsBullet = true,
     .canSleep = false,
     .numProjectiles = SHOTGUN_PROJECTILES,
@@ -594,6 +618,7 @@ static const weaponInformation shotgun = {
 
 static const weaponInformation imploder = {
     .type = IMPLODER_WEAPON,
+    .ammo = IMPLODER_AMMO,
     .isPhysicsBullet = false,
     .canSleep = false,
     .numProjectiles = IMPLODER_PROJECTILES,
@@ -620,6 +645,7 @@ static const weaponInformation imploder = {
 
 static const weaponInformation accelerator = {
     .type = ACCELERATOR_WEAPON,
+    .ammo = ACCELERATOR_AMMO,
     .isPhysicsBullet = true,
     .canSleep = false,
     .numProjectiles = ACCELERATOR_PROJECTILES,
@@ -646,6 +672,7 @@ static const weaponInformation accelerator = {
 
 static const weaponInformation flakCannon = {
     .type = FLAK_CANNON_WEAPON,
+    .ammo = FLAK_CANNON_AMMO,
     .isPhysicsBullet = true,
     .canSleep = false,
     .numProjectiles = FLAK_CANNON_PROJECTILES,
@@ -670,34 +697,9 @@ static const weaponInformation flakCannon = {
     .spawnWeight = FLAK_CANNON_SPAWN_WEIGHT,
 };
 
-static const weaponInformation mineLauncher = {
-    .type = MINE_LAUNCHER_WEAPON,
-    .isPhysicsBullet = false,
-    .canSleep = true,
-    .numProjectiles = MINE_LAUNCHER_PROJECTILES,
-    .fireMagnitude = MINE_LAUNCHER_FIRE_MAGNITUDE,
-    .recoilMagnitude = MINE_LAUNCHER_RECOIL_MAGNITUDE,
-    .damping = MINE_LAUNCHER_DAMPING,
-    .maxCharge = MINE_LAUNCHER_CHARGE,
-    .cooldown = MINE_LAUNCHER_COOL_DOWN,
-    .maxDistance = MINE_LAUNCHER_MAX_DISTANCE,
-    .radius = MINE_LAUNCHER_RADIUS,
-    .density = MINE_LAUNCHER_DENSITY,
-    .mass = MINE_LAUNCHER_MASS,
-    .invMass = MINE_LAUNCHER_INV_MASS,
-    .initialSpeed = MINE_LAUNCHER_FIRE_MAGNITUDE * MINE_LAUNCHER_INV_MASS,
-    .maxBounces = MINE_LAUNCHER_BOUNCE + 1,
-    .explosive = true,
-    .destroyedOnDroneHit = true,
-    .explodesOnDroneHit = false,
-    .hasSensor = true,
-    .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF,
-    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
-    .spawnWeight = MINE_LAUNCHER_SPAWN_WEIGHT,
-};
-
 static const weaponInformation blackHole = {
     .type = BLACK_HOLE_WEAPON,
+    .ammo = BLACK_HOLE_AMMO,
     .isPhysicsBullet = false,
     .canSleep = false,
     .numProjectiles = BLACK_HOLE_PROJECTILES,
@@ -724,6 +726,7 @@ static const weaponInformation blackHole = {
 
 static const weaponInformation nuke = {
     .type = NUKE_WEAPON,
+    .ammo = NUKE_AMMO,
     .isPhysicsBullet = false,
     .canSleep = false,
     .numProjectiles = NUKE_PROJECTILES,
@@ -750,6 +753,8 @@ static const weaponInformation nuke = {
 
 static const weaponInformation grapple = {
     .type = GRAPPLE_WEAPON,
+    // utility projectiles use the utility's ammo, see utilityInformation
+    .ammo = 0,
     .isPhysicsBullet = true,
     .canSleep = false,
     .numProjectiles = GRAPPLE_PROJECTILES,
@@ -769,9 +774,37 @@ static const weaponInformation grapple = {
     .destroyedOnDroneHit = false,
     .explodesOnDroneHit = false,
     .hasSensor = false,
-    .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF,
+    .energyRefillCoef = 0.0f,
     .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
-    .spawnWeight = GRAPPLE_SPAWN_WEIGHT,
+    .spawnWeight = 0.0f,
+};
+
+static const weaponInformation mineLauncher = {
+    .type = MINE_LAUNCHER_WEAPON,
+    // utility projectiles use the utility's ammo, see utilityInformation
+    .ammo = 0,
+    .isPhysicsBullet = false,
+    .canSleep = true,
+    .numProjectiles = MINE_LAUNCHER_PROJECTILES,
+    .fireMagnitude = MINE_LAUNCHER_FIRE_MAGNITUDE,
+    .recoilMagnitude = MINE_LAUNCHER_RECOIL_MAGNITUDE,
+    .damping = MINE_LAUNCHER_DAMPING,
+    .maxCharge = MINE_LAUNCHER_CHARGE,
+    .cooldown = MINE_LAUNCHER_COOL_DOWN,
+    .maxDistance = MINE_LAUNCHER_MAX_DISTANCE,
+    .radius = MINE_LAUNCHER_RADIUS,
+    .density = MINE_LAUNCHER_DENSITY,
+    .mass = MINE_LAUNCHER_MASS,
+    .invMass = MINE_LAUNCHER_INV_MASS,
+    .initialSpeed = MINE_LAUNCHER_FIRE_MAGNITUDE * MINE_LAUNCHER_INV_MASS,
+    .maxBounces = MINE_LAUNCHER_BOUNCE + 1,
+    .explosive = true,
+    .destroyedOnDroneHit = true,
+    .explodesOnDroneHit = false,
+    .hasSensor = true,
+    .energyRefillCoef = 0.0f,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
+    .spawnWeight = 0.0f,
 };
 
 static weaponInformation *weaponInfos[] = {
@@ -783,11 +816,63 @@ static weaponInformation *weaponInfos[] = {
     (weaponInformation *)&imploder,
     (weaponInformation *)&accelerator,
     (weaponInformation *)&flakCannon,
-    (weaponInformation *)&mineLauncher,
     (weaponInformation *)&blackHole,
     (weaponInformation *)&nuke,
     (weaponInformation *)&grapple,
+    (weaponInformation *)&mineLauncher,
 };
+
+static const utilityInformation unsetUtility = {
+    .type = UNSET_UTILITY,
+    .projectileInfo = &unsetWeapon,
+    .ammo = 0,
+    .regenTime = 0.0f,
+    .maxActive = 0,
+    .spawnWeight = 0.0f,
+};
+
+static const utilityInformation grappleUtility = {
+    .type = GRAPPLE_UTILITY,
+    .projectileInfo = &grapple,
+    .ammo = GRAPPLE_UTILITY_AMMO,
+    .regenTime = GRAPPLE_UTILITY_REGEN_TIME,
+    .maxActive = GRAPPLE_UTILITY_MAX_ACTIVE,
+    .spawnWeight = GRAPPLE_UTILITY_SPAWN_WEIGHT,
+};
+
+static const utilityInformation mineUtility = {
+    .type = MINE_UTILITY,
+    .projectileInfo = &mineLauncher,
+    .ammo = MINE_UTILITY_AMMO,
+    .regenTime = MINE_UTILITY_REGEN_TIME,
+    .maxActive = MINE_UTILITY_MAX_ACTIVE,
+    .spawnWeight = MINE_UTILITY_SPAWN_WEIGHT,
+};
+
+static const utilityInformation *utilityInfos[] = {
+    &unsetUtility,
+    &grappleUtility,
+    &mineUtility,
+};
+
+// the utility that fires a weapon's projectiles, or UNSET_UTILITY if the
+// weapon is a weapon
+static inline enum utilityType weaponUtility(const enum weaponType type) {
+    switch (type) {
+    case GRAPPLE_WEAPON:
+        return GRAPPLE_UTILITY;
+    case MINE_LAUNCHER_WEAPON:
+        return MINE_UTILITY;
+    default:
+        return UNSET_UTILITY;
+    }
+}
+
+// whether a weapon's projectiles are only fired by a utility; they aren't
+// counted as shots
+static inline bool weaponIsUtility(const enum weaponType type) {
+    return weaponUtility(type) != UNSET_UTILITY;
+}
 
 static const char *weaponNames[] = {
     "standard",
@@ -797,43 +882,11 @@ static const char *weaponNames[] = {
     "imploder",
     "accelerator",
     "flak_cannon",
-    "mine_launcher",
     "black_hole",
     "tactical_nuke",
     "grapple_gun",
+    "mine_launcher",
 };
-
-// max ammo of weapon
-static int8_t weaponAmmo(const enum weaponType type) {
-    switch (type) {
-    case UNSET_WEAPON:
-        return 0;
-    case STANDARD_WEAPON:
-        return STANDARD_AMMO;
-    case MACHINEGUN_WEAPON:
-        return MACHINEGUN_AMMO;
-    case SNIPER_WEAPON:
-        return SNIPER_AMMO;
-    case SHOTGUN_WEAPON:
-        return SHOTGUN_AMMO;
-    case IMPLODER_WEAPON:
-        return IMPLODER_AMMO;
-    case ACCELERATOR_WEAPON:
-        return ACCELERATOR_AMMO;
-    case FLAK_CANNON_WEAPON:
-        return FLAK_CANNON_AMMO;
-    case MINE_LAUNCHER_WEAPON:
-        return MINE_LAUNCHER_AMMO;
-    case BLACK_HOLE_WEAPON:
-        return BLACK_HOLE_AMMO;
-    case NUKE_WEAPON:
-        return NUKE_AMMO;
-    case GRAPPLE_WEAPON:
-        return GRAPPLE_AMMO;
-    default:
-        ERRORF("unknown weapon type %d", type);
-    }
-}
 
 static b2ShapeId weaponSensor(const b2BodyId bodyID, const enum weaponType type) {
     b2ShapeDef sensorShapeDef = b2DefaultShapeDef();

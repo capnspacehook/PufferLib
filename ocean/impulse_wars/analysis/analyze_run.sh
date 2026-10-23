@@ -116,7 +116,7 @@ if [ -n "$BASE" ]; then
     fi
 fi
 
-[ $COMBOS = 1 ] && step "$OUT/combos.jsonl" "$CKPT" "$OUT/combos.jsonl" --opponent "$CKPT" --opponent-name self --combos --crates --episodes 16
+[ $COMBOS = 1 ] && step "$OUT/combos.jsonl" "$CKPT" "$OUT/combos.jsonl" --opponent "$CKPT" --opponent-name self --combos --crates --episodes 64
 
 # self-play over checkpoints spaced evenly on a log scale from 1/64 of the
 # run to the end, as behavior changes fastest early on
@@ -145,8 +145,8 @@ fi
         [ -n "$BASE" ] && BOTS_RUNS=(baseline="$OUT/baseline_bots.jsonl" run="$OUT/bots.jsonl")
         $C "${BOTS_RUNS[@]}" --sections opp
     fi
-    $C "${SELF[@]}" --sections pace,weapons,slots,deaths,behavior,standoff,mapweapons
-    [ $COMBOS = 1 ] && $C "$OUT/combos.jsonl" --sections combos,pace
+    $C "${SELF[@]}" --sections pace,weapons,slots,utilities,deaths,behavior,standoff,mapweapons
+    [ $COMBOS = 1 ] && $C "$OUT/combos.jsonl" --sections combos,utilities,pace
     [ "$TRAJ" -gt 0 ] && python3 "$A/trajectory.py" "$OUT/traj"
     python3 "$A/weights.py" "$OUT/weights.tsv" | head -40
 } 2>&1 | tee "$OUT/summary.txt"

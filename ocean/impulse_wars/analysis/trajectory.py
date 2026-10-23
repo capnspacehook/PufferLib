@@ -7,9 +7,10 @@ checkpoint's step count as analyze_run.sh writes them
 (traj/<steps>.jsonl), or a directory of them, and prints a row per
 checkpoint. Both drones are counted, as both are the same policy.
 
-Tables: behavior (kills, self-kills, swaps, context use, charging,
-holstered charges, setup kills, line of sight, firing without it, crates,
-standoffs, assists), kills (kills per game by weapon) and held (% of live
+Tables: behavior (kills, self-kills, charging, setup kills, line of sight,
+firing without it, crates, standoffs, assists, utility presses, useful
+presses and utility kills, and swaps, context use and holstered charges for
+results from before the utility slot), kills (kills per game by weapon) and held (% of live
 steps with each weapon in hand). --csv prints every column of every table
 as one CSV instead.
 """
@@ -17,7 +18,7 @@ import argparse
 import glob
 import os
 
-from compare import WEAPON_SETS, load, ratio
+from compare import load, ratio, weapon_names
 
 
 def steps_of(path):
@@ -44,24 +45,35 @@ def summarize(games):
     n = len(ds)
     t = lambda k: sum(d.get(k, 0) for d in ds)
     arr = lambda k, i: sum(d[k][i] for d in ds)
-    nw = len(ds[0]['shotsFired'])
-    weapons = WEAPON_SETS[nw]
+    weapons = weapon_names(ds[0])
     alive = t('alive')
     kills = t('kills')
     row = {
         'kills/g': kills / n,
         'self/g': t('selfKills') / n,
         'assists/g': t('assists') / n,
-        'swaps/g': t('swaps') / n,
-        'ctx held': ratio(sum(sum(d.get('contextPressed', [0])) for d in ds), alive),
-        'ctx press/g': sum(sum(d['contextPresses']) for d in ds) / n if 'contextPresses' in ds[0] else float('nan'),
-        'charging': ratio(t('charging'), alive),
-        'hol chg%': 100 * ratio(t('holsterCharged'), alive),
+    }
+    # weapon slot columns, only in results from before the utility slot
+    if 'swaps' in ds[0]:
+        row['swaps/g'] = t('swaps') / n
+        row['ctx held'] = ratio(sum(sum(d.get('contextPressed', [0])) for d in ds), alive)
+        row['ctx press/g'] = sum(sum(d['contextPresses']) for d in ds) / n if 'contextPresses' in ds[0] else float('nan')
+    row['charging'] = ratio(t('charging'), alive)
+    if 'swaps' in ds[0]:
+        row['hol chg%'] = 100 * ratio(t('holsterCharged'), alive)
+    row.update({
         'setup%': 100 * ratio(t('setupKillsAny'), kills),
         'LoS': ratio(t('losSteps'), t('sepSteps')),
         'fire noLoS': ratio(t('fireNoLos'), t('fireSteps')),
         'crates/g': t('cratesPickedUp') / n,
-    }
+    })
+    # utilities, from the utility slot on
+    if 'utilityPresses' in ds[0]:
+        presses = sum(sum(d['utilityPresses']) for d in ds)
+        row['util press/g'] = presses / n
+        row['util useful'] = ratio(sum(sum(d['utilityPressesUseful']) for d in ds), presses)
+        row['grapple k/g'] = arr('killsByWeapon', weapons.index('grapple')) / n
+        row['mine k/g'] = arr('killsByWeapon', weapons.index('mine')) / n
     if 'sitSteps' in ds[0]:
         both = sum(sum(d['sitSteps']) for d in ds)
         row['standoff'] = ratio(t('standoffSteps'), both)

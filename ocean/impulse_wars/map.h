@@ -343,7 +343,7 @@ static mapEntry siegeMap = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 5,
     .maxSuddenDeathWalls = 8,
-    .weaponSpawnWeights = {[GRAPPLE_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
+    .utilitySpawnWeights = {[GRAPPLE_UTILITY] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
 static const char pinballLayout[] = {
@@ -415,7 +415,7 @@ static mapEntry moatMap = {
     .hasSetFloatingWalls = true,
     .weaponPickups = 6,
     .maxSuddenDeathWalls = 4,
-    .weaponSpawnWeights = {[MINE_LAUNCHER_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
+    .utilitySpawnWeights = {[MINE_UTILITY] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
 static const char hourglassLayout[] = {
@@ -808,7 +808,8 @@ void resolvePickupSpawnWeights(const uint8_t mapIdx) {
     for (uint8_t i = 0; i < NUM_WEAPONS; i++) {
         float weight = weaponInfos[i]->spawnWeight;
         if (map->weaponSpawnWeights[i].set) {
-            if (i == UNSET_WEAPON || i == STANDARD_WEAPON) {
+            // utility projectiles spawn as utility pickups instead
+            if (i == UNSET_WEAPON || i == STANDARD_WEAPON || weaponIsUtility(i)) {
                 ERRORF("map %d overrides the spawn weight of weapon %d which can't be spawned", mapIdx, i);
             }
             weight = map->weaponSpawnWeights[i].weight;
@@ -817,6 +818,21 @@ void resolvePickupSpawnWeights(const uint8_t mapIdx) {
             ERRORF("map %d weapon %d spawn weight %f is outside of [0, %f]", mapIdx, i, weight, MAX_PICKUP_SPAWN_WEIGHT);
         }
         map->weaponWeights[i] = weight;
+        totalWeight += weight;
+    }
+
+    for (uint8_t i = 0; i < NUM_UTILITIES; i++) {
+        float weight = utilityInfos[i]->spawnWeight;
+        if (map->utilitySpawnWeights[i].set) {
+            if (i == UNSET_UTILITY) {
+                ERRORF("map %d overrides the spawn weight of the unset utility", mapIdx);
+            }
+            weight = map->utilitySpawnWeights[i].weight;
+        }
+        if (weight < 0.0f || weight > MAX_PICKUP_SPAWN_WEIGHT) {
+            ERRORF("map %d utility %d spawn weight %f is outside of [0, %f]", mapIdx, i, weight, MAX_PICKUP_SPAWN_WEIGHT);
+        }
+        map->utilityWeights[i] = weight;
         totalWeight += weight;
     }
 

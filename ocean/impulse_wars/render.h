@@ -330,16 +330,13 @@ agentActions getPlayerInputs(iwEnv *e, droneEntity *drone, uint8_t gamepadIdx) {
             actions.trigger = true;
         }
         if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_LEFT_TRIGGER_2)) {
-            actions.brake = true;
+            actions.utility = true;
         }
         if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_RIGHT_TRIGGER_1)) {
             actions.chargingBurst = true;
         }
         if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_LEFT_TRIGGER_1)) {
-            actions.swapWeapon = true;
-        }
-        if (IsGamepadButtonDown(gamepadIdx, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) {
-            actions.weaponAction = true;
+            actions.brake = true;
         }
 
         actions.move = (b2Vec2){.x = lStickX, .y = lStickY};
@@ -375,6 +372,9 @@ agentActions getPlayerInputs(iwEnv *e, droneEntity *drone, uint8_t gamepadIdx) {
         actions.brake = true;
     }
     if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+        actions.utility = true;
+    }
+    if (IsKeyDown(KEY_E)) {
         actions.chargingBurst = true;
     }
 
@@ -555,6 +555,28 @@ Color getDroneColor(const uint8_t droneIdx) {
         return PUFF_YELLOW;
     default:
         ERRORF("unsupported number of drones %d", droneIdx + 1);
+    }
+}
+
+char *getUtilityAbreviation(const enum utilityType type) {
+    switch (type) {
+    case GRAPPLE_UTILITY:
+        return "GRAP";
+    case MINE_UTILITY:
+        return "MINE";
+    default:
+        return "";
+    }
+}
+
+char *getUtilityName(const enum utilityType type) {
+    switch (type) {
+    case GRAPPLE_UTILITY:
+        return "Grapple";
+    case MINE_UTILITY:
+        return "Mines";
+    default:
+        return "No Utility";
     }
 }
 
@@ -1046,29 +1068,38 @@ void renderUI(const iwEnv *e, const bool starting) {
         DrawLine(x, y, x + textSize.x, y, droneColor);
 
         y += e->client->scale;
-        const char *weaponName = getWeaponName(drone->activeWeapon.weaponInfo->type);
+        const char *weaponName = getWeaponName(drone->weapon.weaponInfo->type);
         DrawText(weaponName, x, y, fontSize, textColor);
         uint16_t weaponLineWidth = MeasureText(weaponName, fontSize);
 
-        // render the holstered weapon faded, with a filled circle if
-        // it's fully charged or an empty one if it isn't
+        // render the utility with a filled circle per ammo, and the
+        // ammo being regenerated filling up
         y += textSize.y + e->client->scale;
-        const weaponSlot *inactiveWeapon = &drone->inactiveWeapon;
-        const char *inactiveWeaponName = getWeaponName(inactiveWeapon->weaponInfo->type);
-        DrawText(inactiveWeaponName, x, y, fontSize, Fade(textColor, 0.5f));
-        const uint16_t inactiveTextWidth = MeasureText(inactiveWeaponName, fontSize);
-        weaponLineWidth = max(weaponLineWidth, inactiveTextWidth);
-
-        const float maxInactiveCharge = inactiveWeapon->weaponInfo->maxCharge;
-        if (maxInactiveCharge != 0.0f) {
-            const float chargeRadius = e->client->scale * 0.5f;
-            const uint16_t chargeX = x + inactiveTextWidth + (e->client->scale * 1.5f);
-            if (inactiveWeapon->charge == maxInactiveCharge) {
-                DrawCircle(chargeX, y + (textSize.y / 2), chargeRadius, PUFF_WHITE);
+        const utilitySlot *utility = &drone->utility;
+        const utilityInformation *utilityInfo = utility->utilityInfo;
+        const char *utilityName = getUtilityName(utilityInfo->type);
+        Color utilityColor = textColor;
+        if (utilityInfo->type == UNSET_UTILITY) {
+            utilityColor = Fade(textColor, 0.5f);
+        }
+        DrawText(utilityName, x, y, fontSize, utilityColor);
+        const uint16_t utilityTextWidth = MeasureText(utilityName, fontSize);
+        const float pipRadius = e->client->scale * 0.5f;
+        const float pipSpacing = e->client->scale * 1.5f;
+        const float pipY = y + (textSize.y / 2);
+        for (uint8_t c = 0; c < utilityInfo->ammo; c++) {
+            const Vector2 pipPos = {.x = x + utilityTextWidth + pipSpacing * (c + 1), .y = pipY};
+            if (c < utility->ammo) {
+                DrawCircleV(pipPos, pipRadius, PUFF_WHITE);
             } else {
-                DrawCircleLines(chargeX, y + (textSize.y / 2), chargeRadius, PUFF_WHITE);
+                if (c == utility->ammo && utilityInfo->regenTime > 0.0f) {
+                    const float regen = utility->regen / utilityInfo->regenTime;
+                    DrawCircleSector(pipPos, pipRadius, -90.0f, -90.0f + (360.0f * regen), 16, Fade(PUFF_WHITE, 0.5f));
+                }
+                DrawCircleLinesV(pipPos, pipRadius, PUFF_WHITE);
             }
         }
+        weaponLineWidth = max(weaponLineWidth, utilityTextWidth + pipSpacing * (utilityInfo->ammo + 1));
 
         y += textSize.y + e->client->scale;
         DrawLine(x, y, x + weaponLineWidth, y, droneColor);
@@ -1604,14 +1635,27 @@ void renderWeaponPickup(const iwEnv *e, const weaponPickupEntity *pickup) {
         WHITE
     );
 
-    const char *weaponName = pickup->isCrate ? "AMMO" : getWeaponAbreviation(pickup->weapon);
+    const char *weaponName;
+    Color textColor = PUFF_WHITE;
+    switch (pickup->kind) {
+    case CRATE_PICKUP:
+        weaponName = "AMMO";
+        break;
+    case UTILITY_PICKUP:
+        weaponName = getUtilityAbreviation(pickup->utility);
+        textColor = PUFF_YELLOW;
+        break;
+    default:
+        weaponName = getWeaponAbreviation(pickup->weapon);
+        break;
+    }
     Vector3 textPos = (Vector3){
         .x = pickup->pos.x - PICKUP_THICKNESS / 2.0f,
         .y = 1.0f,
         .z = pickup->pos.y - PICKUP_THICKNESS / 2.0f
     };
 
-    DrawText3D(GetFontDefault(), weaponName, textPos, 12, 0.5f, -1.0f, false, PUFF_WHITE);
+    DrawText3D(GetFontDefault(), weaponName, textPos, 12, 0.5f, -1.0f, false, textColor);
 }
 
 void renderDronePieces(iwEnv *e) {
@@ -1683,7 +1727,7 @@ void renderDroneAimGuide(const iwEnv *e, const droneEntity *drone) {
     const entity *ent = b2Shape_GetUserData(rayRes.shapeId);
 
     const b2DistanceOutput output = closestPoint(drone->ent, ent);
-    float aimGuideWidth = getWeaponAimGuideWidth(drone->activeWeapon.weaponInfo->type);
+    float aimGuideWidth = getWeaponAimGuideWidth(drone->weapon.weaponInfo->type);
     aimGuideWidth = min(aimGuideWidth, output.distance + 0.1f) + (DRONE_RADIUS * 2.0f);
 
     // render laser aim guide
@@ -1812,7 +1856,7 @@ void renderDroneAmmo(const iwEnv *e, const droneEntity *drone) {
 
     // draw ammo count
     const float fontSize = 1.5f * e->client->camera->camera2D.zoom;
-    const char *ammoStr = TextFormat("%d", drone->activeWeapon.ammo);
+    const char *ammoStr = TextFormat("%d", drone->weapon.ammo);
     const Vector2 textSize = MeasureTextEx(GetFontDefault(), ammoStr, fontSize, fontSize / 10.0f);
     const Vector2 textOrigin = {.x = screenPos.x - (textSize.x / 2), .y = screenPos.y + (1.3f * textSize.y)};
     DrawTextEx(GetFontDefault(), ammoStr, textOrigin, fontSize, fontSize / 10.f, RAYWHITE);
@@ -1844,7 +1888,7 @@ void renderDroneUI(const droneEntity *drone) {
         DrawRing(energyMeterOrigin, burstChargeInnerRadius, burstChargeOuterRadius, 0.0f, 360.0f, 50, burstChargeColor);
     }
 
-    const float maxCharge = drone->activeWeapon.weaponInfo->maxCharge;
+    const float maxCharge = drone->weapon.weaponInfo->maxCharge;
     if (maxCharge == 0) {
         return;
     }
@@ -1854,7 +1898,7 @@ void renderDroneUI(const droneEntity *drone) {
     const float chargeMeterInnerRadius = 1.0f;
     const float chargeMeterOuterRadius = 0.5f;
     const float chargeMeterStartAngle = 157.5f;
-    const float chargeMeterEndAngle = chargeMeterStartAngle - (135.0f * (drone->activeWeapon.charge / maxCharge));
+    const float chargeMeterEndAngle = chargeMeterStartAngle - (135.0f * (drone->weapon.charge / maxCharge));
 
     rlPushMatrix();
     rlTranslatef(chargeMeterOrigin.x, chargeMeterOrigin.y, 0.0f);
@@ -2124,8 +2168,8 @@ void renderEnv(iwEnv *e) {
         }
 
         // light up the laser aim guide if the drone's weapon is fully charged
-        const float maxCharge = drone->activeWeapon.weaponInfo->maxCharge;
-        if (maxCharge != 0.0f && drone->activeWeapon.charge == maxCharge) {
+        const float maxCharge = drone->weapon.weaponInfo->maxCharge;
+        if (maxCharge != 0.0f && drone->weapon.charge == maxCharge) {
             renderDroneAimGuide(e, drone);
         }
 

@@ -9,9 +9,11 @@
 // branches: a shared MLP per branch over every slot, max pooled over the
 // non-empty ones. Wall type slots hold 0 (empty) or wall
 // type + 1, weapon type slots hold a weapon type (0 is UNSET_WEAPON: no
-// entity or no weapon; pickups use one past the last weapon for an ammo
-// crate), ray hit type slots hold a RAY_HIT_* value; these
-// are one-hot encoded with type 0 as all zeros. Every other obs value is a continuous scalar that is passed
+// entity or no weapon), utility type slots hold a utility type (0 is
+// UNSET_UTILITY), pickup type slots hold a weapon type, one past the last
+// weapon for an ammo crate, or a utility type past that for a utility, ray
+// hit type slots hold a RAY_HIT_* value; these are one-hot encoded with
+// type 0 as all zeros. Every other obs value is a continuous scalar that is passed
 // through to the projection unchanged.
 #ifndef IMPULSE_WARS_OBS_H
 #define IMPULSE_WARS_OBS_H
@@ -35,11 +37,14 @@
 #define IW_NUM_PROJECTILES 30
 #define IW_PROJECTILE_SIZE 6
 #define IW_RAY_SIZE 2
-// every drone block starts with its active then holstered weapon: type,
-// ammo, whether it's still useful, cooldown, charge and full charge hold
-// time
-#define IW_WEAPON_SIZE 6
-#define IW_DRONE_WEAPONS 2
+// every drone block starts with its weapon: type, ammo, cooldown, charge
+// and full charge hold time, then its utility: type, ammo, regen progress,
+// active count, the grapple's state and the mine's state
+#define IW_WEAPON_SIZE 5
+#define IW_UTILITY_SIZE 18
+// offsets of the weapon and utility type slots in a drone block
+#define IW_DRONE_WEAPON_TYPE 0
+#define IW_DRONE_UTILITY_TYPE IW_WEAPON_SIZE
 // ray to the enemy, last in each enemy drone block
 #define IW_ENEMY_RAY_IDX 48
 #define IW_ENEMY_DRONE_SIZE (IW_ENEMY_RAY_IDX + IW_RAY_SIZE)
@@ -60,8 +65,12 @@
 
 // empty + standard, bouncy, death walls
 #define IW_WALL_VOCAB 4
-// none + 11 weapons + ammo crate, which only pickups use
-#define IW_WEAPON_VOCAB 13
+// none + 11 weapons, for drone weapons and projectiles
+#define IW_WEAPON_VOCAB 12
+// none + grapple, mines
+#define IW_UTILITY_VOCAB 3
+// weapon vocab + ammo crate + grapple, mines
+#define IW_PICKUP_VOCAB (IW_WEAPON_VOCAB + IW_UTILITY_VOCAB)
 // none + static standard, bouncy, death walls + floating standard,
 // bouncy, death walls + drone
 #define IW_RAY_VOCAB 8
@@ -123,19 +132,24 @@
 // near walls; the map grid goes to the CNN and floating walls to the
 // floating wall branch
 #define IW_NUM_WALL_SLOTS IW_NUM_NEAR_WALLS
-// pickups, then the active and holstered weapons of the enemy drones and
-// own drone; projectiles go to the projectile branch
-#define IW_NUM_WEAPON_SLOTS (IW_NUM_PICKUPS + IW_DRONE_WEAPONS * (IW_NUM_ENEMIES + 1))
+// pickup type slots
+#define IW_NUM_PICKUP_SLOTS IW_NUM_PICKUPS
+// the weapon and utility of the enemy drones and own drone, one slot of
+// each per drone; projectiles go to the projectile branch
+#define IW_NUM_WEAPON_SLOTS (IW_NUM_ENEMIES + 1)
+#define IW_NUM_UTILITY_SLOTS (IW_NUM_ENEMIES + 1)
 // enemy drone rays, own drone rays
 #define IW_NUM_RAY_SLOTS (IW_NUM_ENEMIES + IW_NUM_DRONE_RAYS)
-#define IW_NUM_SCALARS (OBS_SIZE - IW_MAP_CELLS - IW_NUM_WALL_SLOTS - IW_NUM_WEAPON_SLOTS - IW_NUM_RAY_SLOTS - IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE - IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE)
+#define IW_NUM_SCALARS (OBS_SIZE - IW_MAP_CELLS - IW_NUM_WALL_SLOTS - IW_NUM_PICKUP_SLOTS - IW_NUM_WEAPON_SLOTS - IW_NUM_UTILITY_SLOTS - IW_NUM_RAY_SLOTS - IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE - IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE)
 
-// concat layout: [CNN | wall one-hots | weapon one-hots | ray one-hots | scalars |
-// zero padding]
+// concat layout: [CNN | wall one-hots | pickup one-hots | weapon one-hots |
+// utility one-hots | ray one-hots | scalars | zero padding]
 #define IW_WALL_COLS (IW_NUM_WALL_SLOTS * (IW_WALL_VOCAB - 1))
+#define IW_PICKUP_COLS (IW_NUM_PICKUP_SLOTS * (IW_PICKUP_VOCAB - 1))
 #define IW_WEAPON_COLS (IW_NUM_WEAPON_SLOTS * (IW_WEAPON_VOCAB - 1))
+#define IW_UTILITY_COLS (IW_NUM_UTILITY_SLOTS * (IW_UTILITY_VOCAB - 1))
 #define IW_RAY_COLS (IW_NUM_RAY_SLOTS * (IW_RAY_VOCAB - 1))
-#define IW_ONEHOT_COLS (IW_WALL_COLS + IW_WEAPON_COLS + IW_RAY_COLS)
+#define IW_ONEHOT_COLS (IW_WALL_COLS + IW_PICKUP_COLS + IW_WEAPON_COLS + IW_UTILITY_COLS + IW_RAY_COLS)
 #define IW_CONCAT_USED (IW_CONV_FLAT + IW_ONEHOT_COLS + IW_NUM_SCALARS)
 // the record widths below are padded the same way: zero columns up to a
 // multiple of 8 keep bf16 rows 16 byte aligned, otherwise cuBLAS falls off
@@ -167,23 +181,33 @@ IW_FN int iw_wall_slot_idx(int j) {
     return IW_NEAR_WALL_OFFSET + j * IW_NEAR_WALL_SIZE;
 }
 
-// obs index of weapon type slot j
-IW_FN int iw_weapon_slot_idx(int j) {
-    if (j < IW_NUM_PICKUPS) {
-        return IW_PICKUP_OFFSET + j * IW_PICKUP_SIZE;
-    }
-    j -= IW_NUM_PICKUPS;
-    const int drone = j / IW_DRONE_WEAPONS;
-    const int weapon = (j % IW_DRONE_WEAPONS) * IW_WEAPON_SIZE;
-    if (drone < IW_NUM_ENEMIES) {
-        return IW_ENEMY_DRONE_OFFSET + drone * IW_ENEMY_DRONE_SIZE + weapon;
-    }
-    return IW_DRONE_OFFSET + weapon;
+// obs index of pickup type slot j
+IW_FN int iw_pickup_slot_idx(int j) {
+    return IW_PICKUP_OFFSET + j * IW_PICKUP_SIZE;
 }
 
-// whether offset k into a drone block is one of its weapon type slots
-IW_FN int iw_is_drone_weapon_type(int k) {
-    return k < IW_DRONE_WEAPONS * IW_WEAPON_SIZE && k % IW_WEAPON_SIZE == 0;
+// obs index of the type slot at offset k of drone j's block, the enemy
+// drones then the own drone
+IW_FN int iw_drone_slot_idx(int j, int k) {
+    if (j < IW_NUM_ENEMIES) {
+        return IW_ENEMY_DRONE_OFFSET + j * IW_ENEMY_DRONE_SIZE + k;
+    }
+    return IW_DRONE_OFFSET + k;
+}
+
+// obs index of weapon type slot j
+IW_FN int iw_weapon_slot_idx(int j) {
+    return iw_drone_slot_idx(j, IW_DRONE_WEAPON_TYPE);
+}
+
+// obs index of utility type slot j
+IW_FN int iw_utility_slot_idx(int j) {
+    return iw_drone_slot_idx(j, IW_DRONE_UTILITY_TYPE);
+}
+
+// whether offset k into a drone block is its weapon or utility type slot
+IW_FN int iw_is_drone_type(int k) {
+    return k == IW_DRONE_WEAPON_TYPE || k == IW_DRONE_UTILITY_TYPE;
 }
 
 // obs index of ray hit type slot j
@@ -196,8 +220,8 @@ IW_FN int iw_ray_slot_idx(int j) {
 }
 
 // whether obs index i is a continuous scalar that goes into the concat,
-// rather than a map grid cell, a wall, weapon or ray hit type slot or part
-// of a floating wall or projectile slot
+// rather than a map grid cell, a wall, pickup, weapon, utility or ray hit
+// type slot or part of a floating wall or projectile slot
 IW_FN int iw_is_scalar(int i) {
     if (i < IW_MAP_CELLS) {
         return 0;
@@ -216,13 +240,13 @@ IW_FN int iw_is_scalar(int i) {
     }
     if (i < IW_DRONE_OFFSET) {
         const int k = (i - IW_ENEMY_DRONE_OFFSET) % IW_ENEMY_DRONE_SIZE;
-        return !iw_is_drone_weapon_type(k) && k != IW_ENEMY_RAY_IDX;
+        return !iw_is_drone_type(k) && k != IW_ENEMY_RAY_IDX;
     }
     const int k = i - IW_DRONE_OFFSET;
     if (k >= IW_DRONE_RAY_IDX && k < IW_DRONE_SIZE) {
         return (k - IW_DRONE_RAY_IDX) % IW_RAY_SIZE != 0;
     }
-    return !iw_is_drone_weapon_type(k);
+    return !iw_is_drone_type(k);
 }
 
 // a one-hot concat column: the type slot it reads and the class it is hot
@@ -241,11 +265,21 @@ IW_FN iwOneHotCol iw_onehot_col(int c) {
         return col;
     }
     c -= IW_WALL_COLS;
+    if (c < IW_PICKUP_COLS) {
+        iwOneHotCol col = {iw_pickup_slot_idx(c / (IW_PICKUP_VOCAB - 1)), c % (IW_PICKUP_VOCAB - 1), IW_PICKUP_VOCAB};
+        return col;
+    }
+    c -= IW_PICKUP_COLS;
     if (c < IW_WEAPON_COLS) {
         iwOneHotCol col = {iw_weapon_slot_idx(c / (IW_WEAPON_VOCAB - 1)), c % (IW_WEAPON_VOCAB - 1), IW_WEAPON_VOCAB};
         return col;
     }
     c -= IW_WEAPON_COLS;
+    if (c < IW_UTILITY_COLS) {
+        iwOneHotCol col = {iw_utility_slot_idx(c / (IW_UTILITY_VOCAB - 1)), c % (IW_UTILITY_VOCAB - 1), IW_UTILITY_VOCAB};
+        return col;
+    }
+    c -= IW_UTILITY_COLS;
     iwOneHotCol col = {iw_ray_slot_idx(c / (IW_RAY_VOCAB - 1)), c % (IW_RAY_VOCAB - 1), IW_RAY_VOCAB};
     return col;
 }
