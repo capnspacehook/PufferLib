@@ -1139,9 +1139,6 @@ float computeReward(iwEnv *e, droneEntity *drone) {
         reward += e->energyEmptiedPunishment;
     }
 
-    // like the kill reward, only the drone that set up the kill gets it
-    reward += drone->stepInfo.assists * e->assistReward;
-
     // only reward a pickup if it filled an unset slot, replaced the
     // standard weapon or refilled a weapon from empty to full; every
     // weapon is better than the standard weapon, but other weapons are

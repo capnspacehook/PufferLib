@@ -1566,7 +1566,6 @@ void recordAssists(iwEnv *e, const droneEntity *drone, const int8_t killer) {
             if (killer == i && physicsSourceIsWeapon(source) && source.weapon == assistWeapons[w]) {
                 continue;
             }
-            other->stepInfo.assists++;
             e->stats[i].assists++;
             e->analysisStats[i].assistsByWeapon[assistWeapons[w]]++;
         }

@@ -307,7 +307,6 @@ typedef struct droneStepInfo {
     bool ownShotTaken;
     // summed cos of the aim error of shots fired this step
     float aimAlignment;
-    uint8_t assists;
 } droneStepInfo;
 
 typedef struct shieldEntity {
@@ -815,9 +814,6 @@ struct Env {
     float winReward;
     float lifeReward;
     float killReward;
-    // for an enemy dying within DRONE_ASSIST_WINDOW of being pulled by a
-    // black hole or grappled, see recordAssists
-    float assistReward;
     float selfKillPunishment;
     float teammateDeathPunishment;
     float teammateKillPunishment;

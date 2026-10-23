@@ -111,7 +111,6 @@ void puf_init(Env *env, Dict *kwargs) {
         dict_get(kwargs, "reward_shield_break"),
         dict_get(kwargs, "reward_hit_coef")
     );
-    env->assistReward = dict_get(kwargs, "reward_assist");
     env->easyEpProb = dict_get(kwargs, "easy_ep_prob");
     env->easyEpDecay = dict_get(kwargs, "easy_ep_decay");
     env->easyEpHitRate = dict_get(kwargs, "easy_ep_hit_rate");
