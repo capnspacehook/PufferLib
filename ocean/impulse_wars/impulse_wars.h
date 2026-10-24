@@ -144,7 +144,6 @@ void puf_set_bot_policy(iwEnv *e, int botPolicy) {
     dict_set(out, "drone_" idxStr "_self_kills", log->stats[idx].selfKills);                                 \
     dict_set(out, "drone_" idxStr "_kills", log->stats[idx].kills);                                          \
     dict_set(out, "drone_" idxStr "_unknown_kills", log->stats[idx].unknownKills);                           \
-    dict_set(out, "drone_" idxStr "_assists", log->stats[idx].assists);                                      \
     dict_set(out, "drone_" idxStr "_crates_picked_up", log->stats[idx].cratesPickedUp);                      \
     dict_set(out, "drone_" idxStr "_crates_refilled", log->stats[idx].cratesRefilled);                       \
     dict_set(out, "drone_" idxStr "_total_shots_fired", log->stats[idx].totalShotsFired);                    \

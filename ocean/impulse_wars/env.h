@@ -1323,7 +1323,6 @@ void addLog(iwEnv *e, Log *log) {
         e->log.stats[j].selfKills += log->stats[j].selfKills;
         e->log.stats[j].kills += log->stats[j].kills;
         e->log.stats[j].unknownKills += log->stats[j].unknownKills;
-        e->log.stats[j].assists += log->stats[j].assists;
         e->log.stats[j].cratesPickedUp += log->stats[j].cratesPickedUp;
         e->log.stats[j].cratesRefilled += log->stats[j].cratesRefilled;
 

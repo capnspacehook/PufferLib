@@ -476,7 +476,6 @@ typedef struct droneStats {
     float selfKills;
     float kills;
     float unknownKills;
-    float assists;
     // ammo crates picked up, and those that added ammo
     float cratesPickedUp;
     float cratesRefilled;
