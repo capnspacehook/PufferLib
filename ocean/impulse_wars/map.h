@@ -40,7 +40,7 @@ static mapEntry boringMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
-    .weaponPickups = 6,
+    .weaponPickups = 8,
     .maxSuddenDeathWalls = 5,
 };
 
@@ -188,7 +188,7 @@ static mapEntry xArena = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 6,
+    .weaponPickups = 8,
     .maxSuddenDeathWalls = 6,
     .weaponSpawnWeights = {[NUKE_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
@@ -228,7 +228,7 @@ static mapEntry crossBounce = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 6,
+    .weaponPickups = 8,
     .maxSuddenDeathWalls = 6,
 };
 
@@ -266,7 +266,7 @@ static mapEntry asteriskArena = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
-    .weaponPickups = 6,
+    .weaponPickups = 8,
     .maxSuddenDeathWalls = 7,
 };
 
@@ -301,7 +301,7 @@ static mapEntry foamPitMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 5,
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 5,
     .weaponSpawnWeights = {[IMPLODER_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
@@ -378,7 +378,7 @@ static mapEntry pinballMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
-    .weaponPickups = 6,
+    .weaponPickups = 8,
     .maxSuddenDeathWalls = 5,
     .weaponSpawnWeights = {[ACCELERATOR_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
@@ -413,7 +413,7 @@ static mapEntry moatMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 2,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 6,
+    .weaponPickups = 8,
     .maxSuddenDeathWalls = 4,
     .utilitySpawnWeights = {[MINE_UTILITY] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
@@ -487,7 +487,7 @@ static mapEntry jawsMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
-    .weaponPickups = 5,
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 4,
 };
 
@@ -523,7 +523,7 @@ static mapEntry cavernMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
-    .weaponPickups = 6,
+    .weaponPickups = 8,
     .maxSuddenDeathWalls = 4,
 };
 
@@ -559,7 +559,7 @@ static mapEntry crossroadsMap = {
     .randFloatingBouncyWalls = 2,
     .randFloatingDeathWalls = 2,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 5,
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 5,
     .weaponSpawnWeights = {[FLAK_CANNON_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };

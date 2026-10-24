@@ -178,7 +178,7 @@ static const float WALL_DENSITY = 4.0f;
 // weapon pickup settings
 static const float PICKUP_THICKNESS = 3.0f;
 static const float PICKUP_SPAWN_DISTANCE_SQUARED = SQUARED(10.0f);
-static const float PICKUP_RESPAWN_WAIT = 4.0f;
+static const float PICKUP_RESPAWN_WAIT = 3.0f;
 static const float SUDDEN_DEATH_PICKUP_RESPAWN_WAIT = 2.0f;
 
 static const float PICKUP_HELD_WEAPON_WEIGHT_COEF = 0.33f;
