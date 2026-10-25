@@ -149,13 +149,15 @@ static const float MAX_DISTANCE = 200.0f;
 static const float MAX_SPEED = 500.0f;
 
 static const float MAX_OBS_AGENT_POS = 50.0f;
-static const float MAX_OBS_AGENT_SPEED = 45.0f;
-static const float MAX_OBS_RELATIVE_POS = 100.0f;
-static const float MAX_OBS_DRONE_DISTANCE = 85.0f;
-static const float MAX_OBS_WALL_POS = 50.0f;
-static const float MAX_OBS_WALL_SPEED = 30.0f;
-static const float MAX_OBS_ENTITY_SPEED = 75.0f;
+static const float MAX_OBS_AGENT_SPEED = 25.0f;
+static const float MAX_OBS_RELATIVE_POS = 40.0f;
+static const float MAX_OBS_DRONE_DISTANCE = 50.0f;
+static const float MAX_OBS_RAY_DISTANCE = 30.0f;
+static const float MAX_OBS_WALL_POS = 15.0f;
+static const float MAX_OBS_WALL_SPEED = 25.0f;
+static const float MAX_OBS_ENTITY_SPEED = 40.0f;
 static const float MAX_OBS_PROJECTILE_SPEED = 150.0f;
+static const float OBS_RAY_TIME_KNEE = 0.5f;
 
 // action constants
 static const float ACTION_NOOP_MAGNITUDE = 0.1f;
