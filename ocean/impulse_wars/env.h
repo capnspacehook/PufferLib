@@ -590,6 +590,109 @@ static void computeEnemyRayObs(const iwEnv *e, const droneEntity *drone, const d
     obs[1] = squashValue(ctx.fraction * distance, MAX_OBS_DRONE_DISTANCE);
 }
 
+// sort key of a projectile for the projectile obs: threats, projectiles
+// whose closest approach to the drone at the current relative velocity is
+// within hitting or blast range within PROJECTILE_THREAT_TIME, come first,
+// soonest first, then the rest by distance
+static float projectileObsKey(const droneEntity *drone, const projectileEntity *projectile, const float distance) {
+    const b2Vec2 relPos = b2Sub(projectile->pos, drone->pos);
+    const b2Vec2 relVel = b2Sub(projectile->velocity, drone->velocity);
+    const float speedSq = b2LengthSquared(relVel);
+    float t = 0.0f;
+
+    if (speedSq > 1e-8f) {
+        t = fmaxf(0.0f, -b2Dot(relPos, relVel) / speedSq);
+    }
+
+    float reach = DRONE_RADIUS + projectile->weaponInfo->radius;
+    if (projectile->weaponInfo->explosive) {
+        b2ExplosionDef explosion = b2DefaultExplosionDef();
+        weaponExplosion(projectile->weaponInfo->type, &explosion);
+        reach += explosion.radius;
+    }
+
+    if (t <= PROJECTILE_THREAT_TIME && b2Length(b2MulAdd(relPos, t, relVel)) <= reach) {
+        return t;
+    }
+    
+    return PROJECTILE_THREAT_TIME + distance;
+}
+
+typedef struct sortedProjectile {
+    const projectileEntity *projectile;
+    float distance;
+    float key;
+} sortedProjectile;
+
+static void insertionSortProjectiles(sortedProjectile *arr, const uint16_t size) {
+    for (int16_t i = 1; i < (int16_t)size; i++) {
+        const sortedProjectile key = arr[i];
+        int16_t j = i - 1;
+        while (j >= 0 && arr[j].key > key.key) {
+            arr[j + 1] = arr[j];
+            j--;
+        }
+        arr[j + 1] = key;
+    }
+}
+
+// writes the agent's own projectiles and other drones' projectiles into
+// their slots, see NUM_OWN_PROJECTILE_OBS
+static void computeProjectileObs(iwEnv *e, const uint8_t agentIdx, const droneEntity *agentDrone, float *continuousObs) {
+    const size_t numProjectiles = cc_array_size(e->projectiles);
+    if (numProjectiles == 0) {
+        return;
+    }
+
+    sortedProjectile own[numProjectiles];
+    sortedProjectile enemy[numProjectiles];
+    uint16_t numOwn = 0;
+    uint16_t numEnemy = 0;
+
+    for (size_t i = 0; i < numProjectiles; i++) {
+        const projectileEntity *projectile = safe_array_get_at(e->projectiles, i);
+        const float distance = b2Distance(projectile->pos, agentDrone->pos);
+        const sortedProjectile sp = {
+            .projectile = projectile,
+            .distance = distance,
+            .key = projectileObsKey(agentDrone, projectile, distance),
+        };
+
+        if (projectile->droneIdx == agentIdx) {
+            own[numOwn++] = sp;
+        } else {
+            enemy[numEnemy++] = sp;
+        }
+    }
+    insertionSortProjectiles(own, numOwn);
+    insertionSortProjectiles(enemy, numEnemy);
+
+    for (uint8_t side = 0; side < 2; side++) {
+        const sortedProjectile *sorted = own;
+        uint16_t count = min(numOwn, NUM_OWN_PROJECTILE_OBS);
+        uint16_t start = PROJECTILE_INFO_OBS_OFFSET;
+        if (side == 1) {
+            sorted = enemy;
+            count = min(numEnemy, NUM_ENEMY_PROJECTILE_OBS);
+            start = ENEMY_PROJECTILE_INFO_OBS_OFFSET;
+        }
+        for (uint16_t i = 0; i < count; i++) {
+            const projectileEntity *projectile = sorted[i].projectile;
+            const b2Vec2 relPos = b2Sub(projectile->pos, agentDrone->pos);
+            const b2Vec2 relVel = squashVec(b2Sub(projectile->velocity, agentDrone->velocity), MAX_OBS_PROJECTILE_SPEED);
+
+            uint16_t offset = start + (i * PROJECTILE_INFO_OBS_SIZE);
+            ASSERTF(offset + PROJECTILE_INFO_OBS_SIZE <= ENEMY_DRONE_OBS_OFFSET, "offset: %d", offset);
+            continuousObs[offset++] = projectile->weaponInfo->type;
+            continuousObs[offset++] = scaleValue(relPos.x, MAX_OBS_RELATIVE_POS, false);
+            continuousObs[offset++] = scaleValue(relPos.y, MAX_OBS_RELATIVE_POS, false);
+            continuousObs[offset++] = relVel.x;
+            continuousObs[offset++] = relVel.y;
+            continuousObs[offset] = scaleValue(fminf(sorted[i].distance, MAX_OBS_RELATIVE_POS), MAX_OBS_RELATIVE_POS, true);
+        }
+    }
+}
+
 void computeObs(iwEnv *e) {
     for (uint8_t agentIdx = 0; agentIdx < e->numAgents; agentIdx++) {
         droneEntity *agentDrone = safe_array_get_at(e->drones, agentIdx);
@@ -612,54 +715,7 @@ void computeObs(iwEnv *e) {
 
         computeNearObs(e, agentDrone, continuousObs);
 
-        // sort projectiles by distance to the current agent
-        const b2Vec2 agentPos = agentDrone->pos;
-        const size_t numProjectiles = cc_array_size(e->projectiles);
-        if (numProjectiles > 0) {
-            projectileEntity *sortedProjectiles[numProjectiles];
-            memcpy(sortedProjectiles, e->projectiles->buffer, numProjectiles * sizeof(projectileEntity *));
-
-            // we don't need to sort the projectiles if there's less than
-            // NUM_PROJECTILE_OBS, all will go in the obs
-            if (numProjectiles > NUM_PROJECTILE_OBS) {
-                for (int16_t i = 1; i < (int64_t)numProjectiles; i++) {
-                    projectileEntity *key = sortedProjectiles[i];
-                    const float keyDistance = b2DistanceSquared(agentPos, key->pos);
-                    int16_t j = i - 1;
-
-                    while (j >= 0 && b2DistanceSquared(agentPos, sortedProjectiles[j]->pos) > keyDistance) {
-                        sortedProjectiles[j + 1] = sortedProjectiles[j];
-                        j = j - 1;
-                    }
-
-                    sortedProjectiles[j + 1] = key;
-                }
-            }
-
-            // compute owner, type, location and velocity of N projectiles
-            for (size_t i = 0; i < numProjectiles; i++) {
-                if (i == NUM_PROJECTILE_OBS) {
-                    break;
-                }
-                const projectileEntity *projectile = sortedProjectiles[i];
-                const b2Vec2 projectileRelPos = b2Sub(projectile->pos, agentDrone->pos);
-                const b2Vec2 projectileRelVel = squashVec(b2Sub(projectile->velocity, agentDrone->velocity), MAX_OBS_PROJECTILE_SPEED);
-
-                continuousObsOffset = PROJECTILE_INFO_OBS_OFFSET + (i * PROJECTILE_INFO_OBS_SIZE);
-                ASSERTF(continuousObsOffset + PROJECTILE_INFO_OBS_SIZE <= ENEMY_DRONE_OBS_OFFSET, "offset: %d", continuousObsOffset);
-                // TODO: fix for >2 drones
-                if (projectile->droneIdx == agentIdx) {
-                    continuousObs[continuousObsOffset++] = 1.0f;
-                } else {
-                    continuousObs[continuousObsOffset++] = 0.5f;
-                }
-                continuousObs[continuousObsOffset++] = projectile->weaponInfo->type;
-                continuousObs[continuousObsOffset++] = scaleValue(projectileRelPos.x, MAX_OBS_RELATIVE_POS, false);
-                continuousObs[continuousObsOffset++] = scaleValue(projectileRelPos.y, MAX_OBS_RELATIVE_POS, false);
-                continuousObs[continuousObsOffset++] = projectileRelVel.x;
-                continuousObs[continuousObsOffset] = projectileRelVel.y;
-            }
-        }
+        computeProjectileObs(e, agentIdx, agentDrone, continuousObs);
 
         // compute enemy drone observations
         bool hitShot = false;

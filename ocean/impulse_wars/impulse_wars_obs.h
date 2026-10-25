@@ -4,8 +4,9 @@
 // pulls in box2d). impulse_wars_net.h asserts the two agree.
 //
 // The map grid holds packed cell codes (see GRID_* in settings.h) that are
-// unpacked into one-hot channels and fed to a 3 layer CNN. Projectile and
-// floating wall slots are records for the projectile and floating wall
+// unpacked into one-hot channels and fed to a 3 layer CNN. The agent's own
+// projectile slots, other drones' projectile slots and floating wall slots
+// are records for the own projectile, enemy projectile and floating wall
 // branches: a shared MLP per branch over every slot, max pooled over the
 // non-empty ones. Wall type slots hold 0 (empty) or wall
 // type + 1, weapon type slots hold a weapon type (0 is UNSET_WEAPON: no
@@ -14,7 +15,8 @@
 // weapon for an ammo crate, or a utility type past that for a utility, ray
 // hit type slots hold a RAY_HIT_* value; these are one-hot encoded with
 // type 0 as all zeros. Every other obs value is a continuous scalar that is passed
-// through to the projection unchanged.
+// through to the projection unchanged. The encoder adds the number of
+// enemy projectile slots in use to the concat, as max pooling loses it.
 #ifndef IMPULSE_WARS_OBS_H
 #define IMPULSE_WARS_OBS_H
 
@@ -34,7 +36,11 @@
 #define IW_FLOATING_WALL_SIZE 7
 #define IW_NUM_PICKUPS 3
 #define IW_PICKUP_SIZE 3
-#define IW_NUM_PROJECTILES 30
+// the agent's own projectile slots, then other drones'
+#define IW_NUM_OWN_PROJECTILES 6
+#define IW_NUM_ENEMY_PROJECTILES 10
+#define IW_NUM_PROJECTILES (IW_NUM_OWN_PROJECTILES + IW_NUM_ENEMY_PROJECTILES)
+// weapon type, relative position, relative velocity, distance
 #define IW_PROJECTILE_SIZE 6
 #define IW_RAY_SIZE 2
 // every drone block starts with its weapon: type, ammo, cooldown, charge
@@ -57,9 +63,10 @@
 #define IW_FLOATING_WALL_OFFSET (IW_NEAR_WALL_OFFSET + IW_NUM_NEAR_WALLS * IW_NEAR_WALL_SIZE)
 #define IW_PICKUP_OFFSET (IW_FLOATING_WALL_OFFSET + IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE)
 #define IW_PROJECTILE_OFFSET (IW_PICKUP_OFFSET + IW_NUM_PICKUPS * IW_PICKUP_SIZE)
+#define IW_ENEMY_PROJECTILE_OFFSET (IW_PROJECTILE_OFFSET + IW_NUM_OWN_PROJECTILES * IW_PROJECTILE_SIZE)
 #define IW_ENEMY_DRONE_OFFSET (IW_PROJECTILE_OFFSET + IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE)
 // obs size with zero enemy drones; each enemy adds IW_ENEMY_DRONE_SIZE
-#define IW_BASE_OBS_SIZE 435
+#define IW_BASE_OBS_SIZE 351
 #define IW_NUM_ENEMIES ((OBS_SIZE - IW_BASE_OBS_SIZE) / IW_ENEMY_DRONE_SIZE)
 #define IW_DRONE_OFFSET (IW_ENEMY_DRONE_OFFSET + IW_NUM_ENEMIES * IW_ENEMY_DRONE_SIZE)
 
@@ -143,26 +150,28 @@
 #define IW_NUM_SCALARS (OBS_SIZE - IW_MAP_CELLS - IW_NUM_WALL_SLOTS - IW_NUM_PICKUP_SLOTS - IW_NUM_WEAPON_SLOTS - IW_NUM_UTILITY_SLOTS - IW_NUM_RAY_SLOTS - IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE - IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE)
 
 // concat layout: [CNN | wall one-hots | pickup one-hots | weapon one-hots |
-// utility one-hots | ray one-hots | scalars | zero padding]
+// utility one-hots | ray one-hots | scalars | enemy projectile count |
+// zero padding]
 #define IW_WALL_COLS (IW_NUM_WALL_SLOTS * (IW_WALL_VOCAB - 1))
 #define IW_PICKUP_COLS (IW_NUM_PICKUP_SLOTS * (IW_PICKUP_VOCAB - 1))
 #define IW_WEAPON_COLS (IW_NUM_WEAPON_SLOTS * (IW_WEAPON_VOCAB - 1))
 #define IW_UTILITY_COLS (IW_NUM_UTILITY_SLOTS * (IW_UTILITY_VOCAB - 1))
 #define IW_RAY_COLS (IW_NUM_RAY_SLOTS * (IW_RAY_VOCAB - 1))
 #define IW_ONEHOT_COLS (IW_WALL_COLS + IW_PICKUP_COLS + IW_WEAPON_COLS + IW_UTILITY_COLS + IW_RAY_COLS)
-#define IW_CONCAT_USED (IW_CONV_FLAT + IW_ONEHOT_COLS + IW_NUM_SCALARS)
+#define IW_SCALAR_COLS_END (IW_CONV_FLAT + IW_ONEHOT_COLS + IW_NUM_SCALARS)
+#define IW_CONCAT_USED (IW_SCALAR_COLS_END + 1)
 // the record widths below are padded the same way: zero columns up to a
 // multiple of 8 keep bf16 rows 16 byte aligned, otherwise cuBLAS falls off
 // its fast kernels
 #define IW_CONCAT ((IW_CONCAT_USED + 7) & ~7)
 
-// projectile branch: every projectile slot is a record of weapon type
-// one-hot, owner one-hot (own, enemy), relative position and relative
-// velocity, run through a shared Linear -> GELU -> Linear and max pooled
-// over the non-empty records into the encoder output
-#define IW_PROJ_OWNERS 2
-#define IW_PROJ_SCALARS 4
-#define IW_PROJ_USED_FEATURES ((IW_WEAPON_VOCAB - 1) + IW_PROJ_OWNERS + IW_PROJ_SCALARS)
+// projectile branches, one for the agent's own projectiles and one for
+// other drones': every projectile slot is a record of weapon type one-hot,
+// relative position, relative velocity and distance, run through the
+// branch's Linear -> GELU -> Linear and max pooled over the non-empty
+// records into the encoder output
+#define IW_PROJ_SCALARS (IW_PROJECTILE_SIZE - 1)
+#define IW_PROJ_USED_FEATURES ((IW_WEAPON_VOCAB - 1) + IW_PROJ_SCALARS)
 #define IW_PROJ_FEATURES ((IW_PROJ_USED_FEATURES + 7) & ~7)
 #define IW_PROJ_HIDDEN 16
 #define IW_PROJ_L1_N (IW_PROJ_HIDDEN * IW_PROJ_FEATURES)
@@ -354,36 +363,23 @@ IW_FN int iw_proj_slot_idx(int r) {
     return IW_PROJECTILE_OFFSET + r * IW_PROJECTILE_SIZE;
 }
 
-// slot field read for projectile record feature f: the owner flag, the
-// weapon type, or relative position x, y and velocity x, y; padding
-// features read the weapon type but are always 0
+// slot field read for projectile record feature f: the weapon type, or
+// relative position x, y, velocity x, y and distance; padding features
+// read the weapon type but are always 0
 IW_FN int iw_proj_field(int f) {
     if (f < IW_WEAPON_VOCAB - 1 || f >= IW_PROJ_USED_FEATURES) {
-        return 1;
-    }
-    f -= IW_WEAPON_VOCAB - 1;
-    if (f < IW_PROJ_OWNERS) {
         return 0;
     }
-    return 2 + f - IW_PROJ_OWNERS;
+    return 1 + f - (IW_WEAPON_VOCAB - 1);
 }
 
-// projectile record feature f given the slot field iw_proj_field(f) reads;
-// the owner flag is 1 for the agent's own projectiles, 0.5 for others' and
-// 0 for an empty slot
+// projectile record feature f given the slot field iw_proj_field(f) reads
 IW_FN float iw_proj_feature(float v, int f) {
     if (f >= IW_PROJ_USED_FEATURES) {
         return 0.0f;
     }
     if (f < IW_WEAPON_VOCAB - 1) {
         return iw_type_idx(v, IW_WEAPON_VOCAB) == f + 1 ? 1.0f : 0.0f;
-    }
-    f -= IW_WEAPON_VOCAB - 1;
-    if (f == 0) {
-        return v > 0.75f ? 1.0f : 0.0f;
-    }
-    if (f == 1) {
-        return v > 0.25f && v < 0.75f ? 1.0f : 0.0f;
     }
     return v;
 }
@@ -393,6 +389,10 @@ IW_FN float iw_proj_feature(float v, int f) {
 IW_FN int iw_proj_active(float weaponType) {
     return iw_type_idx(weaponType, IW_WEAPON_VOCAB) != 0;
 }
+
+// the enemy projectile count column of the concat is the enemy projectile
+// slots in use as a fraction of the slots: iw_proj_active over the weapon
+// types of the slots iw_proj_slot_idx(IW_NUM_OWN_PROJECTILES + r)
 
 // obs index of floating wall slot r
 IW_FN int iw_fw_slot_idx(int r) {
