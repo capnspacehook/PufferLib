@@ -125,6 +125,43 @@ Three more sections:
   standoffs (3 s or more blocked close by), how often they end with a peek
   and whether the peeker kills or dies within 3 s.
 
+## Projectiles
+
+The `projectiles` section of `compare.py` shows what the projectile obs has
+to cover: live projectiles per step of each drone (all and within 30
+units), threats (enemy projectiles whose closest approach at the current
+relative velocity comes within hitting or blast range within 2 s), their
+distance, relative speed and time to closest approach, how many threats
+would be left out of the obs with K slots sorted by distance, threats and
+hits taken by weapon (shotgun pellets and sniper shots often hit the step
+they spawn, before they could be seen), the same counts by the weapon the
+enemy holds, and steps within blast range of an own explosive. The obs
+groups `own_projectiles` and `enemy_projectiles` ablate the two slot
+blocks, `projectiles` both.
+
+## Transitivity
+
+`round_robin.sh` plays every pair of a set of checkpoints head to head
+and `transitivity.py` checks whether one rating per policy explains the
+results, or whether some policies counter others (rock paper scissors):
+
+```bash
+C=checkpoints/impulse_wars
+ocean/impulse_wars/analysis/round_robin.sh build/iw_analysis/rr-long \
+    $C/run-a/0000002000000000.bin $C/run-a/0000008000000000.bin \
+    b8=$C/run-b/0000008000000000.bin
+```
+
+The summary has the score matrix, Elo ratings, the share of the logit
+score matrix that is transitive (an Elo fit) vs cyclic with the cyclic
+share expected from sampling noise alone, the pairs the Elo fit predicts
+worst, and the 3-cycles where every edge is significant. Checkpoints of one
+run are biased towards looking transitive, as each was trained against its
+predecessors; late checkpoints of different runs are the more telling
+pairs. 10 checkpoints are 45 pairs, about an hour on 24 threads at the
+default 1400 games per pair; adding a checkpoint later only plays its
+pairs.
+
 ## Weapons, pickups and utilities
 
 The `slots` section of `compare.py` covers time with only the standard gun,
@@ -220,5 +257,11 @@ Notes:
   latter is kept out of the training logs); behavior stats such as line of
   sight, trigger usage and death wall distance are polled each step.
 - The harness replaces puffercpu's conv and linear with an im2col conv and
-  a batched linear (about 3x faster) and is built with fast math flags, so
-  its results can differ from the reference kernels by float rounding.
+  an AVX2 matrix multiply over weights packed once and shared by all
+  workers, and the record branches only run active records. It's built with
+  fast math flags, so its results can differ from the reference kernels by
+  float rounding. Every output is computed the same way wherever its game
+  is in a batch, so results don't depend on `--threads` or `--batch`.
+  Results from before the AVX2 kernels (Oct 23 2026) compare as means only.
+- `--batch` defaults to 6, the fastest on 24 threads (a 12900K: 1.9x the
+  old kernels). Larger batches are faster on few threads, e.g. 16 on one.

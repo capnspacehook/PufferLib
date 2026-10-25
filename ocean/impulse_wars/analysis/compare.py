@@ -75,7 +75,7 @@ UTILITY_WEAPONS = {1: 'grapple', 2: 'mine'}
 GRAPPLE_TARGETS = ['wall', 'floating wall', 'drone']
 OPPS = ['scripted', 'evader', 'camper', 'rusher', 'trapper', 'turtle', 'fundamentals']
 SECTIONS = ['opp', 'map', 'grid', 'weapons', 'boost', 'deaths', 'behavior', 'slots', 'utilities', 'pace', 'mapweapons',
-            'standoff', 'shadow']
+            'standoff', 'projectiles', 'shadow']
 # each map's featured weapon (its spawn weight override in map.h), marked in
 # the mapweapons section; only applies to builds from fe03156a on. From the
 # utility slot on siege and moat feature the grapple and mines utilities,
@@ -410,7 +410,7 @@ def slot_metrics(games, side):
     ]
 
 
-def weapon_metrics(games, side):
+def pickup_metrics(games, side):
     n = len(games)
     s = lambda k: sum(g[side].get(k, 0) for g in games)
     alive = s('alive')
@@ -488,9 +488,9 @@ def section_slots(runs, side):
 
 # results from the utility slot on have one weapon slot
 def section_weapon_pickups(runs, side):
-    cols = [(name, weapon_metrics(games, side)) for name, games in runs]
+    cols = [(name, pickup_metrics(games, side)) for name, games in runs]
     other = 'b' if side == 'p' else 'p'
-    ref = weapon_metrics(runs[0][1], other)
+    ref = pickup_metrics(runs[0][1], other)
     rows = []
     for i, (label, _, digits) in enumerate(cols[0][1]):
         rows.append([label] + [fmt(c[i][1], digits) for _, c in cols] + [fmt(ref[i][1], digits)])
@@ -614,6 +614,134 @@ def section_standoff(runs, side):
                 ['peeker kills within 3s', fmt(ratio(sum(d['peekKills'] for d in ds), peeks))],
                 ['peeker dies within 3s', fmt(ratio(sum(d['peekDeaths'] for d in ds), peeks))]]
         table(f'{name}: standoffs', ['metric', 'value'], rows)
+
+
+# bin widths of the projectile histograms, as iw_analyze writes them
+PROJ_DIST_BIN = 5
+PROJ_SPEED_BIN = 10
+PROJ_K = [5, 8, 10, 15, 20, 30]
+# weapons whose hits count as shots taken; explosions, grapples and black
+# hole pulls don't
+DIRECT_FIRE = ['standard', 'machinegun', 'sniper', 'shotgun', 'accelerator']
+
+
+def hist_sum(games, side, key):
+    h = None
+    for g in games:
+        v = g[side][key]
+        h = list(v) if h is None else [a + b for a, b in zip(h, v)]
+    return h
+
+
+def hist_quantile(h, q):
+    """the bin index the q quantile of a histogram falls in"""
+    n = sum(h)
+    acc = 0
+    for i, c in enumerate(h):
+        acc += c
+        if acc >= q * n:
+            return i
+    return len(h) - 1
+
+
+def hist_mean(h):
+    return ratio(sum(i * c for i, c in enumerate(h)), sum(h))
+
+
+def section_projectiles(runs, side):
+    if 'projOwnHist' not in runs[0][1][0][side]:
+        return
+    rows = []
+    for name, games in runs:
+        for key, label in [('projOwnHist', 'own, all'), ('projOwnNearHist', 'own, within 30'),
+                           ('projEnemyHist', 'enemy, all'), ('projEnemyNearHist', 'enemy, within 30'),
+                           ('threatHist', 'enemy threats')]:
+            h = hist_sum(games, side, key)
+            last = len(h) - 1
+            q = lambda x: (lambda b: f'{b}+' if b == last else str(b))(hist_quantile(h, x))
+            rows.append([name, label, fmt(hist_mean(h), 2), q(0.5), q(0.9), q(0.95), q(0.99),
+                         fmt(100 * ratio(h[0], sum(h)), 1)])
+    table('live projectiles per step (counts; threats: enemy projectiles whose closest approach at the current relative '
+          'velocity is within hitting or blast range within 2 s)',
+          ['run', 'projectiles', 'mean', 'p50', 'p90', 'p95', 'p99', '% steps 0'], rows)
+
+    for name, games in runs:
+        rows = []
+        for key, width, unit in [('projEnemyDist', PROJ_DIST_BIN, 'u'), ('threatDist', PROJ_DIST_BIN, 'u'),
+                                 ('projEnemySpeed', PROJ_SPEED_BIN, 'u/s'), ('threatSpeed', PROJ_SPEED_BIN, 'u/s')]:
+            h = hist_sum(games, side, key)
+            last = len(h) - 1
+            q = lambda x: (lambda b: f'{b * width}+' if b == last else f'<{(b + 1) * width}')(hist_quantile(h, x))
+            rows.append([key, unit, q(0.1), q(0.25), q(0.5), q(0.75), q(0.9), q(0.99)])
+        table(f'{name}: enemy projectiles and threats by distance and speed relative to the drone, quantiles',
+              ['what', 'unit', 'p10', 'p25', 'p50', 'p75', 'p90', 'p99'], rows)
+        h = hist_sum(games, side, 'threatTime')
+        n = sum(h)
+        cum = 0
+        cells = []
+        for k in range(len(h)):
+            cum += h[k]
+            if k + 1 in (1, 2, 3, 5, 10, 20):
+                cells.append(fmt(100 * cum / n, 1) if n else '-')
+        table(f'{name}: time until a threat\'s closest approach, % of threat steps within',
+              ['1 step', '2', '3', '5', '10', '20 (2 s)'], [cells])
+
+    rows = []
+    for name, games in runs:
+        n = sum(i * c for i, c in enumerate(hist_sum(games, side, 'threatHist')))
+        out_all = hist_sum(games, side, 'threatOutAll')
+        out_enemy = hist_sum(games, side, 'threatOutEnemy')
+        rows.append([name, 'nearest of both drones'] + [fmt(100 * ratio(v, n), 2) for v in out_all])
+        rows.append([name, 'nearest enemy projectiles'] + [fmt(100 * ratio(v, n), 2) for v in out_enemy])
+    table('% of threats left out of the obs if it held the K nearest projectiles (the current obs: 30 of both drones)',
+          ['run', 'slots hold'] + [f'K={k}' for k in PROJ_K], rows)
+
+    for name, games in runs:
+        ng = len(games)
+        new = hist_sum(games, side, 'threatsNew')
+        hits = hist_sum(games, side, 'hitsTaken')
+        rows = []
+        for w, wname in enumerate(WEAPONS):
+            if wname == 'unset' or (new[w] == 0 and hits[w] == 0):
+                continue
+            direct = wname in DIRECT_FIRE
+            rows.append([wname, fmt(new[w] / ng, 2), fmt(hits[w] / ng, 2) if direct else '-',
+                         fmt(ratio(hits[w], new[w]), 2) if direct else '-'])
+        table(f'{name}: enemy projectiles that became threats and hits taken per game, by weapon (hits per threat over 1 '
+              'means many hit without being seen as a threat first, e.g. shotgun pellets hitting the step they spawn)',
+              ['weapon', 'threats/g', 'hits/g', 'hits/threat'], rows)
+
+    if 'projEnemyHistW' in runs[0][1][0][side]:
+        for name, games in runs:
+            hw = hist_sum(games, side, 'projEnemyHistW')
+            nw_ = hist_sum(games, side, 'projEnemyNearHistW')
+            tsw = hist_sum(games, side, 'threatStepsW')
+            tow = hist_sum(games, side, 'threatOutEnemyW')
+            nh = len(hw) // len(WEAPONS)
+            nk = len(PROJ_K)
+            alive = sum(sum(hw[w * nh:(w + 1) * nh]) for w in range(len(WEAPONS)))
+            rows = []
+            for w, wname in enumerate(WEAPONS):
+                h = hw[w * nh:(w + 1) * nh]
+                hn = nw_[w * nh:(w + 1) * nh]
+                if sum(h) == 0:
+                    continue
+                q = lambda hh, x: (lambda b: f'{b}+' if b == nh - 1 else str(b))(hist_quantile(hh, x))
+                out = [fmt(100 * ratio(tow[w * nk + k], tsw[w]), 2) for k in (1, 2, 3)]
+                rows.append([wname, fmt(100 * sum(h) / alive, 1), q(h, 0.9), q(h, 0.99), q(hn, 0.9), q(hn, 0.99),
+                             str(next((i for i in range(nh - 1, -1, -1) if h[i] > 0), 0))] + out)
+            table(f'{name}: enemy projectiles per step by the weapon the enemy holds, and % of threats left out of the K '
+                  'nearest enemy projectiles', ['enemy holds', '% steps', 'all p90', 'all p99', '<30 p90', '<30 p99', 'max']
+                  + [f'out K={PROJ_K[k]}' for k in (1, 2, 3)], rows)
+
+    rows = []
+    for name, games in runs:
+        alive = sum(g[side]['alive'] for g in games)
+        rows.append([name, fmt(100 * ratio(sum(g[side]['ownBlastDangerSteps'] for g in games), alive), 2),
+                     fmt(ratio(sum(g[side]['ownBlastDanger'] for g in games), sum(g[side]['ownBlastDangerSteps'] for g in games)), 2),
+                     fmt(ratio(sum(g[side]['ownMines'] for g in games), alive), 3)])
+    table('own projectiles: % of live steps within blast range of an own explosive, explosives in range then, mean own '
+          'live mines', ['run', '% steps in own blast range', 'explosives then', 'own mines'], rows)
 
 
 def section_shadow(runs, side):
