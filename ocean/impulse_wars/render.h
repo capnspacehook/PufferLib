@@ -2446,7 +2446,13 @@ void puf_render(iwEnv *e) {
         }
 
         if (droneControlledByHuman(e, i)) {
-            e->cachedActions[i] = getPlayerInputs(e, drone, e->humanDroneInput);
+            // each human drone reads its own controller when several are
+            // connected, otherwise the single controller is always index 0
+            uint8_t gamepadIdx = 0;
+            if (e->connectedControllers > 1) {
+                gamepadIdx = i - e->humanDroneInput;
+            }
+            e->cachedActions[i] = getPlayerInputs(e, drone, gamepadIdx);
         }
     }
 
