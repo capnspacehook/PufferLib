@@ -493,6 +493,10 @@ typedef struct droneEntity {
     // live attached portals
     portalEntity *portals[_MAX_PORTALS];
     uint8_t openPortals;
+    // touching a death wall inside an open portal's area, which doesn't
+    // kill; checked each step so leaving the area while still touching
+    // does
+    bool inDeathWallPortal;
 
     float grappleLength;
     b2JointId grappleJointID;

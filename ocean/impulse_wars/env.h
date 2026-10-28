@@ -424,7 +424,13 @@ static inline void computeUtilityObs(const iwEnv *e, const droneEntity *drone, c
     obs[offset++] = info->type;
     obs[offset++] = scaleValue(utility->ammo, info->ammo, true);
     obs[offset++] = scaleValue(fminf(utility->regen, info->regenTime), info->regenTime, true);
-    obs[offset++] = scaleValue(fminf(droneUtilityActive(e, drone), info->maxActive), info->maxActive, true);
+    // utilities that can always be fired, like portals, have no active
+    // count to show
+    if (info->maxActive == INFINITE) {
+        obs[offset++] = 0.0f;
+    } else {
+        obs[offset++] = scaleValue(fminf(droneUtilityActive(e, drone), info->maxActive), info->maxActive, true);
+    }
 
     computeDroneGrappleObs(drone, pos, obs, offset);
     offset += GRAPPLE_OBS_SIZE;

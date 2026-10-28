@@ -684,6 +684,31 @@ void updatePortalsAttachedTo(const iwEnv *e, const wallEntity *wall) {
     }
 }
 
+// whether something at pos with radius touching a wall is in front of an
+// open portal on it; death walls don't kill there so portals on them can
+// be used
+bool posInWallPortal(const iwEnv *e, const wallEntity *wall, const b2Vec2 pos, const float radius) {
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        const droneEntity *drone = safe_array_get_at(e->drones, i);
+        for (uint8_t j = 0; j < drone->openPortals; j++) {
+            const portalEntity *portal = drone->portals[j];
+            if (portal->attachedWall != wall) {
+                continue;
+            }
+
+            // touching the face means the center is in front of it, and
+            // its projection onto the face is where it touches
+            const b2Vec2 rel = b2Sub(pos, portal->pos);
+            const float depth = b2Dot(rel, portal->normal);
+            const float widthOffset = b2Dot(rel, b2LeftPerp(portal->normal));
+            if (depth >= 0.0f && depth <= radius + PORTAL_HEIGHT && fabsf(widthOffset) <= PORTAL_WIDTH / 2.0f) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void destroyWall(iwEnv *e, wallEntity *wall, const bool full) {
     destroyPortalsAttachedTo(e, wall);
     destroyEntity(e, wall->ent);
@@ -1852,6 +1877,7 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     resetWeapon(&drone->weapon);
 
     b2Body_Disable(drone->bodyID);
+    drone->inDeathWallPortal = false;
     drone->triggerHeld = false;
     drone->utilityHeld = false;
     drone->brakeHeld = false;
@@ -1995,6 +2021,7 @@ void droneTeleport(const iwEnv *e, droneEntity *drone, const b2Vec2 newPos, cons
     }
 
     b2Body_SetTransform(drone->bodyID, newPos, b2Rot_identity);
+    drone->inDeathWallPortal = false;
     drone->pos = newPos;
     drone->lastPos = newPos;
     drone->mapCellIdx = entityPosToCellIdx(e, newPos);
@@ -4481,6 +4508,27 @@ static inline bool entityLive(const entity *ent) {
     return true;
 }
 
+// death walls kill drones that touch them, except in front of an open
+// portal so drones can go through it
+void droneTouchedDeathWall(iwEnv *e, droneEntity *drone, const wallEntity *wall) {
+    if (posInWallPortal(e, wall, drone->pos, DRONE_RADIUS)) {
+        drone->inDeathWallPortal = true;
+        return;
+    }
+    killDrone(e, drone, wall);
+}
+
+// death walls destroy shields that touch them, except in front of an open
+// portal; returns true if the shield was destroyed
+bool shieldTouchedDeathWall(iwEnv *e, shieldEntity *shield, const wallEntity *wall) {
+    if (posInWallPortal(e, wall, shield->drone->pos, DRONE_SHIELD_RADIUS)) {
+        return false;
+    }
+    shield->health = 0.0f;
+    destroyDroneShield(e, shield, true);
+    return true;
+}
+
 void handleContactEvents(iwEnv *e) {
     b2ContactEvents events = b2World_GetContactEvents(e->worldID);
     for (int i = 0; i < events.beginCount; ++i) {
@@ -4542,14 +4590,11 @@ void handleContactEvents(iwEnv *e) {
             } else if (entityTypeIsWall(e1->type) && e2 != NULL) {
                 if (e1->type == DEATH_WALL_ENTITY) {
                     if (e2->type == DRONE_ENTITY) {
-                        droneEntity *drone = e2->entity;
-                        const wallEntity *wall = e1->entity;
-                        killDrone(e, drone, wall);
+                        droneTouchedDeathWall(e, e2->entity, e1->entity);
                     } else if (e2->type == SHIELD_ENTITY) {
-                        shieldEntity *shield = e2->entity;
-                        shield->health = 0.0f;
-                        destroyDroneShield(e, shield, true);
-                        e2 = NULL;
+                        if (shieldTouchedDeathWall(e, e2->entity, e1->entity)) {
+                            e2 = NULL;
+                        }
                     }
                 }
             }
@@ -4561,13 +4606,9 @@ void handleContactEvents(iwEnv *e) {
             } else if (entityTypeIsWall(e2->type) && e1 != NULL) {
                 if (e2->type == DEATH_WALL_ENTITY) {
                     if (e1->type == DRONE_ENTITY) {
-                        droneEntity *drone = e1->entity;
-                        const wallEntity *wall = e2->entity;
-                        killDrone(e, drone, wall);
+                        droneTouchedDeathWall(e, e1->entity, e2->entity);
                     } else if (e1->type == SHIELD_ENTITY) {
-                        shieldEntity *shield = e1->entity;
-                        shield->health = 0.0f;
-                        destroyDroneShield(e, shield, true);
+                        shieldTouchedDeathWall(e, e1->entity, e2->entity);
                     }
                 }
             }
@@ -4783,6 +4824,9 @@ bool handlePortalBeginTouch(const iwEnv *e, const entity *sensor, entity *visito
     switch (visitor->type) {
     case DRONE_ENTITY: {
         droneEntity *drone = visitor->entity;
+        if (drone->dead) {
+            return false;
+        }
         // track the drone even if the portal isn't linked yet so it can
         // go through once it is
         if (portal->linkedPortal == NULL || !allowedThroughPortal(portal, drone->lastVelocity)) {
@@ -4854,6 +4898,46 @@ void portalsStep(const iwEnv *e, uint8_t teleported) {
                 done = true;
                 break;
             }
+        }
+    }
+}
+
+// drones safely touching a death wall in front of a portal die if they
+// slide out of the portal's area or the portal closes while still touching
+// the wall, as no new begin contact event would kill them
+void deathWallPortalsStep(iwEnv *e) {
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (!drone->inDeathWallPortal || drone->dead) {
+            continue;
+        }
+        drone->inDeathWallPortal = false;
+
+        const int capacity = b2Body_GetContactCapacity(drone->bodyID);
+        if (capacity == 0) {
+            continue;
+        }
+        b2ContactData contacts[capacity];
+        const int numContacts = b2Body_GetContactData(drone->bodyID, contacts, capacity);
+        for (int j = 0; j < numContacts; j++) {
+            if (contacts[j].manifold.pointCount == 0) {
+                continue;
+            }
+            b2ShapeId otherShapeID = contacts[j].shapeIdA;
+            if (B2_ID_EQUALS(otherShapeID, drone->shapeID)) {
+                otherShapeID = contacts[j].shapeIdB;
+            }
+            const entity *ent = b2Shape_GetUserData(otherShapeID);
+            if (ent == NULL || ent->type != DEATH_WALL_ENTITY) {
+                continue;
+            }
+            const wallEntity *wall = ent->entity;
+            if (posInWallPortal(e, wall, drone->pos, DRONE_RADIUS)) {
+                drone->inDeathWallPortal = true;
+                continue;
+            }
+            killDrone(e, drone, wall);
+            break;
         }
     }
 }
@@ -4938,6 +5022,7 @@ void handleSensorEvents(iwEnv *e) {
     }
 
     portalsStep(e, teleported);
+    deathWallPortalsStep(e);
 }
 
 static inline void considerNearWallCell(const iwEnv *e, const droneEntity *drone, const int16_t col, const int16_t row, nearWall nearestWalls[], const uint8_t nWalls, uint8_t *found) {

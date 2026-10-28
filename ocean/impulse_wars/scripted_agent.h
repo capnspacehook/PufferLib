@@ -2204,7 +2204,8 @@ enum botGrappleIntent {
 // whether the utility can be used now rather than acting on what's out
 static inline bool utilityReady(const botCtx *c) {
     const utilitySlot *utility = &c->drone->utility;
-    return utility->ammo > 0 && utility->cooldown <= 0.0f && droneUtilityActive(c->e, c->drone) < utility->utilityInfo->maxActive;
+    const int8_t maxActive = utility->utilityInfo->maxActive;
+    return utility->ammo > 0 && utility->cooldown <= 0.0f && (maxActive == INFINITE || droneUtilityActive(c->e, c->drone) < maxActive);
 }
 
 // presses the utility button; a held button doesn't register a press, so
