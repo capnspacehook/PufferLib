@@ -497,6 +497,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define PORTAL_BOUNCE INFINITE
 #define PORTAL_HEIGHT 1.0f
 #define PORTAL_WIDTH 3.0f
+#define PORTAL_EXIT_MIN_SPEED 5.0f
 #define PORTAL_EXIT_GAP 0.1
 
 // utility settings
@@ -513,7 +514,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define PORTAL_UTILITY_AMMO 2
 #define PORTAL_UTILITY_REGEN_TIME 10.0f
 #define PORTAL_UTILITY_MAX_ACTIVE INFINITE
-#define PORTAL_UTILITY_SPAWN_WEIGHT 15.0f
+#define PORTAL_UTILITY_SPAWN_WEIGHT 2.5f
 
 static const weaponInformation unsetWeapon = {
     .type = UNSET_WEAPON,

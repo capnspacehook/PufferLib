@@ -568,9 +568,21 @@ void createPortal(iwEnv *e, droneEntity *drone, wallEntity *wall, const b2Vec2 p
     if (fabsf(localNormal.x) >= fabsf(localNormal.y)) {
         localNormal = (b2Vec2){.x = localNormal.x >= 0.0f ? 1.0f : -1.0f, .y = 0.0f};
         localPos.x = localNormal.x * wall->extent.x;
+        if (wall->isFloating) {
+            localPos.y = 0.0f;
+        } else {
+            const float maxOffset = fmaxf(wall->extent.y - PORTAL_WIDTH / 2.0f, 0.0f);
+            localPos.y = clampValue(localPos.y, -maxOffset, maxOffset);
+        }
     } else {
         localNormal = (b2Vec2){.x = 0.0f, .y = localNormal.y >= 0.0f ? 1.0f : -1.0f};
         localPos.y = localNormal.y * wall->extent.y;
+        if (wall->isFloating) {
+            localPos.x = 0.0f;
+        } else {
+            const float maxOffset = fmaxf(wall->extent.x - PORTAL_WIDTH / 2.0f, 0.0f);
+            localPos.x = clampValue(localPos.x, -maxOffset, maxOffset);
+        }
     }
 
     portalEntity *portal = fastCalloc(1, sizeof(portalEntity));
@@ -595,12 +607,12 @@ void createPortal(iwEnv *e, droneEntity *drone, wallEntity *wall, const b2Vec2 p
     sensorShapeDef.isSensor = true;
     sensorShapeDef.enableSensorEvents = true;
     sensorShapeDef.filter.categoryBits = PORTAL_SHAPE;
-    sensorShapeDef.filter.maskBits = FLOATING_WALL_SHAPE | PROJECTILE_SHAPE | DRONE_SHAPE | SHIELD_SHAPE;
+    sensorShapeDef.filter.maskBits = PROJECTILE_SHAPE | DRONE_SHAPE;
     sensorShapeDef.userData = ent;
     // the sensor sits in front of the wall face, thickness along the
     // normal and width along the face
     const b2Vec2 sensorCenter = b2MulAdd(localPos, PORTAL_HEIGHT / 2.0f, localNormal);
-    const b2Polygon sensorBox = b2MakeOffsetBox(PORTAL_WIDTH / 2.0f, PORTAL_HEIGHT / 2.0f, sensorCenter, b2MakeRotFromUnitVector(localNormal));
+    const b2Polygon sensorBox = b2MakeOffsetBox(PORTAL_HEIGHT / 2.0f, PORTAL_WIDTH / 2.0f, sensorCenter, b2MakeRotFromUnitVector(localNormal));
     portal->sensorID = b2CreatePolygonShape(wall->bodyID, &sensorShapeDef, &sensorBox);
 
     ASSERT(drone->openPortals < 2);
@@ -1002,9 +1014,8 @@ void createDroneShield(iwEnv *e, droneEntity *drone, const int8_t groupIdx) {
     shieldBufferShapeDef.material.friction = DRONE_FRICTION;
     shieldBufferShapeDef.material.restitution = DRONE_RESTITUTION;
     shieldBufferShapeDef.filter.categoryBits = SHIELD_SHAPE;
-    shieldBufferShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | SHIELD_SHAPE | PORTAL_SHAPE;
+    shieldBufferShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | SHIELD_SHAPE;
     shieldBufferShapeDef.filter.groupIndex = groupIdx;
-    shieldBufferShapeDef.enableSensorEvents = true;
 
     shieldEntity *shield = fastCalloc(1, sizeof(shieldEntity));
     shield->drone = drone;
@@ -1852,7 +1863,7 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
     return true;
 }
 
-void droneTeleport(const iwEnv *e, droneEntity *drone, const b2Vec2 newPos, const b2Vec2 newVel) {
+void droneTeleport(const iwEnv *e, droneEntity *drone, const b2Vec2 newPos, const b2Vec2 newVel, const bool setVel) {
     // terminate any active brake trail so it won't connect across the
     // teleport, braking from the new position will start a new trail
     if (drone->braking && e->client != NULL && drone->brakeTrailPoints != NULL) {
@@ -1864,6 +1875,35 @@ void droneTeleport(const iwEnv *e, droneEntity *drone, const b2Vec2 newPos, cons
     }
     if (drone->trailPoints != NULL) {
         drone->trailPoints->length = 0;
+    }
+
+    // if the drone being teleported has a grapple attached to something,
+    // and/or a grapple is attached to it, destroy it as leaving it will
+    // cause crazy and weird physics behavior
+    if (drone->grapple != NULL) {
+        destroyProjectile(e, drone->grapple, false, true);
+    }
+    for (uint8_t i = 0; i < e->numDrones; i++) {
+        if (i == drone->idx) {
+            continue;
+        }
+        droneEntity *otherDrone = safe_array_get_at(e->drones, i);
+        if (otherDrone->grapple == NULL || otherDrone->grapple->grappledEnt == NULL || otherDrone->grapple->grappledEnt->type != DRONE_ENTITY) {
+            continue;
+        }
+        const droneEntity *grappledDrone = otherDrone->grapple->grappledEnt->entity;
+        if (grappledDrone->idx == drone->idx) {
+            destroyProjectile(e, otherDrone->grapple, false, true);
+        }
+    }
+
+    // the drone has left any portal sensors it was in, don't wait for the
+    // end touch events next step or it could be sent right back through
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        const droneEntity *portalDrone = safe_array_get_at(e->drones, i);
+        for (uint8_t j = 0; j < portalDrone->openPortals; j++) {
+            portalDrone->portals[j]->droneInRange[drone->idx] = false;
+        }
     }
 
     b2Body_SetTransform(drone->bodyID, newPos, b2Rot_identity);
@@ -1881,7 +1921,7 @@ void droneTeleport(const iwEnv *e, droneEntity *drone, const b2Vec2 newPos, cons
         drone->shield->pos = newPos;
     }
 
-    if (!b2Equal(newVel, b2Vec2_zero)) {
+    if (setVel) {
         b2Body_SetLinearVelocity(drone->bodyID, newVel);
         drone->velocity = newVel;
         drone->lastVelocity = newVel;
@@ -4088,8 +4128,8 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             if (hitDrone->idx != projectile->droneIdx && !hitDrone->dead && !drone->dead) {
                 // swap the hit drone with the shooting drone
                 const b2Vec2 hitDronePos = hitDrone->pos;
-                droneTeleport(e, hitDrone, drone->pos, b2Vec2_zero);
-                droneTeleport(e, drone, hitDronePos, b2Vec2_zero);
+                droneTeleport(e, hitDrone, drone->pos, b2Vec2_zero, false);
+                droneTeleport(e, drone, hitDronePos, b2Vec2_zero, false);
             }
 
             destroyProjectile(e, projectile, false, true);
@@ -4366,19 +4406,13 @@ void handleProjectileEndTouch(const entity *sensor, entity *visitor) {
     switch (projectile->weaponInfo->type) {
     case FLAK_CANNON_WEAPON:
         break;
-    case MINE_LAUNCHER_WEAPON:
-        if (visitor == NULL) {
-            return;
-        }
+    case MINE_LAUNCHER_WEAPON: {
         ASSERT(visitor->type == DRONE_ENTITY);
         const droneEntity *drone = visitor->entity;
         projectileRemoveDroneBehindWall(projectile, drone->idx);
         break;
-    case BLACK_HOLE_WEAPON:
-        if (visitor == NULL) {
-            return;
-        }
-
+    }
+    case BLACK_HOLE_WEAPON: {
         const entityID *visitorID = visitor->id;
         for (uint8_t i = 0; i < cc_array_size(projectile->entsInBlackHole); ++i) {
             entityID *id = safe_array_get_at(projectile->entsInBlackHole, i);
@@ -4389,13 +4423,15 @@ void handleProjectileEndTouch(const entity *sensor, entity *visitor) {
             }
         }
         break;
+    }
     default:
         ERRORF("invalid projectile type %d for end touch event", projectile->weaponInfo->type);
     }
 }
 
 bool allowedThroughPortal(const portalEntity *portal, const b2Vec2 velocity) {
-    const b2Vec2 direction = b2Normalize(velocity);
+    const b2Vec2 relVel = b2Sub(velocity, portal->attachedWall->velocity);
+    const b2Vec2 direction = b2Normalize(relVel);
     if (-b2Dot(portal->normal, direction) < cosf(80.0f * DEG2RAD)) {
         return false;
     }
@@ -4416,14 +4452,15 @@ b2Rot portalTransitRot(const portalEntity *in, const portalEntity *out) {
 // after it hit
 b2Vec2 portalEntryPos(const portalEntity *portal, const b2Vec2 lastPos, const b2Vec2 pos, const b2Vec2 lastVelocity, const float radius) {
     // canEnterPortal ensures this is positive
-    const float approachSpeed = -b2Dot(lastVelocity, portal->normal);
+    const b2Vec2 relVel = b2Sub(lastVelocity, portal->attachedWall->velocity);
+    const float approachSpeed = -b2Dot(relVel, portal->normal);
     const float distToFace = b2Dot(b2Sub(lastPos, portal->pos), portal->normal) - radius;
     if (approachSpeed <= 0.0f || distToFace <= 0.0f) {
         // already touching the face at the start of the step
         return pos;
     }
     const float t = distToFace / approachSpeed;
-    return b2MulAdd(lastPos, t, lastVelocity);
+    return b2MulAdd(lastPos, t, relVel);
 }
 
 b2Vec2 portalExitPos(const portalEntity *in, const portalEntity *out, const b2Rot rot, const b2Vec2 pos, const float radius) {
@@ -4440,63 +4477,95 @@ b2Vec2 portalExitVelocity(const portalEntity *in, const portalEntity *out, const
     // rotate the velocity relative to the entry wall so portals on moving
     // floating walls carry their motion through
     const b2Vec2 relVel = b2Sub(velocity, in->attachedWall->velocity);
-    return b2Add(b2RotateVector(rot, relVel), out->attachedWall->velocity);
+    b2Vec2 exitRelVel = b2RotateVector(rot, relVel);
+    // ensure the exit speed relative to the exit wall isn't too slow or the
+    // teleported entity could move right back into the exit portal
+    if (b2Length(exitRelVel) < PORTAL_EXIT_MIN_SPEED) {
+        exitRelVel = b2MulSV(PORTAL_EXIT_MIN_SPEED, b2Normalize(exitRelVel));
+    }
+    return b2Add(exitRelVel, out->attachedWall->velocity);
 }
 
-void handlePortalBeginTouch(const iwEnv *e, const entity *sensor, entity *visitor) {
-    portalEntity *portal = sensor->entity;
-    if (portal->linkedPortal == NULL) {
+static void startPortalTransitEffect(portalEntity *portal, const float scale) {
+    // don't let something small weaken an effect that's still showing
+    if (portal->transitRenderSteps != 0 && portal->transitScale > scale) {
+        portal->transitRenderSteps = UINT16_MAX;
         return;
     }
-    const portalEntity *exitPortal = portal->linkedPortal;
+    portal->transitRenderSteps = UINT16_MAX;
+    portal->transitScale = scale;
+}
 
-    // const droneEntity *drone = safe_array_get_at(e->drones, portal->droneIdx);
-    const b2Rot rot = portalTransitRot(portal, exitPortal);
-    switch (visitor->type) {
-    case SHIELD_ENTITY: {
-        const shieldEntity *shield = visitor->entity;
-        droneEntity *drone = shield->drone;
-        if (!allowedThroughPortal(portal, drone->lastVelocity)) {
-            return;
-        }
-
-        const b2Vec2 entryPos = portalEntryPos(portal, drone->lastPos, drone->pos, drone->lastVelocity, DRONE_SHIELD_RADIUS);
-        const b2Vec2 exitPos = portalExitPos(portal, exitPortal, rot, entryPos, DRONE_SHIELD_RADIUS);
-        const b2Vec2 exitVel = portalExitVelocity(portal, exitPortal, rot, drone->lastVelocity);
-        droneTeleport(e, drone, exitPos, exitVel);
-
-        break;
+// show a distortion ripple on both portals when something goes through,
+// stronger the bigger the entity is; drones also make the portals flash
+void startPortalTransitEffects(const iwEnv *e, portalEntity *in, portalEntity *out, const float radius, const bool flash) {
+    if (e->client == NULL) {
+        return;
     }
+    const float scale = clampValue(radius / DRONE_RADIUS, 0.0f, 1.0f);
+    startPortalTransitEffect(in, scale);
+    startPortalTransitEffect(out, scale);
+    if (flash) {
+        in->flashRenderSteps = UINT16_MAX;
+        out->flashRenderSteps = UINT16_MAX;
+    }
+}
+
+void sendDroneThroughPortal(const iwEnv *e, portalEntity *in, portalEntity *out, droneEntity *drone) {
+    float radius = DRONE_RADIUS;
+    if (drone->shield != NULL) {
+        radius = DRONE_SHIELD_RADIUS;
+    }
+
+    const b2Rot rot = portalTransitRot(in, out);
+    const b2Vec2 entryPos = portalEntryPos(in, drone->lastPos, drone->pos, drone->lastVelocity, radius);
+    const b2Vec2 exitPos = portalExitPos(in, out, rot, entryPos, radius);
+    const b2Vec2 exitVel = portalExitVelocity(in, out, rot, drone->lastVelocity);
+    droneTeleport(e, drone, exitPos, exitVel, true);
+    startPortalTransitEffects(e, in, out, radius, true);
+}
+
+// whether a drone's circle overlaps a portal's sensor box
+bool droneOverlapsPortal(const portalEntity *portal, const droneEntity *drone) {
+    const b2Vec2 rel = b2Sub(drone->pos, portal->pos);
+    const float depth = b2Dot(rel, portal->normal);
+    const float widthOffset = b2Dot(rel, b2LeftPerp(portal->normal));
+    const float closestDepth = clampValue(depth, 0.0f, PORTAL_HEIGHT);
+    const float closestOffset = clampValue(widthOffset, -PORTAL_WIDTH / 2.0f, PORTAL_WIDTH / 2.0f);
+    const float distSq = SQUARED(depth - closestDepth) + SQUARED(widthOffset - closestOffset);
+    return distSq <= SQUARED(DRONE_RADIUS);
+}
+
+// returns true if the drone was teleported
+bool handlePortalBeginTouch(const iwEnv *e, const entity *sensor, entity *visitor) {
+    portalEntity *portal = sensor->entity;
+
+    switch (visitor->type) {
     case DRONE_ENTITY: {
         droneEntity *drone = visitor->entity;
-        // if a drone has a shield only allow the shield to trigger a
-        // teleport, otherwise the shield and drone touching the sensor
-        // could trigger 2 teleports in 1 frame
-        if (drone->shield != NULL) {
-            return;
-        }
-        DEBUG_LOGF("step %d portal %p begin touch: drone %d", e->episodeLength, portal, drone->idx);
-        if (!allowedThroughPortal(portal, drone->lastVelocity)) {
-            // portal->dronesInRange[portal->numDronesInRange++] = drone->idx;
-            return;
+        // track the drone even if the portal isn't linked yet so it can
+        // go through once it is
+        if (portal->linkedPortal == NULL || !allowedThroughPortal(portal, drone->lastVelocity)) {
+            portal->droneInRange[drone->idx] = true;
+            return false;
         }
 
-        const b2Vec2 entryPos = portalEntryPos(portal, drone->lastPos, drone->pos, drone->lastVelocity, DRONE_RADIUS);
-        const b2Vec2 exitPos = portalExitPos(portal, exitPortal, rot, entryPos, DRONE_RADIUS);
-        const b2Vec2 exitVel = portalExitVelocity(portal, exitPortal, rot, drone->lastVelocity);
-        droneTeleport(e, drone, exitPos, exitVel);
-
-        break;
+        sendDroneThroughPortal(e, portal, portal->linkedPortal, drone);
+        return true;
     }
     case PROJECTILE_ENTITY: {
         projectileEntity *projectile = visitor->entity;
-        if (!allowedThroughPortal(portal, projectile->lastVelocity)) {
-            return;
+        if (portal->linkedPortal == NULL || !allowedThroughPortal(portal, projectile->lastVelocity)) {
+            return false;
         }
 
+        portalEntity *exitPortal = portal->linkedPortal;
+        const b2Rot rot = portalTransitRot(portal, exitPortal);
         const b2Vec2 entryPos = portalEntryPos(portal, projectile->lastPos, projectile->pos, projectile->lastVelocity, projectile->weaponInfo->radius);
         const b2Vec2 exitPos = portalExitPos(portal, exitPortal, rot, entryPos, projectile->weaponInfo->radius);
         const b2Vec2 exitVel = portalExitVelocity(portal, exitPortal, rot, projectile->lastVelocity);
+
+        startPortalTransitEffects(e, portal, exitPortal, projectile->weaponInfo->radius, false);
 
         b2Body_SetTransform(projectile->bodyID, exitPos, b2Body_GetRotation(projectile->bodyID));
         b2Body_SetLinearVelocity(projectile->bodyID, exitVel);
@@ -4510,21 +4579,51 @@ void handlePortalBeginTouch(const iwEnv *e, const entity *sensor, entity *visito
             projectile->trailPoints->length = 0;
         }
 
-        break;
+        return false;
     }
     default:
-        return;
+        return false;
     }
 }
 
-void handlePortalEndTouch(const iwEnv *e, const entity *sensor, entity *visitor) {
-    portalEntity *portal = sensor->entity;
-    const droneEntity *drone = visitor->entity;
+// drones that entered a portal's sensor without being allowed through can
+// go through once they move towards the portal while still in the sensor
+void portalsStep(const iwEnv *e, uint8_t teleported) {
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (drone->dead || (teleported & (1 << i)) != 0) {
+            continue;
+        }
 
-    DEBUG_LOGF("step %d portal %p end touch: drone %d", e->episodeLength, portal, drone->idx);
+        bool done = false;
+        for (uint8_t j = 0; j < cc_array_size(e->drones) && !done; j++) {
+            const droneEntity *portalDrone = safe_array_get_at(e->drones, j);
+            for (uint8_t k = 0; k < portalDrone->openPortals; k++) {
+                portalEntity *portal = portalDrone->portals[k];
+                if (!portal->droneInRange[i]) {
+                    continue;
+                }
+                // guard against a missed end touch event
+                if (!droneOverlapsPortal(portal, drone)) {
+                    portal->droneInRange[i] = false;
+                    continue;
+                }
+                if (portal->linkedPortal == NULL || !allowedThroughPortal(portal, drone->lastVelocity)) {
+                    continue;
+                }
+
+                sendDroneThroughPortal(e, portal, portal->linkedPortal, drone);
+                done = true;
+                break;
+            }
+        }
+    }
 }
 
 void handleSensorEvents(iwEnv *e) {
+    // only teleport a drone once per step
+    uint8_t teleported = 0;
+
     b2SensorEvents events = b2World_GetSensorEvents(e->worldID);
     for (int i = 0; i < events.beginCount; ++i) {
         const b2SensorBeginTouchEvent *event = events.beginEvents + i;
@@ -4533,14 +4632,18 @@ void handleSensorEvents(iwEnv *e) {
             continue;
         }
         entity *s = b2Shape_GetUserData(event->sensorShapeId);
-        ASSERT(s != NULL);
+        if (s == NULL) {
+            continue;
+        }
 
         if (!b2Shape_IsValid(event->visitorShapeId)) {
             DEBUG_LOG("could not find visitor shape for begin touch event");
             continue;
         }
         entity *v = b2Shape_GetUserData(event->visitorShapeId);
-        ASSERT(v != NULL);
+        if (v == NULL) {
+            continue;
+        }
 
         if (s->type == PROJECTILE_ENTITY) {
             handleProjectileBeginTouch(e, s, v);
@@ -4548,7 +4651,17 @@ void handleSensorEvents(iwEnv *e) {
             if (b2Shape_IsSensor(event->visitorShapeId)) {
                 continue;
             }
-            handlePortalBeginTouch(e, s, v);
+            if (v->type == DRONE_ENTITY) {
+                const droneEntity *drone = v->entity;
+                if ((teleported & (1 << drone->idx)) != 0) {
+                    continue;
+                }
+                if (handlePortalBeginTouch(e, s, v)) {
+                    teleported |= 1 << drone->idx;
+                }
+            } else {
+                handlePortalBeginTouch(e, s, v);
+            }
         } else {
             ERRORF("unknown entity type %d for sensor begin touch event", s->type);
         }
@@ -4565,23 +4678,28 @@ void handleSensorEvents(iwEnv *e) {
             continue;
         }
 
-        entity *v = NULL;
-        if (b2Shape_IsValid(event->visitorShapeId)) {
-            v = b2Shape_GetUserData(event->visitorShapeId);
-            ASSERT(v != NULL);
+        if (!b2Shape_IsValid(event->visitorShapeId)) {
+            continue;
+        }
+        entity *v = b2Shape_GetUserData(event->visitorShapeId);
+        if (v == NULL) {
+            continue;
         }
 
         if (s->type == PROJECTILE_ENTITY) {
             handleProjectileEndTouch(s, v);
         } else if (s->type == PORTAL_ENTITY) {
-            if (b2Shape_IsSensor(event->visitorShapeId)) {
-                continue;
+            if (v->type == DRONE_ENTITY) {
+                portalEntity *portal = s->entity;
+                const droneEntity *drone = v->entity;
+                portal->droneInRange[drone->idx] = false;
             }
-            handlePortalEndTouch(e, s, v);
         } else {
             ERRORF("unknown entity type %d for sensor end touch event", s->type);
         }
     }
+
+    portalsStep(e, teleported);
 }
 
 // index of the (destination, source) pair in a map's flow field

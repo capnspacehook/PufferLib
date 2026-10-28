@@ -1514,10 +1514,30 @@ void updateDroneRespawnGuide(iwEnv *e, droneEntity *drone) {
     }
 }
 
+void updatePortalTransitEffects(iwEnv *e) {
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        for (uint8_t j = 0; j < drone->openPortals; j++) {
+            portalEntity *portal = drone->portals[j];
+            if (portal->transitRenderSteps == UINT16_MAX) {
+                portal->transitRenderSteps = portalTransitMaxSteps(e);
+            } else if (portal->transitRenderSteps != 0) {
+                portal->transitRenderSteps--;
+            }
+            if (portal->flashRenderSteps == UINT16_MAX) {
+                portal->flashRenderSteps = portalTransitMaxSteps(e);
+            } else if (portal->flashRenderSteps != 0) {
+                portal->flashRenderSteps--;
+            }
+        }
+    }
+}
+
 void updateVisuals(iwEnv *e) {
     updateExplosions(e);
     updateBoostSparks(e);
     updateDronePieces(e);
+    updatePortalTransitEffects(e);
 
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);

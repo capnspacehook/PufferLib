@@ -316,9 +316,17 @@ struct portalEntity {
     b2Vec2 normal;
     int16_t mapCellIdx;
     portalEntity *linkedPortal;
-
-    uint8_t numDronesInRange;
-    uint8_t dronesInRange[_MAX_DRONES];
+    // drones overlapping the sensor that weren't allowed through yet, so
+    // they can be teleported once they turn towards the portal
+    bool droneInRange[_MAX_DRONES];
+    // frames left of the distortion ripple shown when something goes
+    // through, UINT16_MAX until the render code starts it
+    uint16_t transitRenderSteps;
+    // ripple strength from the size of what went through, drones are 1
+    float transitScale;
+    // frames left of the flash shown when a drone goes through, same
+    // encoding as transitRenderSteps
+    uint16_t flashRenderSteps;
 
     entity *ent;
 };

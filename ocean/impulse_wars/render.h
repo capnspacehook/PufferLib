@@ -98,10 +98,27 @@ static const float GRAPPLE_DASH_SPEED = 12.0f;
 // sensor in front of it; bloom makes the slab look wider than it is.
 static const float PORTAL_SLAB_DEPTH = 0.15f;
 static const float PORTAL_SLAB_HEIGHT = 1.0f;
+static const float PORTAL_UNLINKED_FADE = 0.5f;
 static const float PORTAL_FIELD_MIN_ALPHA = 0.08f;
 static const float PORTAL_FIELD_MAX_ALPHA = 0.2f;
 // pulses per second of the field
 static const float PORTAL_PULSE_RATE = 1.5f;
+static const float PORTAL_UNLINKED_PULSE_RATE = 0.75f;
+// Distortion ripple on both portals when something goes through, plus a
+// flash when it's a drone (visual only; rebuild after tuning).
+static const float PORTAL_TRANSIT_EFFECT_TIME = 0.3f;
+// The flash brightens the slab towards white and the field towards
+// PORTAL_FLASH_FIELD_ALPHA.
+static const float PORTAL_FLASH_WHITEN = 0.5f;
+static const float PORTAL_FLASH_FIELD_ALPHA = 0.6f;
+// The ripple uses the explosion ripple shader; keep it weaker than
+// explosions so the two aren't confused. Its strength is scaled by the
+// radius of what went through relative to a drone. 0 strength disables.
+static const float PORTAL_RIPPLE_RADIUS = 4.0f;
+static const float PORTAL_RIPPLE_STRENGTH = 0.35f;
+// Displacement as a fraction of the ripple's on-screen radius.
+static const float PORTAL_RIPPLE_RADIUS_SCALE = 0.15f;
+static const float PORTAL_RIPPLE_MAX_PIXELS = 12.0f;
 
 // Explosion visual lifetime in seconds (rebuild after tuning).
 // Reference radius/impulse produce BASE_TIME. Exponents of 0 ignore that factor.
@@ -1455,6 +1472,18 @@ static float projectDistortionSource(const rayClient *client, b2Vec2 position, f
     return Vector2Distance(screen, edge);
 }
 
+static uint16_t portalTransitMaxSteps(const iwEnv *e) {
+    return (uint16_t)max(1.0f, ceilf(PORTAL_TRANSIT_EFFECT_TIME * e->frameRate));
+}
+
+// 1 when a portal effect just started, fading to 0
+static float portalEffectRemaining(const iwEnv *e, const uint16_t renderSteps) {
+    if (renderSteps == UINT16_MAX) {
+        return 1.0f;
+    }
+    return Clamp((float)renderSteps / portalTransitMaxSteps(e), 0.0f, 1.0f);
+}
+
 static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float amplitudes[16]) {
     rayClient *client = e->client;
     int count = 0;
@@ -1482,6 +1511,7 @@ static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float am
         if (remaining <= 0.0f || explosion->def.radius <= 0.0f) {
             continue;
         }
+
         if (explosion->isBlackHole) {
             if (BLACK_HOLE_DISTORTION_STRENGTH <= 0.0f || BLACK_HOLE_DISTORTION_MAX_PIXELS <= 0.0f) {
                 continue;
@@ -1497,6 +1527,7 @@ static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float am
         if (EXPLOSION_DISTORTION_STRENGTH <= 0.0f || EXPLOSION_DISTORTION_MAX_PIXELS <= 0.0f) {
             continue;
         }
+
         const float radius = projectDistortionSource(client, explosion->def.position, explosion->def.radius, blasts[count]);
         blasts[count][2] = explosion->def.impulsePerLength < 0.0f ? -radius : radius;
         blasts[count][3] = remaining;
@@ -1507,6 +1538,28 @@ static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float am
                                 max(0.0f, EXPLOSION_DISTORTION_MAX_PIXELS));
         count++;
     }
+
+    if (PORTAL_RIPPLE_STRENGTH > 0.0f && PORTAL_RIPPLE_MAX_PIXELS > 0.0f) {
+        for (size_t i = 0; i < cc_array_size(e->drones) && count < 16; i++) {
+            const droneEntity *drone = safe_array_get_at(e->drones, i);
+            for (uint8_t j = 0; j < drone->openPortals && count < 16; j++) {
+                const portalEntity *portal = drone->portals[j];
+                if (portal->transitRenderSteps == 0 || portal->transitScale <= 0.0f) {
+                    continue;
+                }
+
+                const float remaining = portalEffectRemaining(e, portal->transitRenderSteps);
+
+                const b2Vec2 center = b2MulAdd(portal->pos, PORTAL_HEIGHT, portal->normal);
+                const float radius = projectDistortionSource(client, center, PORTAL_RIPPLE_RADIUS, blasts[count]);
+                blasts[count][2] = radius;
+                blasts[count][3] = remaining;
+                amplitudes[count] = PORTAL_RIPPLE_STRENGTH * portal->transitScale * min(radius * PORTAL_RIPPLE_RADIUS_SCALE, PORTAL_RIPPLE_MAX_PIXELS);
+                count++;
+            }
+        }
+    }
+
     return count;
 }
 
@@ -2124,11 +2177,25 @@ void renderPortal(const iwEnv *e, const portalEntity *portal) {
     // rotate so local x is along the portal's normal and local z is along
     // the wall face
     const float angle = b2Rot_GetAngle(b2MakeRotFromUnitVector(portal->normal)) * RAD2DEG;
-    const Color color = getDroneColor(portal->droneIdx);
+    Color color = getDroneColor(portal->droneIdx);
+    float pulseRate = PORTAL_PULSE_RATE;
+    if (portal->linkedPortal == NULL) {
+        color = ColorLerp(color, DARKGRAY, PORTAL_UNLINKED_FADE);
+        pulseRate = PORTAL_UNLINKED_PULSE_RATE;
+    }
 
     // use game time so animations follow the game speed
     const float time = (float)e->episodeLength / e->frameRate;
-    const float pulse = 0.5f + 0.5f * sinf(2.0f * PI * PORTAL_PULSE_RATE * time);
+    const float pulse = 0.5f + 0.5f * sinf(2.0f * PI * pulseRate * time);
+    float alpha = Lerp(PORTAL_FIELD_MIN_ALPHA, PORTAL_FIELD_MAX_ALPHA, pulse);
+
+    if (portal->flashRenderSteps != 0) {
+        // flash when a drone goes through, fading out quickly
+        const float remaining = portalEffectRemaining(e, portal->flashRenderSteps);
+        const float flash = remaining * remaining;
+        alpha = Lerp(alpha, PORTAL_FLASH_FIELD_ALPHA, flash);
+        color = ColorLerp(color, RAYWHITE, PORTAL_FLASH_WHITEN * flash);
+    }
 
     rlPushMatrix();
     rlTranslatef(portal->pos.x, 0.0f, portal->pos.y);
@@ -2146,7 +2213,7 @@ void renderPortal(const iwEnv *e, const portalEntity *portal) {
         PORTAL_HEIGHT,
         0.0f,
         PORTAL_WIDTH,
-        Fade(color, Lerp(PORTAL_FIELD_MIN_ALPHA, PORTAL_FIELD_MAX_ALPHA, pulse))
+        Fade(color, alpha)
     );
 
     rlPopMatrix();
