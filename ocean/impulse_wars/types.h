@@ -267,6 +267,17 @@ typedef struct trailPoints {
 
 typedef struct projectileEntity {
     uint8_t droneIdx;
+    // set once an enemy turned the projectile enough to take it over;
+    // its pushes on its new owner are credited to prevDroneIdx
+    bool deflected;
+    uint8_t prevDroneIdx;
+    // the drone that fired it, which droneIdx no longer is once deflected
+    uint8_t firerIdx;
+    // direction and the other projectile's owner when a contact with
+    // another projectile began, to check for a deflection when it ends
+    bool inProjContact;
+    b2Vec2 projContactDir;
+    uint8_t projContactOwner;
 
     b2BodyId bodyID;
     b2ShapeId shapeID;
@@ -396,6 +407,9 @@ typedef struct physicsSource {
     // the projectile was boosted by its owner's burst on the frame it
     // was fired
     bool boosted;
+    // the projectile was deflected and the push is credited to the drone
+    // that deflected it or the previous owner
+    bool deflected;
 } physicsSource;
 
 typedef struct physicsStepInfo {
@@ -437,6 +451,14 @@ typedef struct utilitySlot {
     float regen;
     float cooldown;
 } utilitySlot;
+
+// what turned an enemy projectile enough to take it over
+enum deflectType {
+    BURST_DEFLECT,
+    EXPLOSION_DEFLECT,
+    PROJECTILE_DEFLECT,
+    NUM_DEFLECT_TYPES,
+};
 
 // setup weapons that earn assists
 enum assistWeapon {
@@ -604,6 +626,13 @@ typedef struct droneAnalysisStats {
     float grappleAttaches[3];
     float grappleAttachedDeaths;
     float minesDetonated;
+    // enemy projectiles this drone deflected by what deflected them and
+    // the deflected weapon, and the hits and weapon kills credited to it
+    // from deflected projectiles; deflected hits and kills are kept out of
+    // the shot hit and per weapon kill stats
+    float deflections[NUM_DEFLECT_TYPES][_NUM_WEAPONS];
+    float deflectedHits[_NUM_WEAPONS];
+    float deflectedKills[_NUM_WEAPONS];
 } droneAnalysisStats;
 
 struct Log {

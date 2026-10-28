@@ -276,6 +276,9 @@ static const float DRONE_SHIELD_BREAK_ENERGY_REFILL = 0.33f;
 // boosting them; deflecting projectiles isn't affected
 #define PROJECTILE_BURST_BOOST_COEF 1.0f
 static const float EXPLOSION_ENERGY_REFILL_COEF = 1.75f;
+// an enemy burst, explosion or projectile that turns a projectile by at
+// least this much takes it over for kill and hit credit
+#define PROJECTILE_DEFLECT_ANGLE 45.0f
 
 static const uint8_t DRONE_PIECE_COUNT = 5;
 static const float DRONE_PIECE_MIN_DISTANCE = 1.5f;

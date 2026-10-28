@@ -1259,6 +1259,7 @@ void renderUI(const iwEnv *e, const bool starting) {
 
             const char *killDetails1 = NULL;
             const char *killDetails2 = NULL;
+            const char *deflected = drone->killSource.deflected ? "deflected " : "";
             switch (drone->killSource.type) {
             case MOVEMENT_PHYSICS:
                 break;
@@ -1272,11 +1273,11 @@ void renderUI(const iwEnv *e, const bool starting) {
             case EXPLOSION_PHYSICS:
                 if (drone->killSource.weapon != IMPLODER_WEAPON) {
                     killDetails1 = "with an explosion";
-                    killDetails2 = TextFormat("from %s", getWeaponName(drone->killSource.weapon));
+                    killDetails2 = TextFormat("from %s%s", deflected, getWeaponName(drone->killSource.weapon));
                     break;
                 }
             case PROJECTILE_PHYSICS:
-                killDetails1 = TextFormat("with %s", getWeaponName(drone->killSource.weapon));
+                killDetails1 = TextFormat("with %s%s", deflected, getWeaponName(drone->killSource.weapon));
                 break;
             case GRAPPLE_PHYSICS:
                 killDetails1 = "with a grapple line";

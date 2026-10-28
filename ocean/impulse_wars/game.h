@@ -1523,7 +1523,7 @@ b2Vec2 reflectContrib(const b2Vec2 contrib, const physicsStepInfo *physicsStep) 
 // returns the accumulated contribution of a drone from a source, adding
 // it if it isn't tracked yet
 sourceContrib *getSourceContrib(sourceContrib *sources, int16_t *sourceSlots, uint16_t *numSources, const uint16_t maxSources, const uint8_t srcIdx, const physicsSource source) {
-    const uint16_t slotIdx = (srcIdx * NUM_PHYSICS_TYPES + source.type) * _NUM_WEAPONS + source.weapon;
+    const uint16_t slotIdx = ((srcIdx * NUM_PHYSICS_TYPES + source.type) * _NUM_WEAPONS + source.weapon) * 2 + source.deflected;
     ASSERT(slotIdx < maxSources);
     if (sourceSlots[slotIdx] == -1) {
         sourceSlots[slotIdx] = *numSources;
@@ -1536,7 +1536,7 @@ sourceContrib *getSourceContrib(sourceContrib *sources, int16_t *sourceSlots, ui
 int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const CC_Array *physicsTracking, const b2Vec2 lastVelocity, float *maxMoveContrib, physicsSource *source) {
     b2Vec2 contrib[e->numDrones];
     memset(contrib, 0x0, e->numDrones * sizeof(b2Vec2));
-    const uint16_t maxSources = e->numDrones * NUM_PHYSICS_TYPES * _NUM_WEAPONS;
+    const uint16_t maxSources = e->numDrones * NUM_PHYSICS_TYPES * _NUM_WEAPONS * 2;
     sourceContrib sources[maxSources];
     int16_t sourceSlots[maxSources];
     memset(sourceSlots, 0xff, maxSources * sizeof(int16_t));
@@ -1738,6 +1738,10 @@ void recordDeathAnalysis(iwEnv *e, const droneEntity *drone, const int8_t killer
     stats->floatingWallDeaths += floatingWall;
     if (weapon) {
         droneAnalysisStats *killerStats = &e->analysisStats[killer];
+        if (source.deflected) {
+            killerStats->deflectedKills[source.weapon]++;
+            return;
+        }
         killerStats->killsByWeapon[source.weapon]++;
         killerStats->boostedKills[source.weapon] += source.boosted;
     }
@@ -2101,6 +2105,7 @@ void createProjectile(iwEnv *e, droneEntity *drone, const weaponInformation *wea
 
     projectileEntity *projectile = fastCalloc(1, sizeof(projectileEntity));
     projectile->droneIdx = drone->idx;
+    projectile->firerIdx = drone->idx;
     projectile->bodyID = projectileBodyID;
     projectile->shapeID = projectileShapeID;
     projectile->weaponInfo = (weaponInformation *)weaponInfo;
@@ -2199,6 +2204,49 @@ void createProjectileExplosion(iwEnv *e, projectileEntity *projectile, const boo
     const enum cc_stat res = cc_array_remove_fast(e->explodingProjectiles, projectile, NULL);
     MAYBE_UNUSED(res);
     ASSERT(res == CC_OK);
+}
+
+// the drone credited for a projectile's push on a drone; a deflected
+// projectile hitting its new owner is credited to its previous owner
+static inline uint8_t projectileCreditIdx(const projectileEntity *projectile, const uint8_t hitDroneIdx) {
+    if (projectile->deflected && hitDroneIdx == projectile->droneIdx) {
+        return projectile->prevDroneIdx;
+    }
+    return projectile->droneIdx;
+}
+
+// whether a projectile's push on a drone is credited to a drone other than
+// the one that fired it because of a deflection
+static inline bool projectileCreditDeflected(const projectileEntity *projectile, const uint8_t hitDroneIdx) {
+    return projectile->deflected && projectileCreditIdx(projectile, hitDroneIdx) != projectile->firerIdx;
+}
+
+// an enemy that turns a projectile by at least PROJECTILE_DEFLECT_ANGLE
+// takes it over, so it's credited for what the projectile hits
+void checkProjectileDeflection(iwEnv *e, projectileEntity *projectile, const droneEntity *deflector, const enum deflectType type, const b2Vec2 velBefore, const b2Vec2 velAfter) {
+    // utility projectiles' ownership controls how they work: mines can
+    // only be detonated by their owner, grapples pull their owner and
+    // portals are opened for their owner
+    const enum weaponType weapon = projectile->weaponInfo->type;
+    if (weaponIsUtility(weapon) || projectile->welded || projectile->droneIdx == deflector->idx) {
+        return;
+    }
+    const droneEntity *owner = safe_array_get_at(e->drones, projectile->droneIdx);
+    if (owner->team == deflector->team) {
+        return;
+    }
+    if (b2LengthSquared(velBefore) == 0.0f || b2LengthSquared(velAfter) == 0.0f) {
+        return;
+    }
+    if (b2Dot(b2Normalize(velBefore), b2Normalize(velAfter)) > cosf(PROJECTILE_DEFLECT_ANGLE * DEG2RAD)) {
+        return;
+    }
+
+    DEBUG_LOGF("drone %d deflected weapon %d of drone %d", deflector->idx, weapon, projectile->droneIdx);
+    projectile->prevDroneIdx = projectile->droneIdx;
+    projectile->droneIdx = deflector->idx;
+    projectile->deflected = true;
+    e->analysisStats[deflector->idx].deflections[type][weapon]++;
 }
 
 // ensures projectiles don't slow down when an impulse is applied to them
@@ -2504,6 +2552,14 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         source.type = EXPLOSION_PHYSICS;
         source.weapon = ctx->projectile->weaponInfo->type;
         source.boosted = ctx->projectile->boosted;
+        source.deflected = ctx->projectile->deflected;
+    }
+    // a deflected projectile exploding on its new owner is credited to
+    // its previous owner
+    droneEntity *creditDrone = ctx->parentDrone;
+    if (drone != NULL && !ctx->isBurst) {
+        creditDrone = safe_array_get_at(ctx->e->drones, projectileCreditIdx(ctx->projectile, drone->idx));
+        source.deflected = projectileCreditDeflected(ctx->projectile, drone->idx);
     }
 
     switch (entity->type) {
@@ -2520,7 +2576,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     case PROJECTILE_ENTITY: {
         // a burst on the frame a projectile was fired boosts it
         const float distance = b2Length(distanceToEntity);
-        const bool boost = ctx->isBurst && !projectile->boosted && projectile->droneIdx == ctx->parentDrone->idx && distance <= DRONE_BURST_RADIUS_MIN + DRONE_BURST_RADIUS_BASE;
+        const bool boost = ctx->isBurst && !projectile->boosted && !projectile->deflected && projectile->droneIdx == ctx->parentDrone->idx && distance <= DRONE_BURST_RADIUS_MIN + DRONE_BURST_RADIUS_BASE;
         const float speedBefore = projectile->speed;
         droneAnalysisStats *stats = &ctx->e->analysisStats[projectile->droneIdx];
         if (boost) {
@@ -2528,6 +2584,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
             stats->boostedShotsFired[projectile->weaponInfo->type]++;
         }
 
+        const b2Vec2 velBefore = b2Body_GetLinearVelocity(bodyID);
         b2Vec2 projImpulse = impulse;
         if (boost) {
             projImpulse = b2MulSV(projectile->weaponInfo->burstBoostCoef, impulse);
@@ -2564,6 +2621,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         }
 
         fixProjectileSpeed(projectile);
+        checkProjectileDeflection(ctx->e, projectile, ctx->parentDrone, ctx->isBurst ? BURST_DEFLECT : EXPLOSION_DEFLECT, velBefore, projectile->velocity);
         if (boost) {
             stats->boostedSpeedBefore[projectile->weaponInfo->type] += speedBefore;
             stats->boostedSpeedAfter[projectile->weaponInfo->type] += projectile->speed;
@@ -2582,49 +2640,53 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         break;
     }
     case DRONE_ENTITY:
-        if (drone->idx == ctx->parentDrone->idx && !ctx->isBurst) {
+        if (drone->idx == creditDrone->idx && !ctx->isBurst) {
             drone->stepInfo.ownShotTaken = true;
             recordOwnShotTaken(ctx->e, drone->idx, ctx->projectile->weaponInfo->type);
             DEBUG_LOGF("drone %d hit itself with explosion from weapon %d", drone->idx, ctx->projectile->weaponInfo->type);
         } else if (ctx->isBurst) {
-            DEBUG_LOGF("drone %d hit drone %d with burst", ctx->parentDrone->idx, drone->idx);
-            ctx->e->stats[ctx->parentDrone->idx].burstsHit++;
-            DEBUG_LOGF("drone %d hit by burst from drone %d", drone->idx, ctx->parentDrone->idx);
+            DEBUG_LOGF("drone %d hit drone %d with burst", creditDrone->idx, drone->idx);
+            ctx->e->stats[creditDrone->idx].burstsHit++;
+            DEBUG_LOGF("drone %d hit by burst from drone %d", drone->idx, creditDrone->idx);
         } else {
-            DEBUG_LOGF("drone %d hit drone %d with explosion from weapon %d", ctx->parentDrone->idx, drone->idx, ctx->projectile->weaponInfo->type);
-            recordShotHit(ctx->e, ctx->parentDrone->idx, ctx->projectile->weaponInfo->type);
-            ctx->e->analysisStats[ctx->parentDrone->idx].boostedShotsHit[ctx->projectile->weaponInfo->type] += ctx->projectile->boosted;
-            DEBUG_LOGF("drone %d hit by explosion from weapon %d from drone %d", drone->idx, ctx->projectile->weaponInfo->type, ctx->parentDrone->idx);
+            DEBUG_LOGF("drone %d hit drone %d with explosion from weapon %d", creditDrone->idx, drone->idx, ctx->projectile->weaponInfo->type);
+            if (source.deflected) {
+                ctx->e->analysisStats[creditDrone->idx].deflectedHits[ctx->projectile->weaponInfo->type]++;
+            } else {
+                recordShotHit(ctx->e, creditDrone->idx, ctx->projectile->weaponInfo->type);
+                ctx->e->analysisStats[creditDrone->idx].boostedShotsHit[ctx->projectile->weaponInfo->type] += ctx->projectile->boosted;
+            }
+            DEBUG_LOGF("drone %d hit by explosion from weapon %d from drone %d", drone->idx, ctx->projectile->weaponInfo->type, creditDrone->idx);
         }
 
         drone->lastVelocityStep = ctx->e->episodeLength;
         drone->lastVelocityTrackIdx = cc_array_size(drone->physicsTracking);
-        applyTrackedImpulse(ctx->e, drone->bodyID, drone->physicsTracking, impulse, ctx->parentDrone->idx, source);
+        applyTrackedImpulse(ctx->e, drone->bodyID, drone->physicsTracking, impulse, creditDrone->idx, source);
         drone->lastVelocity = drone->velocity;
         drone->velocity = b2Body_GetLinearVelocity(drone->bodyID);
 
-        // add energy to the drone that fired the projectile that is
+        // add energy to the drone credited for the projectile that is
         // currently exploding if it hit another drone
         shieldEntity *shield = drone->shield;
         const float explosionStrength = fabsf(magnitude);
-        if (!ctx->isBurst && drone->team != ctx->parentDrone->team && shield == NULL && (ctx->projectile == NULL || !weaponIsUtility(ctx->projectile->weaponInfo->type))) {
+        if (!ctx->isBurst && drone->team != creditDrone->team && shield == NULL && (ctx->projectile == NULL || !weaponIsUtility(ctx->projectile->weaponInfo->type))) {
             const float energyRefill = explosionStrength * (DRONE_INV_MASS / MAX_SPEED) * EXPLOSION_ENERGY_REFILL_COEF;
-            droneAddEnergy(ctx->parentDrone, energyRefill);
+            droneAddEnergy(creditDrone, energyRefill);
         } else if (shield != NULL && shield->health > 0.0f) {
             const float damage = fabsf(magnitude) * DRONE_SHIELD_HEALTH_EXPLOSION_COEF;
             DEBUG_LOGF("shield explosion damage: %f", damage);
             shield->health -= damage;
             if (shield->health <= 0.0f) {
-                if (shield->drone->idx != ctx->parentDrone->idx && shield->drone->team != ctx->parentDrone->team) {
-                    droneAddEnergy(ctx->parentDrone, DRONE_SHIELD_BREAK_ENERGY_REFILL);
+                if (shield->drone->idx != creditDrone->idx && shield->drone->team != creditDrone->team) {
+                    droneAddEnergy(creditDrone, DRONE_SHIELD_BREAK_ENERGY_REFILL);
                 }
-                ctx->parentDrone->stepInfo.brokeShield[shield->drone->idx] = true;
-                ctx->e->stats[ctx->parentDrone->idx].shieldsBroken++;
+                creditDrone->stepInfo.brokeShield[shield->drone->idx] = true;
+                ctx->e->stats[creditDrone->idx].shieldsBroken++;
             }
         }
 
-        ctx->parentDrone->stepInfo.explosionHit[drone->idx] += explosionStrength;
-        drone->stepInfo.explosionTaken[ctx->parentDrone->idx] += explosionStrength;
+        creditDrone->stepInfo.explosionHit[drone->idx] += explosionStrength;
+        drone->stepInfo.explosionTaken[creditDrone->idx] += explosionStrength;
 
         break;
     default:
@@ -2765,7 +2827,10 @@ void destroyProjectile(iwEnv *e, projectileEntity *projectile, const bool proces
         ASSERT(res == CC_OK);
     }
 
-    recordShotDistance(e, projectile->droneIdx, projectile->weaponInfo->type, projectile->distance);
+    // a deflected projectile's distance isn't the new owner's shot
+    if (!projectile->deflected) {
+        recordShotDistance(e, projectile->droneIdx, projectile->weaponInfo->type, projectile->distance);
+    }
 
     if (projectile->entsInBlackHole != NULL) {
         for (uint8_t i = 0; i < cc_array_size(projectile->entsInBlackHole); i++) {
@@ -3664,7 +3729,7 @@ void handleBlackHolePull(iwEnv *e, projectileEntity *projectile) {
             magnitude *= DRONE_SHIELD_FORCE_REDUCTION;
         }
         const b2Vec2 force = b2MulSV(magnitude, direction);
-        const physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = BLACK_HOLE_WEAPON};
+        physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = BLACK_HOLE_WEAPON, .deflected = projectile->deflected};
 
         if (entityTypeIsWall(ent->type)) {
             wallEntity *wall = ent->entity;
@@ -3674,10 +3739,12 @@ void handleBlackHolePull(iwEnv *e, projectileEntity *projectile) {
                 b2Body_ApplyForce(wall->bodyID, force, output.pointB, true);
             }
         } else if (ent->type == DRONE_ENTITY) {
-            applyTrackedForce(e, drone->bodyID, drone->physicsTracking, force, projectile->droneIdx, source);
+            const uint8_t creditIdx = projectileCreditIdx(projectile, drone->idx);
+            source.deflected = projectileCreditDeflected(projectile, drone->idx);
+            applyTrackedForce(e, drone->bodyID, drone->physicsTracking, force, creditIdx, source);
 
-            droneEntity *parentDrone = safe_array_get_at(e->drones, projectile->droneIdx);
-            if (projectile->droneIdx != drone->idx && parentDrone->team != drone->team) {
+            droneEntity *parentDrone = safe_array_get_at(e->drones, creditIdx);
+            if (creditIdx != drone->idx && parentDrone->team != drone->team) {
                 // add energy to the drone that fired the projectile
                 const float energyRefill = fabsf(magnitude) * e->deltaTime * (DRONE_INV_MASS / MAX_SPEED) * BLACK_HOLE_PULL_ENERGY_REFILL_COEF;
                 droneAddEnergy(parentDrone, energyRefill);
@@ -4087,11 +4154,20 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
 
     bool bodyIDSet = false;
     b2BodyId bodyID = {0};
-    const physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = projectile->weaponInfo->type, .boosted = projectile->boosted};
+    const physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = projectile->weaponInfo->type, .boosted = projectile->boosted, .deflected = projectile->deflected};
 
     // e (shape B in the collision) will be NULL if it's another
     // projectile that was just destroyed
     if (ent == NULL || ent->type == PROJECTILE_ENTITY) {
+        // remember the direction before the collision to check if the
+        // other projectile deflected this one when the contact ends
+        if (ent != NULL) {
+            const projectileEntity *projectile2 = ent->entity;
+            projectile->inProjContact = true;
+            projectile->projContactDir = projectile->lastVelocity;
+            projectile->projContactOwner = projectile2->droneIdx;
+        }
+
         // explode mines when hit by a projectile
         if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON) {
             uint8_t numDestroyed = 1;
@@ -4138,7 +4214,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         DEBUG_LOGF("shield projectile damage: %f", damage);
         shield->health -= damage;
         if (shield->health <= 0.0f) {
-            droneEntity *parentDrone = safe_array_get_at(e->drones, projectile->droneIdx);
+            droneEntity *parentDrone = safe_array_get_at(e->drones, projectileCreditIdx(projectile, shield->drone->idx));
             if (shield->drone->idx != parentDrone->idx && shield->drone->team != parentDrone->team) {
                 droneAddEnergy(parentDrone, DRONE_SHIELD_BREAK_ENERGY_REFILL);
             }
@@ -4167,6 +4243,9 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         bodyID = hitDrone->bodyID;
         bodyIDSet = true;
 
+        const uint8_t creditIdx = projectileCreditIdx(projectile, hitDrone->idx);
+        physicsSource hitSource = source;
+        hitSource.deflected = projectileCreditDeflected(projectile, hitDrone->idx);
         float hitStrength = 0.0f;
         if (b2Contact_IsValid(contactID)) {
             const b2Manifold manifold = b2Contact_GetData(contactID).manifold;
@@ -4178,18 +4257,22 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             hitStrength = b2AbsFloat(b2Length(hitImpulse));
 
             b2Body_ApplyLinearImpulseToCenter(hitDrone->bodyID, hitImpulse, true);
-            trackImpulse(e, hitDrone->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), projectile->droneIdx, source);
+            trackImpulse(e, hitDrone->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), creditIdx, hitSource);
         }
 
-        if (projectile->droneIdx != hitDrone->idx) {
-            droneEntity *shooterDrone = safe_array_get_at(e->drones, projectile->droneIdx);
+        if (creditIdx != hitDrone->idx) {
+            droneEntity *shooterDrone = safe_array_get_at(e->drones, creditIdx);
             if (shooterDrone->team != hitDrone->team) {
                 const float impulseEnergy = projectile->lastSpeed * projectile->weaponInfo->mass * projectile->weaponInfo->energyRefillCoef;
                 droneAddEnergy(shooterDrone, impulseEnergy);
             }
             shooterDrone->stepInfo.shotHit[hitDrone->idx] += hitStrength * SHOT_HIT_IMPULSE_SCALE;
-            recordShotHit(e, shooterDrone->idx, projectile->weaponInfo->type);
-            e->analysisStats[shooterDrone->idx].boostedShotsHit[projectile->weaponInfo->type] += projectile->boosted;
+            if (hitSource.deflected) {
+                e->analysisStats[shooterDrone->idx].deflectedHits[projectile->weaponInfo->type]++;
+            } else {
+                recordShotHit(e, shooterDrone->idx, projectile->weaponInfo->type);
+                e->analysisStats[shooterDrone->idx].boostedShotsHit[projectile->weaponInfo->type] += projectile->boosted;
+            }
             DEBUG_LOGF("drone %d hit drone %d with weapon %d", shooterDrone->idx, hitDrone->idx, projectile->weaponInfo->type);
             hitDrone->stepInfo.shotTaken[shooterDrone->idx] += hitStrength * SHOT_HIT_IMPULSE_SCALE;
             recordShotTaken(e, hitDrone->idx, projectile->weaponInfo->type);
@@ -4331,9 +4414,17 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
 }
 
 // ensure speed is maintained when a projectile hits a dynamic body
-void handleProjectileEndContact(const entity *proj, const entity *ent) {
+void handleProjectileEndContact(iwEnv *e, const entity *proj, const entity *ent) {
     projectileEntity *projectile = proj->entity;
     projectile->contacts--;
+
+    // the other projectile may have deflected this one; ent is NULL if the
+    // other projectile was destroyed
+    if (projectile->inProjContact && (ent == NULL || ent->type == PROJECTILE_ENTITY)) {
+        projectile->inProjContact = false;
+        const droneEntity *deflector = safe_array_get_at(e->drones, projectile->projContactOwner);
+        checkProjectileDeflection(e, projectile, deflector, PROJECTILE_DEFLECT, projectile->projContactDir, b2Body_GetLinearVelocity(projectile->bodyID));
+    }
 
     // mines stick to walls, explode when hitting another projectile
     // and are destroyed when hitting a drone so no matter what we don't
@@ -4498,10 +4589,10 @@ void handleContactEvents(iwEnv *e) {
             ASSERT(e2 != NULL);
         }
         if (e1 != NULL && e1->type == PROJECTILE_ENTITY) {
-            handleProjectileEndContact(e1, e2);
+            handleProjectileEndContact(e, e1, e2);
         }
         if (e2 != NULL && e2->type == PROJECTILE_ENTITY) {
-            handleProjectileEndContact(e2, e1);
+            handleProjectileEndContact(e, e2, e1);
         }
     }
 }
