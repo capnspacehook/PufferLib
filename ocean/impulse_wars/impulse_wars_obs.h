@@ -45,17 +45,18 @@
 #define IW_RAY_SIZE 2
 // every drone block starts with its weapon: type, ammo, cooldown, charge
 // and full charge hold time, then its utility: type, ammo, regen progress,
-// active count, the grapple's state and the mine's state
+// active count, the grapple's state, the mine's state and each portal's
+// state
 #define IW_WEAPON_SIZE 5
-#define IW_UTILITY_SIZE 18
+#define IW_UTILITY_SIZE 30
 // offsets of the weapon and utility type slots in a drone block
 #define IW_DRONE_WEAPON_TYPE 0
 #define IW_DRONE_UTILITY_TYPE IW_WEAPON_SIZE
 // ray to the enemy, last in each enemy drone block
-#define IW_ENEMY_RAY_IDX 48
+#define IW_ENEMY_RAY_IDX 60
 #define IW_ENEMY_DRONE_SIZE (IW_ENEMY_RAY_IDX + IW_RAY_SIZE)
 // aim, velocity and recoil rays, last in the agent's drone block
-#define IW_DRONE_RAY_IDX 48
+#define IW_DRONE_RAY_IDX 60
 #define IW_NUM_DRONE_RAYS 3
 #define IW_DRONE_SIZE (IW_DRONE_RAY_IDX + IW_NUM_DRONE_RAYS * IW_RAY_SIZE)
 
@@ -66,17 +67,17 @@
 #define IW_ENEMY_PROJECTILE_OFFSET (IW_PROJECTILE_OFFSET + IW_NUM_OWN_PROJECTILES * IW_PROJECTILE_SIZE)
 #define IW_ENEMY_DRONE_OFFSET (IW_PROJECTILE_OFFSET + IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE)
 // obs size with zero enemy drones; each enemy adds IW_ENEMY_DRONE_SIZE
-#define IW_BASE_OBS_SIZE 351
+#define IW_BASE_OBS_SIZE 363
 #define IW_NUM_ENEMIES ((OBS_SIZE - IW_BASE_OBS_SIZE) / IW_ENEMY_DRONE_SIZE)
 #define IW_DRONE_OFFSET (IW_ENEMY_DRONE_OFFSET + IW_NUM_ENEMIES * IW_ENEMY_DRONE_SIZE)
 
 // empty + standard, bouncy, death walls
 #define IW_WALL_VOCAB 4
-// none + 11 weapons, for drone weapons and projectiles
-#define IW_WEAPON_VOCAB 12
-// none + grapple, mines
-#define IW_UTILITY_VOCAB 3
-// weapon vocab + ammo crate + grapple, mines
+// none + 12 weapons, for drone weapons and projectiles
+#define IW_WEAPON_VOCAB 13
+// none + grapple, mines, portals
+#define IW_UTILITY_VOCAB 4
+// weapon vocab + ammo crate + grapple, mines, portals
 #define IW_PICKUP_VOCAB (IW_WEAPON_VOCAB + IW_UTILITY_VOCAB)
 // none + static standard, bouncy, death walls + floating standard,
 // bouncy, death walls + drone

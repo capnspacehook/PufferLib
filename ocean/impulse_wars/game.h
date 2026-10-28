@@ -3116,7 +3116,9 @@ uint8_t droneUtilityActive(const iwEnv *e, const droneEntity *drone) {
     case MINE_UTILITY:
         return e->minesCreated[drone->idx];
     case PORTAL_UTILITY:
-        return drone->openPortals;
+        // using a portal utility always fires one no matter how many
+        // are active
+        return 0;
     default:
         return 0;
     }

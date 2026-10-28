@@ -430,14 +430,28 @@ static inline void computeUtilityObs(const iwEnv *e, const droneEntity *drone, c
     offset += GRAPPLE_OBS_SIZE;
 
     const projectileEntity *mine = droneMine(e, drone);
-    if (mine == NULL) {
-        return;
+    if (mine != NULL) {
+        const b2Vec2 mineRelPos = squashVec(b2Sub(mine->pos, pos), MAX_OBS_RELATIVE_POS);
+        obs[offset++] = !mine->welded;
+        obs[offset++] = mine->welded;
+        obs[offset++] = mineRelPos.x;
+        obs[offset++] = mineRelPos.y;
+    } else {
+        offset += MINE_OBS_SIZE;
     }
-    const b2Vec2 mineRelPos = squashVec(b2Sub(mine->pos, pos), MAX_OBS_RELATIVE_POS);
-    obs[offset++] = !mine->welded;
-    obs[offset++] = mine->welded;
-    obs[offset++] = mineRelPos.x;
-    obs[offset++] = mineRelPos.y;
+
+    for (uint8_t i = 0; i < drone->openPortals; i++) {
+        const portalEntity *portal = drone->portals[i];
+        const b2Vec2 portalRelPos = squashVec(b2Sub(portal->pos, pos), MAX_OBS_RELATIVE_POS);
+        const b2Vec2 toDrone = b2Normalize(b2Sub(pos, portal->pos));
+
+        obs[offset++] = 1.0f;
+        obs[offset++] = portalRelPos.x;
+        obs[offset++] = portalRelPos.y;
+        obs[offset++] = portal->normal.x;
+        obs[offset++] = portal->normal.y;
+        obs[offset++] = clampValue(b2Dot(portal->normal, toDrone), -1.0f, 1.0f);
+    }
 }
 
 static inline float rayHitType(const entity *ent) {
@@ -766,10 +780,10 @@ void computeObs(iwEnv *e) {
             continuousObs[continuousObsOffset++] = squashValue(enemyDroneDistance, MAX_OBS_DRONE_DISTANCE);
             continuousObs[continuousObsOffset++] = enemyDroneRelVel.x;
             continuousObs[continuousObsOffset++] = enemyDroneRelVel.y;
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDroneRelNormPos.x, 1.0f, false);
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDroneRelNormPos.y, 1.0f, false);
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->lastAim.x, 1.0f, false);
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->lastAim.y, 1.0f, false);
+            continuousObs[continuousObsOffset++] = enemyDroneRelNormPos.x;
+            continuousObs[continuousObsOffset++] = enemyDroneRelNormPos.y;
+            continuousObs[continuousObsOffset++] = enemyDrone->lastAim.x;
+            continuousObs[continuousObsOffset++] = enemyDrone->lastAim.y;
             continuousObs[continuousObsOffset++] = scaleValue(enemyShieldHealth, DRONE_SHIELD_HEALTH, true);
             continuousObs[continuousObsOffset++] = scaleValue(enemyShieldDuration, DRONE_SHIELD_RESPAWN_DURATION, true);
 
@@ -831,8 +845,8 @@ void computeObs(iwEnv *e) {
         continuousObs[continuousObsOffset++] = scaleValue(agentDrone->pos.y, MAX_OBS_AGENT_POS, false);
         continuousObs[continuousObsOffset++] = agentSquashedVel.x;
         continuousObs[continuousObsOffset++] = agentSquashedVel.y;
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->lastAim.x, 1.0f, false);
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->lastAim.y, 1.0f, false);
+        continuousObs[continuousObsOffset++] = agentDrone->lastAim.x;
+        continuousObs[continuousObsOffset++] = agentDrone->lastAim.y;
         continuousObs[continuousObsOffset++] = aimVelSin;
         continuousObs[continuousObsOffset++] = aimVelCos;
         continuousObs[continuousObsOffset++] = scaleValue(shieldHealth, DRONE_SHIELD_HEALTH, true);

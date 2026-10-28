@@ -118,17 +118,22 @@ static const uint8_t WEAPON_OBS_SIZE = 5;
 static const uint8_t GRAPPLE_OBS_SIZE = 10;
 // own mine in flight, own mine welded and its relative position
 static const uint8_t MINE_OBS_SIZE = 4;
-// type, ammo, regen progress and active count, then the grapple and mine
-// state
-static const uint8_t UTILITY_OBS_SIZE = 4 + GRAPPLE_OBS_SIZE + MINE_OBS_SIZE;
+// open flag, relative position, the wall face's normal and how directly
+// the drone faces it, per open portal
+static const uint8_t PORTAL_INFO_OBS_SIZE = 6;
+static const uint8_t NUM_PORTAL_OBS = _MAX_PORTALS;
+static const uint8_t PORTAL_OBS_SIZE = NUM_PORTAL_OBS * PORTAL_INFO_OBS_SIZE;
+// type, ammo, regen progress and active count, then the grapple, mine and
+// portal state
+static const uint8_t UTILITY_OBS_SIZE = 4 + GRAPPLE_OBS_SIZE + MINE_OBS_SIZE + PORTAL_OBS_SIZE;
 
 static const uint16_t ENEMY_DRONE_OBS_OFFSET = PROJECTILE_INFO_OBS_OFFSET + PROJECTILE_OBS_SIZE;
 // the ray to the enemy is last
-static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 48;
+static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 60;
 static const uint8_t ENEMY_DRONE_OBS_SIZE = ENEMY_DRONE_RAY_OBS_IDX + RAY_OBS_SIZE;
 
 // the rays are last
-static const uint8_t DRONE_RAY_OBS_IDX = 48;
+static const uint8_t DRONE_RAY_OBS_IDX = 60;
 static const uint8_t DRONE_OBS_SIZE = DRONE_RAY_OBS_IDX + (NUM_DRONE_RAY_OBS * RAY_OBS_SIZE);
 
 // easy episode flag, steps left and sudden death steps left
