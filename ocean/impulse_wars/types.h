@@ -319,14 +319,12 @@ struct portalEntity {
     // drones overlapping the sensor that weren't allowed through yet, so
     // they can be teleported once they turn towards the portal
     bool droneInRange[_MAX_DRONES];
-    // frames left of the distortion ripple shown when something goes
-    // through, UINT16_MAX until the render code starts it
+    // frames left of the flash and swirl shown when a drone goes through,
+    // UINT16_MAX until the render code starts it
     uint16_t transitRenderSteps;
-    // ripple strength from the size of what went through, drones are 1
-    float transitScale;
-    // frames left of the flash shown when a drone goes through, same
-    // encoding as transitRenderSteps
-    uint16_t flashRenderSteps;
+    // the drone went in this portal, which swirls the opposite way to the
+    // exit portal
+    bool transitEntry;
 
     entity *ent;
 };
@@ -358,6 +356,8 @@ typedef struct shieldEntity {
     b2Vec2 pos;
     float health;
     float duration;
+    // the duration the shield started with
+    float maxDuration;
 
     entity *ent;
 } shieldEntity;
@@ -446,6 +446,16 @@ typedef struct droneEntity {
     // the utility button was held last step
     bool utilityHeld;
     bool triggerHeld;
+    // frames left of the utility ammo pips shaking after a utility press
+    // that did nothing, UINT16_MAX until the render code starts it
+    uint16_t utilityShakeRenderSteps;
+    // the brake and burst buttons were held last step
+    bool brakeHeld;
+    bool burstHeld;
+    // frames left of the energy meter shaking after brake or burst was
+    // pressed when energy couldn't be used, UINT16_MAX until the render
+    // code starts it
+    uint16_t energyShakeRenderSteps;
 
     projectileEntity *grapple;
     // the drone's live mine, see droneMine
@@ -632,8 +642,12 @@ typedef struct rayClient {
     int32_t explosionResolutionLoc;
     int32_t explosionBlastsLoc;
     int32_t explosionAmplitudesLoc;
+    int32_t explosionSwirlsLoc;
     int32_t explosionCountLoc;
     Texture2D wallTexture;
+    // only has the infinity glyph, shown for infinite ammo as the default
+    // font doesn't have it
+    Font infinityFont;
     RenderTexture2D blurSrcTexture;
     RenderTexture2D blurDstTexture;
     RenderTexture2D projRawTex;
@@ -667,6 +681,16 @@ typedef struct explosionInfo {
 
 // sparks shown where a projectile was boosted by its owner's burst,
 // purely visual
+// where two drones swapped places from a direct portal shot hit, shown
+// as a swirl at both positions
+#define MAX_DRONE_SWAP_EFFECTS 4
+typedef struct droneSwapEffect {
+    // where the shooting drone was, then where the hit drone was
+    b2Vec2 pos[2];
+    // 0 when unused, UINT16_MAX until the render code starts it
+    uint16_t renderSteps;
+} droneSwapEffect;
+
 typedef struct boostSparksInfo {
     b2Vec2 pos;
     b2Vec2 direction;
@@ -928,6 +952,7 @@ struct Env {
     unsigned int renderRng;
     CC_Array *explosions;
     CC_Array *boostSparks;
+    droneSwapEffect droneSwapEffects[MAX_DRONE_SWAP_EFFECTS];
     CC_Array *debugPoints;
     enum roundState roundState;
     uint16_t tick_frames_left;

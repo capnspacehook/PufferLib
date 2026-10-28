@@ -1027,6 +1027,7 @@ void createDroneShield(iwEnv *e, droneEntity *drone, const int8_t groupIdx) {
         duration = DRONE_SHIELD_RESPAWN_DURATION;
     }
     shield->duration = duration;
+    shield->maxDuration = duration;
 
     entity *ent = createEntity(e, SHIELD_ENTITY, shield);
     shield->ent = ent;
@@ -1768,6 +1769,8 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     b2Body_Disable(drone->bodyID);
     drone->triggerHeld = false;
     drone->utilityHeld = false;
+    drone->brakeHeld = false;
+    drone->burstHeld = false;
     drone->braking = false;
     drone->chargingBurst = false;
     drone->burstCharge = 0.0f;
@@ -1930,6 +1933,29 @@ void droneTeleport(const iwEnv *e, droneEntity *drone, const b2Vec2 newPos, cons
             b2Body_SetLinearVelocity(drone->shield->bodyID, newVel);
         }
     }
+}
+
+// show a swirl at both positions when drones swap places, shooterPos
+// swirls like an entry portal and hitPos like an exit portal
+void startDroneSwapEffect(iwEnv *e, const b2Vec2 shooterPos, const b2Vec2 hitPos) {
+    if (e->client == NULL) {
+        return;
+    }
+    // use a free slot, or replace the oldest effect
+    droneSwapEffect *effect = &e->droneSwapEffects[0];
+    for (uint8_t i = 0; i < MAX_DRONE_SWAP_EFFECTS; i++) {
+        droneSwapEffect *candidate = &e->droneSwapEffects[i];
+        if (candidate->renderSteps == 0) {
+            effect = candidate;
+            break;
+        }
+        if (candidate->renderSteps != UINT16_MAX && (effect->renderSteps == UINT16_MAX || candidate->renderSteps < effect->renderSteps)) {
+            effect = candidate;
+        }
+    }
+    effect->pos[0] = shooterPos;
+    effect->pos[1] = hitPos;
+    effect->renderSteps = UINT16_MAX;
 }
 
 void createProjectile(iwEnv *e, droneEntity *drone, const weaponInformation *weaponInfo, const b2Vec2 normAim) {
@@ -2989,6 +3015,19 @@ static void droneFireProjectiles(iwEnv *e, droneEntity *drone, const weaponInfor
     }
 }
 
+// energy can't be used while shielded or until it fully refills after
+// being emptied
+static bool droneEnergyUsable(const droneEntity *drone) {
+    return drone->shield == NULL && !drone->energyFullyDepleted;
+}
+
+// shake the energy meter to show the player energy couldn't be used
+static void droneShakeEnergyGauge(const iwEnv *e, droneEntity *drone) {
+    if (e->client != NULL) {
+        drone->energyShakeRenderSteps = UINT16_MAX;
+    }
+}
+
 void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool triggerDown) {
     drone->shotThisStep = true;
 
@@ -3002,6 +3041,10 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool trigg
             // charges cannot be held with no energy, and can't be started
             // when energy is depleted
             if (drone->energyFullyDepleted && (drone->energyRefillWait != 0.0f || drone->chargingBurst)) {
+                // triggerHeld is still last step's trigger here
+                if (!drone->triggerHeld) {
+                    droneShakeEnergyGauge(e, drone);
+                }
                 droneEmptyCharge(drone);
                 return;
             }
@@ -3102,6 +3145,13 @@ static bool droneHasWeldedMine(const iwEnv *e, const droneEntity *drone) {
 // flight; once it's attached the drone is tethered, holding the button
 // reels it in and releasing it detaches it. A held button never repeats a
 // press
+// shake the utility ammo pips to show the player the press did nothing
+static void droneUtilityPressUseless(const iwEnv *e, droneEntity *drone) {
+    if (e->client != NULL) {
+        drone->utilityShakeRenderSteps = UINT16_MAX;
+    }
+}
+
 void droneUtility(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool held) {
     const bool pressed = held && !drone->utilityHeld;
     const bool released = !held && drone->utilityHeld;
@@ -3117,6 +3167,9 @@ void droneUtility(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool hel
 
     if (info->type == GRAPPLE_UTILITY && drone->grapple != NULL) {
         if (!drone->grapple->welded) {
+            if (pressed) {
+                droneUtilityPressUseless(e, drone);
+            }
             return;
         }
         if (released) {
@@ -3135,10 +3188,16 @@ void droneUtility(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool hel
         if (info->type == MINE_UTILITY && droneHasWeldedMine(e, drone)) {
             droneDetonateMines(e, drone);
             stats->utilityPressesUseful[info->type]++;
+        } else {
+            droneUtilityPressUseless(e, drone);
         }
         return;
     }
-    if (utility->ammo == 0 || utility->cooldown > 0.0f) {
+    if (utility->ammo == 0) {
+        droneUtilityPressUseless(e, drone);
+        return;
+    }
+    if (utility->cooldown > 0.0f) {
         return;
     }
 
@@ -3166,6 +3225,12 @@ void utilityStep(const iwEnv *e, utilitySlot *utility) {
 }
 
 void droneBrake(iwEnv *e, droneEntity *drone, const bool brake) {
+    const bool pressed = brake && !drone->brakeHeld;
+    drone->brakeHeld = brake;
+    if (pressed && !droneEnergyUsable(drone)) {
+        droneShakeEnergyGauge(e, drone);
+    }
+
     if (drone->shield != NULL) {
         return;
     }
@@ -3217,8 +3282,13 @@ void droneBrake(iwEnv *e, droneEntity *drone, const bool brake) {
     }
 }
 
-void droneChargeBurst(iwEnv *e, droneEntity *drone) {
-    if (drone->energyFullyDepleted || drone->burstCooldown != 0.0f || drone->shield != NULL || (!drone->chargingBurst && drone->energyLeft < DRONE_BURST_BASE_COST)) {
+// pressed is true on the step the burst button started being held
+void droneChargeBurst(iwEnv *e, droneEntity *drone, const bool pressed) {
+    const bool energyBlocked = !droneEnergyUsable(drone) || (!drone->chargingBurst && drone->energyLeft < DRONE_BURST_BASE_COST);
+    if (energyBlocked || drone->burstCooldown != 0.0f) {
+        if (pressed && energyBlocked) {
+            droneShakeEnergyGauge(e, drone);
+        }
         return;
     }
 
@@ -4128,6 +4198,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             if (hitDrone->idx != projectile->droneIdx && !hitDrone->dead && !drone->dead) {
                 // swap the hit drone with the shooting drone
                 const b2Vec2 hitDronePos = hitDrone->pos;
+                startDroneSwapEffect(e, drone->pos, hitDronePos);
                 droneTeleport(e, hitDrone, drone->pos, b2Vec2_zero, false);
                 droneTeleport(e, drone, hitDronePos, b2Vec2_zero, false);
             }
@@ -4486,29 +4557,16 @@ b2Vec2 portalExitVelocity(const portalEntity *in, const portalEntity *out, const
     return b2Add(exitRelVel, out->attachedWall->velocity);
 }
 
-static void startPortalTransitEffect(portalEntity *portal, const float scale) {
-    // don't let something small weaken an effect that's still showing
-    if (portal->transitRenderSteps != 0 && portal->transitScale > scale) {
-        portal->transitRenderSteps = UINT16_MAX;
-        return;
-    }
-    portal->transitRenderSteps = UINT16_MAX;
-    portal->transitScale = scale;
-}
-
-// show a distortion ripple on both portals when something goes through,
-// stronger the bigger the entity is; drones also make the portals flash
-void startPortalTransitEffects(const iwEnv *e, portalEntity *in, portalEntity *out, const float radius, const bool flash) {
+// flash both portals and swirl them in opposite directions when a drone
+// goes through
+void startPortalTransitEffects(const iwEnv *e, portalEntity *in, portalEntity *out) {
     if (e->client == NULL) {
         return;
     }
-    const float scale = clampValue(radius / DRONE_RADIUS, 0.0f, 1.0f);
-    startPortalTransitEffect(in, scale);
-    startPortalTransitEffect(out, scale);
-    if (flash) {
-        in->flashRenderSteps = UINT16_MAX;
-        out->flashRenderSteps = UINT16_MAX;
-    }
+    in->transitRenderSteps = UINT16_MAX;
+    in->transitEntry = true;
+    out->transitRenderSteps = UINT16_MAX;
+    out->transitEntry = false;
 }
 
 void sendDroneThroughPortal(const iwEnv *e, portalEntity *in, portalEntity *out, droneEntity *drone) {
@@ -4522,7 +4580,7 @@ void sendDroneThroughPortal(const iwEnv *e, portalEntity *in, portalEntity *out,
     const b2Vec2 exitPos = portalExitPos(in, out, rot, entryPos, radius);
     const b2Vec2 exitVel = portalExitVelocity(in, out, rot, drone->lastVelocity);
     droneTeleport(e, drone, exitPos, exitVel, true);
-    startPortalTransitEffects(e, in, out, radius, true);
+    startPortalTransitEffects(e, in, out);
 }
 
 // whether a drone's circle overlaps a portal's sensor box
@@ -4564,8 +4622,6 @@ bool handlePortalBeginTouch(const iwEnv *e, const entity *sensor, entity *visito
         const b2Vec2 entryPos = portalEntryPos(portal, projectile->lastPos, projectile->pos, projectile->lastVelocity, projectile->weaponInfo->radius);
         const b2Vec2 exitPos = portalExitPos(portal, exitPortal, rot, entryPos, projectile->weaponInfo->radius);
         const b2Vec2 exitVel = portalExitVelocity(portal, exitPortal, rot, projectile->lastVelocity);
-
-        startPortalTransitEffects(e, portal, exitPortal, projectile->weaponInfo->radius, false);
 
         b2Body_SetTransform(projectile->bodyID, exitPos, b2Body_GetRotation(projectile->bodyID));
         b2Body_SetLinearVelocity(projectile->bodyID, exitVel);

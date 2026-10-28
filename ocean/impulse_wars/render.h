@@ -58,6 +58,14 @@ static const float droneThrusterLength = 1.5f * DRONE_RADIUS;
 static const float aimGuideLength = 0.3f * DRONE_RADIUS;
 static const float chargedAimGuideLength = DRONE_RADIUS;
 
+static const float ZOOM_SPEED = 0.02f;
+static const float PAN_SPEED = 0.02f;
+static const float MAX_CAMERA_HEIGHT = 130.0f;
+static const float MIN_CAMERA_HEIGHT = 60.0f;
+static const float BOUNDS_PADDING = 6.0f;
+static const float MAP_MAX_X_OFFSET = 25.0f;
+static const float MAP_MAX_Y_OFFSET = 10.0f;
+
 // Sparks shown when a projectile is boosted by a burst (rebuild after tuning).
 static const float BOOST_SPARKS_FADE_TIME = 0.45f;
 #define BOOST_SPARKS_COUNT 10
@@ -94,6 +102,47 @@ static const float GRAPPLE_DASH_LENGTH = 0.6f;
 static const float GRAPPLE_DASH_SPACING = 2.0f;
 static const float GRAPPLE_DASH_SPEED = 12.0f;
 
+// Shields fade out as their time runs out: barely at first, then faster
+// as the timeout nears. Fade follows log(1 - k*t) / log(1 - k) for the
+// fraction of time used t; k closer to 1 keeps it subtle for longer.
+static const float SHIELD_ALPHA = 0.5f;
+static const float SHIELD_MIN_ALPHA = 0.05f;
+static const float SHIELD_FADE_CURVE = 0.99f;
+
+// Infinite ammo is shown with an infinity glyph from a bundled font, a bit
+// bigger than the ammo count font so it reads as clearly as digits do.
+#define INFINITY_CODEPOINT 0x221E
+#define INFINITY_GLYPH "\u221E"
+static const int INFINITY_GLYPH_LOAD_SIZE = 160;
+static const float INFINITY_GLYPH_SCALE = 1.4f;
+
+// Utility ammo pips above drones, in world units: filled when ready,
+// outlined when empty, with the ammo being regenerated filling up.
+// Clear of the shield so they don't overlap it.
+static const float UTILITY_PIP_RADIUS = 0.33f;
+static const float UTILITY_PIP_SPACING = 0.8f;
+static const float UTILITY_PIP_OUTLINE_WIDTH = 0.07f;
+static const float UTILITY_PIP_OFFSET = DRONE_SHIELD_RADIUS + 0.55f;
+// pips shake side to side when a utility press does nothing: no ammo, or
+// the grapple or mine is still in flight
+static const float UTILITY_SHAKE_TIME = 0.3f;
+static const float UTILITY_SHAKE_DISTANCE = 0.25f;
+// side to side shakes per second
+static const float UTILITY_SHAKE_RATE = 12.0f;
+
+// The energy meter shakes subtly when brake, burst or a charged shot is
+// pressed but energy can't be used: while shielded, fully depleted, or too
+// low to burst.
+static const float ENERGY_SHAKE_TIME = 0.25f;
+static const float ENERGY_SHAKE_DISTANCE = 0.12f;
+// side to side shakes per second
+static const float ENERGY_SHAKE_RATE = 14.0f;
+// drone colored ring around the mine pip while a welded mine is out, as
+// pressing the utility will detonate it instead of firing another
+static const float UTILITY_ARMED_RING_GAP = 0.2f;
+static const float UTILITY_ARMED_RING_WIDTH = 0.15f;
+static const float UTILITY_ARMED_RING_ALPHA = 0.9f;
+
 // Portals are a glowing slab on the wall face with a faint field over the
 // sensor in front of it; bloom makes the slab look wider than it is.
 static const float PORTAL_SLAB_DEPTH = 0.15f;
@@ -111,14 +160,19 @@ static const float PORTAL_TRANSIT_EFFECT_TIME = 0.3f;
 // PORTAL_FLASH_FIELD_ALPHA.
 static const float PORTAL_FLASH_WHITEN = 0.5f;
 static const float PORTAL_FLASH_FIELD_ALPHA = 0.6f;
-// The ripple uses the explosion ripple shader; keep it weaker than
-// explosions so the two aren't confused. Its strength is scaled by the
-// radius of what went through relative to a drone. 0 strength disables.
-static const float PORTAL_RIPPLE_RADIUS = 4.0f;
-static const float PORTAL_RIPPLE_STRENGTH = 0.35f;
-// Displacement as a fraction of the ripple's on-screen radius.
-static const float PORTAL_RIPPLE_RADIUS_SCALE = 0.15f;
-static const float PORTAL_RIPPLE_MAX_PIXELS = 12.0f;
+// Drones going through portals twirl the scene around both portals so it
+// isn't confused with explosions: it rotates most at the center and not at
+// all at the radius, twisting in quickly then unwinding. The entry portal
+// twirls clockwise and the exit counterclockwise. Drones swapping places
+// from a direct portal shot hit twirl at both positions, the shooting
+// drone's position like an entry portal. 0 twist disables.
+static const float PORTAL_SWIRL_RADIUS = 3.5f;
+static const float PORTAL_SWAP_SWIRL_RADIUS = 5.0f;
+// peak rotation at the center in radians
+static const float PORTAL_SWIRL_TWIST = 1.0f;
+// direction of the entry portal's twirl, 1 is clockwise on screen and -1
+// counterclockwise; exits twirl the other way
+static const float PORTAL_SWIRL_ENTRY = 1.0f;
 
 // Explosion visual lifetime in seconds (rebuild after tuning).
 // Reference radius/impulse produce BASE_TIME. Exponents of 0 ignore that factor.
@@ -253,6 +307,12 @@ rayClient *createRayClient() {
     client->camera->orthographic = false;
 
     client->wallTexture = LoadTexture("resources/impulse_wars/wall_texture_map.png");
+    // load the glyph large and downscale it with mipmaps so it's smooth at
+    // any zoom
+    int infinityCodepoint = INFINITY_CODEPOINT;
+    client->infinityFont = LoadFontEx("resources/shared/Roboto-Regular.ttf", INFINITY_GLYPH_LOAD_SIZE, &infinityCodepoint, 1);
+    GenTextureMipmaps(&client->infinityFont.texture);
+    SetTextureFilter(client->infinityFont.texture, TEXTURE_FILTER_TRILINEAR);
     loadRenderTextures(client);
 
     const char *gridVSPath = TextFormat("resources/impulse_wars/shaders/gls%i/shader.vs", GLSL_VERSION);
@@ -282,6 +342,7 @@ rayClient *createRayClient() {
     client->explosionResolutionLoc = GetShaderLocation(client->explosionShader, "resolution");
     client->explosionBlastsLoc = GetShaderLocation(client->explosionShader, "blasts[0]");
     client->explosionAmplitudesLoc = GetShaderLocation(client->explosionShader, "amplitudes[0]");
+    client->explosionSwirlsLoc = GetShaderLocation(client->explosionShader, "swirls[0]");
     client->explosionCountLoc = GetShaderLocation(client->explosionShader, "blastCount");
     const float distortionSettings[3] = {
         max(max(0.0f, EXPLOSION_DISTORTION_MAX_PIXELS) * max(0.0f, EXPLOSION_DISTORTION_STRENGTH),
@@ -307,6 +368,7 @@ rayClient *createRayClient() {
 
 void destroyRayClient(rayClient *client) {
     UnloadTexture(client->wallTexture);
+    UnloadFont(client->infinityFont);
     unloadRenderTextures(client);
 
     UnloadShader(client->gridShader);
@@ -427,14 +489,6 @@ agentActions getPlayerInputs(iwEnv *e, droneEntity *drone, uint8_t gamepadIdx) {
 
     return computeActions(e, drone, &actions);
 }
-
-static const float ZOOM_SPEED = 0.035f;
-static const float PAN_SPEED = 0.035f;
-static const float MAX_CAMERA_HEIGHT = 130.0f;
-static const float MIN_CAMERA_HEIGHT = 60.0f;
-static const float BOUNDS_PADDING = 4.0f;
-static const float MAP_MAX_X_OFFSET = 25.0f;
-static const float MAP_MAX_Y_OFFSET = 10.0f;
 
 void setCamera2DZoom(iwEnv *e) {
     gameCamera *camera = e->client->camera;
@@ -1200,7 +1254,7 @@ void renderUI(const iwEnv *e, const bool starting) {
 
         if (drone->killedBy != -1) {
             y += textSize.y + e->client->scale;
-            const char *killedBy = TextFormat("Killed by Player %d", drone->killedBy + 1);
+            const char *killedBy = TextFormat("Killed by Drone %d", drone->killedBy + 1);
             DrawText(killedBy, x, y, fontSize, getDroneColor(drone->killedBy));
 
             const char *killDetails1 = NULL;
@@ -1472,6 +1526,29 @@ static float projectDistortionSource(const rayClient *client, b2Vec2 position, f
     return Vector2Distance(screen, edge);
 }
 
+static uint16_t utilityShakeMaxSteps(const iwEnv *e) {
+    return (uint16_t)max(1.0f, ceilf(UTILITY_SHAKE_TIME * e->frameRate));
+}
+
+static uint16_t energyShakeMaxSteps(const iwEnv *e) {
+    return (uint16_t)max(1.0f, ceilf(ENERGY_SHAKE_TIME * e->frameRate));
+}
+
+// side to side offset of a shake that dies out, renderSteps counts down
+// from maxSteps and is UINT16_MAX when it just started
+static float shakeOffset(const iwEnv *e, const uint16_t renderSteps, const uint16_t maxSteps, const float distance, const float rate) {
+    if (renderSteps == 0) {
+        return 0.0f;
+    }
+    float remaining = 1.0f;
+    float elapsed = 0.0f;
+    if (renderSteps != UINT16_MAX) {
+        remaining = Clamp((float)renderSteps / maxSteps, 0.0f, 1.0f);
+        elapsed = (float)(maxSteps - renderSteps) / e->frameRate;
+    }
+    return distance * remaining * sinf(2.0f * PI * rate * elapsed);
+}
+
 static uint16_t portalTransitMaxSteps(const iwEnv *e) {
     return (uint16_t)max(1.0f, ceilf(PORTAL_TRANSIT_EFFECT_TIME * e->frameRate));
 }
@@ -1484,9 +1561,13 @@ static float portalEffectRemaining(const iwEnv *e, const uint16_t renderSteps) {
     return Clamp((float)renderSteps / portalTransitMaxSteps(e), 0.0f, 1.0f);
 }
 
-static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float amplitudes[16]) {
+// swirls is 1 (clockwise) or -1 (counterclockwise) for portal effects, which
+// twirl the scene around their center so they aren't confused with
+// explosions; their amplitude is the peak twist in radians instead of pixels
+static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float amplitudes[16], float swirls[16]) {
     rayClient *client = e->client;
     int count = 0;
+    memset(swirls, 0x0, 16 * sizeof(float));
     // Reserve slots for persistent pull fields before transient blast ripples.
     if (BLACK_HOLE_DISTORTION_STRENGTH > 0.0f && BLACK_HOLE_DISTORTION_MAX_PIXELS > 0.0f) {
         for (size_t i = 0; i < cc_array_size(e->projectiles) && count < 16; ++i) {
@@ -1539,22 +1620,41 @@ static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float am
         count++;
     }
 
-    if (PORTAL_RIPPLE_STRENGTH > 0.0f && PORTAL_RIPPLE_MAX_PIXELS > 0.0f) {
+    if (PORTAL_SWIRL_TWIST > 0.0f) {
         for (size_t i = 0; i < cc_array_size(e->drones) && count < 16; i++) {
             const droneEntity *drone = safe_array_get_at(e->drones, i);
             for (uint8_t j = 0; j < drone->openPortals && count < 16; j++) {
                 const portalEntity *portal = drone->portals[j];
-                if (portal->transitRenderSteps == 0 || portal->transitScale <= 0.0f) {
+                if (portal->transitRenderSteps == 0) {
                     continue;
                 }
 
                 const float remaining = portalEffectRemaining(e, portal->transitRenderSteps);
 
                 const b2Vec2 center = b2MulAdd(portal->pos, PORTAL_HEIGHT, portal->normal);
-                const float radius = projectDistortionSource(client, center, PORTAL_RIPPLE_RADIUS, blasts[count]);
+                const float radius = projectDistortionSource(client, center, PORTAL_SWIRL_RADIUS, blasts[count]);
                 blasts[count][2] = radius;
                 blasts[count][3] = remaining;
-                amplitudes[count] = PORTAL_RIPPLE_STRENGTH * portal->transitScale * min(radius * PORTAL_RIPPLE_RADIUS_SCALE, PORTAL_RIPPLE_MAX_PIXELS);
+                amplitudes[count] = PORTAL_SWIRL_TWIST;
+                swirls[count] = portal->transitEntry ? PORTAL_SWIRL_ENTRY : -PORTAL_SWIRL_ENTRY;
+                count++;
+            }
+        }
+
+        // drones swapping places is a drone transit at both positions, the
+        // shooting drone's swirling like an entry portal
+        for (uint8_t i = 0; i < MAX_DRONE_SWAP_EFFECTS && count < 16; i++) {
+            const droneSwapEffect *effect = &e->droneSwapEffects[i];
+            if (effect->renderSteps == 0) {
+                continue;
+            }
+            const float remaining = portalEffectRemaining(e, effect->renderSteps);
+            for (uint8_t j = 0; j < 2 && count < 16; j++) {
+                const float radius = projectDistortionSource(client, effect->pos[j], PORTAL_SWAP_SWIRL_RADIUS, blasts[count]);
+                blasts[count][2] = radius;
+                blasts[count][3] = remaining;
+                amplitudes[count] = PORTAL_SWIRL_TWIST;
+                swirls[count] = j == 0 ? PORTAL_SWIRL_ENTRY : -PORTAL_SWIRL_ENTRY;
                 count++;
             }
         }
@@ -1564,7 +1664,7 @@ static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float am
 }
 
 // One scene sample per pixel for both steady pull fields and transient ripples.
-static void renderSceneDistortion(const iwEnv *e, const float blasts[16][4], const float amplitudes[16], int count) {
+static void renderSceneDistortion(const iwEnv *e, const float blasts[16][4], const float amplitudes[16], const float swirls[16], int count) {
     rayClient *client = e->client;
     const Vector2 resolution = {client->width, client->height};
     BeginShaderMode(client->explosionShader);
@@ -1573,6 +1673,7 @@ static void renderSceneDistortion(const iwEnv *e, const float blasts[16][4], con
     if (count > 0) {
         SetShaderValueV(client->explosionShader, client->explosionBlastsLoc, blasts, SHADER_UNIFORM_VEC4, count);
         SetShaderValueV(client->explosionShader, client->explosionAmplitudesLoc, amplitudes, SHADER_UNIFORM_FLOAT, count);
+        SetShaderValueV(client->explosionShader, client->explosionSwirlsLoc, swirls, SHADER_UNIFORM_FLOAT, count);
     }
     DrawTextureRec(client->explosionSceneTex.texture, (Rectangle){0.0f, 0.0f, client->width, -client->height}, Vector2Zero(), WHITE);
     EndShaderMode();
@@ -1947,13 +2048,19 @@ void renderDrone(const droneEntity *drone) {
         BLACK
     );
 
-    if (drone->shield != NULL) {
+    const shieldEntity *shield = drone->shield;
+    if (shield != NULL) {
+        float used = 0.0f;
+        if (shield->maxDuration > 0.0f) {
+            used = Clamp(1.0f - (shield->duration / shield->maxDuration), 0.0f, 1.0f);
+        }
+        const float fade = logf(1.0f - (SHIELD_FADE_CURVE * used)) / logf(1.0f - SHIELD_FADE_CURVE);
         DrawSphereWires(
-            (Vector3){.x = drone->shield->pos.x, .y = 0.0f, .z = drone->shield->pos.y},
+            (Vector3){.x = shield->pos.x, .y = 0.0f, .z = shield->pos.y},
             DRONE_SHIELD_RADIUS,
             6,
             12,
-            Fade(getDroneColor(drone->idx), 0.5f)
+            Fade(getDroneColor(drone->idx), Lerp(SHIELD_ALPHA, SHIELD_MIN_ALPHA, fade))
         );
     }
 }
@@ -1964,28 +2071,40 @@ void renderDroneAmmo(const iwEnv *e, const droneEntity *drone) {
 
     // draw ammo count
     const float fontSize = 1.5f * e->client->camera->camera2D.zoom;
+    if (drone->weapon.ammo == INFINITE) {
+        // center the infinity glyph where a digit would be
+        const Vector2 digitSize = MeasureTextEx(GetFontDefault(), "0", fontSize, fontSize / 10.0f);
+        const Vector2 center = {.x = screenPos.x, .y = screenPos.y + (1.3f * digitSize.y) + (digitSize.y / 2.0f)};
+        const float glyphSize = fontSize * INFINITY_GLYPH_SCALE;
+        const Font font = e->client->infinityFont;
+        const Vector2 glyphDims = MeasureTextEx(font, INFINITY_GLYPH, glyphSize, 0.0f);
+        const Vector2 origin = {.x = center.x - (glyphDims.x / 2.0f), .y = center.y - (glyphDims.y / 2.0f)};
+        DrawTextEx(font, INFINITY_GLYPH, origin, glyphSize, 0.0f, RAYWHITE);
+        return;
+    }
     const char *ammoStr = TextFormat("%d", drone->weapon.ammo);
     const Vector2 textSize = MeasureTextEx(GetFontDefault(), ammoStr, fontSize, fontSize / 10.0f);
     const Vector2 textOrigin = {.x = screenPos.x - (textSize.x / 2), .y = screenPos.y + (1.3f * textSize.y)};
     DrawTextEx(GetFontDefault(), ammoStr, textOrigin, fontSize, fontSize / 10.f, RAYWHITE);
 }
 
-void renderDroneUI(const droneEntity *drone) {
+void renderDroneUI(const iwEnv *e, const droneEntity *drone) {
     // draw energy meter
     const float energyMeterInnerRadius = 0.6f;
     const float energyMeterOuterRadius = 0.3f;
     const Vector2 energyMeterOrigin = {.x = drone->pos.x, .y = drone->pos.y};
     float energyMeterEndAngle = 360.f * drone->energyLeft;
     Color energyMeterColor = RAYWHITE;
-    if (drone->shield != NULL) {
-        energyMeterColor = bambooBrown;
-    } else if (drone->energyFullyDepleted && drone->energyRefillWait != 0.0f) {
+    if (drone->energyFullyDepleted && drone->energyRefillWait != 0.0f) {
         energyMeterColor = bambooBrown;
         energyMeterEndAngle = 360.0f * (1.0f - (drone->energyRefillWait / (DRONE_ENERGY_REFILL_EMPTY_WAIT)));
-    } else if (drone->energyFullyDepleted) {
+    } else if (drone->energyFullyDepleted || drone->shield != NULL) {
+        // energy can't be used while shielded
         energyMeterColor = GRAY;
     }
-    DrawRing(energyMeterOrigin, energyMeterInnerRadius, energyMeterOuterRadius, 0.0f, energyMeterEndAngle, 32, energyMeterColor);
+    const float energyShake = shakeOffset(e, drone->energyShakeRenderSteps, energyShakeMaxSteps(e), ENERGY_SHAKE_DISTANCE, ENERGY_SHAKE_RATE);
+    const Vector2 energyMeterShakenOrigin = {.x = energyMeterOrigin.x + energyShake, .y = energyMeterOrigin.y};
+    DrawRing(energyMeterShakenOrigin, energyMeterInnerRadius, energyMeterOuterRadius, 0.0f, energyMeterEndAngle, 32, energyMeterColor);
 
     // draw burst charge indicator
     if (drone->chargingBurst) {
@@ -2016,6 +2135,41 @@ void renderDroneUI(const droneEntity *drone) {
     DrawRingLines(Vector2Zero(), chargeMeterInnerRadius, chargeMeterOuterRadius, chargeMeterStartAngle, chargeMeterStartAngle - 135.0f, 10, RAYWHITE);
 
     rlPopMatrix();
+}
+
+// draw a pip per utility ammo above the drone, shaking them if a utility
+// press just did nothing
+void renderDroneUtilityPips(const iwEnv *e, const droneEntity *drone) {
+    const utilitySlot *utility = &drone->utility;
+    const utilityInformation *info = utility->utilityInfo;
+    if (info->type == UNSET_UTILITY || info->ammo == 0) {
+        return;
+    }
+
+    const float shake = shakeOffset(e, drone->utilityShakeRenderSteps, utilityShakeMaxSteps(e), UTILITY_SHAKE_DISTANCE, UTILITY_SHAKE_RATE);
+
+    const bool mineArmed = info->type == MINE_UTILITY && droneHasWeldedMine(e, drone);
+    const float armedRingInner = UTILITY_PIP_RADIUS + UTILITY_ARMED_RING_GAP;
+    const Color armedRingColor = Fade(getDroneColor(drone->idx), UTILITY_ARMED_RING_ALPHA);
+
+    const float rowWidth = UTILITY_PIP_SPACING * (info->ammo - 1);
+    const float startX = drone->pos.x - (rowWidth / 2.0f) + shake;
+    const float y = drone->pos.y - UTILITY_PIP_OFFSET;
+    for (uint8_t i = 0; i < info->ammo; i++) {
+        const Vector2 pos = {.x = startX + (UTILITY_PIP_SPACING * i), .y = y};
+        if (mineArmed) {
+            DrawRing(pos, armedRingInner, armedRingInner + UTILITY_ARMED_RING_WIDTH, 0.0f, 360.0f, 24, armedRingColor);
+        }
+        if (i < utility->ammo) {
+            DrawCircleV(pos, UTILITY_PIP_RADIUS, RAYWHITE);
+            continue;
+        }
+        if (i == utility->ammo && info->regenTime > 0.0f) {
+            const float regen = utility->regen / info->regenTime;
+            DrawCircleSector(pos, UTILITY_PIP_RADIUS, -90.0f, -90.0f + (360.0f * regen), 16, Fade(RAYWHITE, 0.5f));
+        }
+        DrawRing(pos, UTILITY_PIP_RADIUS - UTILITY_PIP_OUTLINE_WIDTH, UTILITY_PIP_RADIUS, 0.0f, 360.0f, 16, RAYWHITE);
+    }
 }
 
 void renderProjectileTrail(const projectileEntity *proj) {
@@ -2189,9 +2343,9 @@ void renderPortal(const iwEnv *e, const portalEntity *portal) {
     const float pulse = 0.5f + 0.5f * sinf(2.0f * PI * pulseRate * time);
     float alpha = Lerp(PORTAL_FIELD_MIN_ALPHA, PORTAL_FIELD_MAX_ALPHA, pulse);
 
-    if (portal->flashRenderSteps != 0) {
+    if (portal->transitRenderSteps != 0) {
         // flash when a drone goes through, fading out quickly
-        const float remaining = portalEffectRemaining(e, portal->flashRenderSteps);
+        const float remaining = portalEffectRemaining(e, portal->transitRenderSteps);
         const float flash = remaining * remaining;
         alpha = Lerp(alpha, PORTAL_FLASH_FIELD_ALPHA, flash);
         color = ColorLerp(color, RAYWHITE, PORTAL_FLASH_WHITEN * flash);
@@ -2375,7 +2529,8 @@ void renderEnv(iwEnv *e) {
     BeginDrawing();
     float distortionSources[16][4];
     float distortionAmplitudes[16];
-    const int distortionCount = collectSceneDistortions(e, distortionSources, distortionAmplitudes);
+    float distortionSwirls[16];
+    const int distortionCount = collectSceneDistortions(e, distortionSources, distortionAmplitudes, distortionSwirls);
     const bool distortScene = distortionCount > 0 && e->client->explosionShader.id != rlGetShaderIdDefault();
     if (distortScene) {
         BeginTextureMode(e->client->explosionSceneTex);
@@ -2500,7 +2655,7 @@ void renderEnv(iwEnv *e) {
 
     if (distortScene) {
         EndTextureMode();
-        renderSceneDistortion(e, distortionSources, distortionAmplitudes, distortionCount);
+        renderSceneDistortion(e, distortionSources, distortionAmplitudes, distortionSwirls, distortionCount);
     }
     // Draw blast geometry and range outlines after refraction so they stay exact.
     BeginMode3D(e->client->camera->camera3D);
@@ -2519,7 +2674,8 @@ void renderEnv(iwEnv *e) {
             continue;
         }
         renderDroneRespawnGuides(e, drone);
-        renderDroneUI(drone);
+        renderDroneUI(e, drone);
+        renderDroneUtilityPips(e, drone);
     }
 
 #ifdef PUF_DEBUG

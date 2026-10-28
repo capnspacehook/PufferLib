@@ -9,6 +9,11 @@ uniform vec2 resolution;
 // Screen center, signed pixel radius, remaining life (negative for steady pull fields).
 uniform vec4 blasts[16];
 uniform float amplitudes[16];
+// Nonzero makes a source a twirl (portals): the scene rotates around the
+// center, most at the center and none at the radius; 1 turns it clockwise
+// on screen and -1 counterclockwise. Its amplitude is the peak twist in
+// radians, and it isn't limited by the pixel cap.
+uniform float swirls[16];
 // Pixel cap, relative wave width, lifetime fade exponent (from settings.h).
 uniform vec3 distortionSettings;
 uniform int blastCount;
@@ -18,6 +23,7 @@ void main()
 {
     vec2 pixel = fragTexCoord * resolution;
     vec2 offset = vec2(0.0);
+    vec2 swirlOffset = vec2(0.0);
     float tintCoverage = 0.0;
     for (int i = 0; i < 16; ++i) {
         if (i >= blastCount) break;
@@ -25,6 +31,21 @@ void main()
         float distance = length(delta);
         float radius = abs(blasts[i].z);
         float remaining = blasts[i].w;
+        if (swirls[i] != 0.0) {
+            float r = distance / max(radius, 1.0);
+            if (r < 1.0) {
+                // twist in quickly, then unwind slowly
+                float progress = 1.0 - remaining;
+                float falloff = (1.0 - r) * (1.0 - r);
+                // sampling from a counterclockwise rotation shows the scene
+                // turned clockwise, as pixel coordinates have y up
+                float twist = swirls[i] * amplitudes[i] * sin(3.14159265 * sqrt(progress)) * falloff;
+                float c = cos(twist);
+                float s = sin(twist);
+                swirlOffset += vec2(c * delta.x - s * delta.y, s * delta.x + c * delta.y) - delta;
+            }
+            continue;
+        }
         if (remaining < 0.0) {
             // Smooth inward lens across the pull area; no moving wave or outline.
             float r = clamp(distance / max(radius, 1.0), 0.0, 1.0);
@@ -48,6 +69,7 @@ void main()
         offset += delta / max(distance, 1.0) * strength * sign(blasts[i].z);
     }
     offset *= min(1.0, distortionSettings.x / max(length(offset), 0.001));
+    offset += swirlOffset;
     vec2 texel = 0.5 / resolution;
     vec2 uv = clamp(fragTexCoord + offset / resolution, texel, vec2(1.0) - texel);
     vec4 scene = texture2D(texture0, uv) * fragColor;

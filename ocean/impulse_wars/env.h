@@ -1140,6 +1140,7 @@ void clearEnv(iwEnv *e) {
     cc_array_remove_all(e->dronePieces);
 
     memset(e->minesCreated, 0x0, sizeof(e->minesCreated));
+    memset(e->droneSwapEffects, 0x0, sizeof(e->droneSwapEffects));
 }
 
 void puf_close(iwEnv *e) {
@@ -1514,6 +1515,22 @@ void updateDroneRespawnGuide(iwEnv *e, droneEntity *drone) {
     }
 }
 
+void updateDroneEnergyShake(iwEnv *e, droneEntity *drone) {
+    if (drone->energyShakeRenderSteps == UINT16_MAX) {
+        drone->energyShakeRenderSteps = energyShakeMaxSteps(e);
+    } else if (drone->energyShakeRenderSteps != 0) {
+        drone->energyShakeRenderSteps--;
+    }
+}
+
+void updateDroneUtilityShake(iwEnv *e, droneEntity *drone) {
+    if (drone->utilityShakeRenderSteps == UINT16_MAX) {
+        drone->utilityShakeRenderSteps = utilityShakeMaxSteps(e);
+    } else if (drone->utilityShakeRenderSteps != 0) {
+        drone->utilityShakeRenderSteps--;
+    }
+}
+
 void updatePortalTransitEffects(iwEnv *e) {
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
@@ -1524,11 +1541,17 @@ void updatePortalTransitEffects(iwEnv *e) {
             } else if (portal->transitRenderSteps != 0) {
                 portal->transitRenderSteps--;
             }
-            if (portal->flashRenderSteps == UINT16_MAX) {
-                portal->flashRenderSteps = portalTransitMaxSteps(e);
-            } else if (portal->flashRenderSteps != 0) {
-                portal->flashRenderSteps--;
-            }
+        }
+    }
+}
+
+void updateDroneSwapEffects(iwEnv *e) {
+    for (uint8_t i = 0; i < MAX_DRONE_SWAP_EFFECTS; i++) {
+        droneSwapEffect *effect = &e->droneSwapEffects[i];
+        if (effect->renderSteps == UINT16_MAX) {
+            effect->renderSteps = portalTransitMaxSteps(e);
+        } else if (effect->renderSteps != 0) {
+            effect->renderSteps--;
         }
     }
 }
@@ -1538,11 +1561,14 @@ void updateVisuals(iwEnv *e) {
     updateBoostSparks(e);
     updateDronePieces(e);
     updatePortalTransitEffects(e);
+    updateDroneSwapEffects(e);
 
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
         updateDroneBrakeTrail(e, drone);
         updateDroneRespawnGuide(e, drone);
+        updateDroneUtilityShake(e, drone);
+        updateDroneEnergyShake(e, drone);
     }
 }
 
@@ -1566,8 +1592,10 @@ bool stepPhysicsFrame(iwEnv *e, const agentActions stepActions[], int8_t *winner
 
         droneUtility(e, drone, actions.aim, actions.utility);
 
+        const bool burstPressed = actions.chargingBurst && !drone->burstHeld;
+        drone->burstHeld = actions.chargingBurst;
         if (actions.chargingBurst && !e->easyEp) {
-            droneChargeBurst(e, drone);
+            droneChargeBurst(e, drone, burstPressed);
         } else if (drone->chargingBurst) {
             droneBurst(e, drone);
         }
