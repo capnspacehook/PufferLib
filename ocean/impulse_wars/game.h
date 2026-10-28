@@ -555,7 +555,125 @@ entity *createWall(iwEnv *e, const b2Vec2 pos, const float width, const float he
     return ent;
 }
 
+// pos is where the portal shot hit the wall and normal is the contact
+// normal pointing out of the wall, both in world space
+void createPortal(iwEnv *e, droneEntity *drone, wallEntity *wall, const b2Vec2 pos, const b2Vec2 normal) {
+    ASSERT(drone->openPortals < _MAX_PORTALS);
+
+    const b2Transform wallTransform = {.p = wall->pos, .q = wall->rot};
+    b2Vec2 localPos = b2InvTransformPoint(wallTransform, pos);
+    b2Vec2 localNormal = b2InvRotateVector(wallTransform.q, normal);
+
+    // snap the portal onto the face of the wall that was hit
+    if (fabsf(localNormal.x) >= fabsf(localNormal.y)) {
+        localNormal = (b2Vec2){.x = localNormal.x >= 0.0f ? 1.0f : -1.0f, .y = 0.0f};
+        localPos.x = localNormal.x * wall->extent.x;
+    } else {
+        localNormal = (b2Vec2){.x = 0.0f, .y = localNormal.y >= 0.0f ? 1.0f : -1.0f};
+        localPos.y = localNormal.y * wall->extent.y;
+    }
+
+    portalEntity *portal = fastCalloc(1, sizeof(portalEntity));
+    portal->droneIdx = drone->idx;
+    portal->attachedWall = wall;
+    portal->localPos = localPos;
+    portal->localNormal = localNormal;
+    portal->pos = b2TransformPoint(wallTransform, localPos);
+    portal->normal = b2RotateVector(wallTransform.q, localNormal);
+    portal->mapCellIdx = entityPosToCellIdx(e, portal->pos);
+    if (portal->mapCellIdx == -1) {
+        portal->mapCellIdx = wall->mapCellIdx;
+    }
+
+    entity *ent = createEntity(e, PORTAL_ENTITY, portal);
+    portal->ent = ent;
+
+    b2ShapeDef sensorShapeDef = b2DefaultShapeDef();
+    sensorShapeDef.density = 0.0f;
+    // don't change the mass of floating walls
+    sensorShapeDef.updateBodyMass = false;
+    sensorShapeDef.isSensor = true;
+    sensorShapeDef.enableSensorEvents = true;
+    sensorShapeDef.filter.categoryBits = PORTAL_SHAPE;
+    sensorShapeDef.filter.maskBits = FLOATING_WALL_SHAPE | PROJECTILE_SHAPE | DRONE_SHAPE | SHIELD_SHAPE;
+    sensorShapeDef.userData = ent;
+    // the sensor sits in front of the wall face, thickness along the
+    // normal and width along the face
+    const b2Vec2 sensorCenter = b2MulAdd(localPos, PORTAL_HEIGHT / 2.0f, localNormal);
+    const b2Polygon sensorBox = b2MakeOffsetBox(PORTAL_WIDTH / 2.0f, PORTAL_HEIGHT / 2.0f, sensorCenter, b2MakeRotFromUnitVector(localNormal));
+    portal->sensorID = b2CreatePolygonShape(wall->bodyID, &sensorShapeDef, &sensorBox);
+
+    ASSERT(drone->openPortals < 2);
+    drone->portals[drone->openPortals++] = portal;
+
+    if (drone->openPortals == 2) {
+        drone->portals[0]->linkedPortal = portal;
+        portal->linkedPortal = drone->portals[0];
+    }
+}
+
+void destroyPortal(iwEnv *e, portalEntity *portal) {
+    // the sensor is destroyed along with the wall's body if the wall was
+    // destroyed first
+    if (b2Shape_IsValid(portal->sensorID)) {
+        b2DestroyShape(portal->sensorID, false);
+    }
+    destroyEntity(e, portal->ent);
+
+    droneEntity *drone = safe_array_get_at(e->drones, portal->droneIdx);
+    if (drone->openPortals == _MAX_PORTALS && drone->portals[0] == portal) {
+        drone->portals[0] = drone->portals[1];
+    }
+    drone->portals[--drone->openPortals] = NULL;
+    if (drone->openPortals != 0) {
+        drone->portals[0]->linkedPortal = NULL;
+    }
+
+    fastFree(portal);
+}
+
+void destroyDronePortals(iwEnv *e, droneEntity *drone) {
+    while (drone->openPortals != 0) {
+        destroyPortal(e, drone->portals[drone->openPortals - 1]);
+    }
+}
+
+void destroyPortalsAttachedTo(iwEnv *e, const wallEntity *wall) {
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        // iterate backwards as destroying a portal swaps the drone's last
+        // portal into its place
+        for (int8_t j = drone->openPortals - 1; j >= 0; j--) {
+            if (drone->portals[j]->attachedWall == wall) {
+                destroyPortal(e, drone->portals[j]);
+            }
+        }
+    }
+}
+
+// recompute the world space position and normal of portals attached to a
+// wall that moved
+void updatePortalsAttachedTo(const iwEnv *e, const wallEntity *wall) {
+    const b2Transform wallTransform = {.p = wall->pos, .q = wall->rot};
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        const droneEntity *drone = safe_array_get_at(e->drones, i);
+        for (uint8_t j = 0; j < drone->openPortals; j++) {
+            portalEntity *portal = drone->portals[j];
+            if (portal->attachedWall != wall) {
+                continue;
+            }
+            portal->pos = b2TransformPoint(wallTransform, portal->localPos);
+            portal->normal = b2RotateVector(wallTransform.q, portal->localNormal);
+            const int16_t mapIdx = entityPosToCellIdx(e, portal->pos);
+            if (mapIdx != -1) {
+                portal->mapCellIdx = mapIdx;
+            }
+        }
+    }
+}
+
 void destroyWall(iwEnv *e, wallEntity *wall, const bool full) {
+    destroyPortalsAttachedTo(e, wall);
     destroyEntity(e, wall->ent);
 
     if (full) {
@@ -884,8 +1002,9 @@ void createDroneShield(iwEnv *e, droneEntity *drone, const int8_t groupIdx) {
     shieldBufferShapeDef.material.friction = DRONE_FRICTION;
     shieldBufferShapeDef.material.restitution = DRONE_RESTITUTION;
     shieldBufferShapeDef.filter.categoryBits = SHIELD_SHAPE;
-    shieldBufferShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | SHIELD_SHAPE;
+    shieldBufferShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | SHIELD_SHAPE | PORTAL_SHAPE;
     shieldBufferShapeDef.filter.groupIndex = groupIdx;
+    shieldBufferShapeDef.enableSensorEvents = true;
 
     shieldEntity *shield = fastCalloc(1, sizeof(shieldEntity));
     shield->drone = drone;
@@ -968,7 +1087,7 @@ void createDrone(iwEnv *e, const uint8_t idx) {
     droneShapeDef.material.friction = DRONE_FRICTION;
     droneShapeDef.material.restitution = DRONE_RESTITUTION;
     droneShapeDef.filter.categoryBits = DRONE_SHAPE;
-    droneShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | WEAPON_PICKUP_SHAPE | PROJECTILE_SHAPE | DRONE_SHAPE | SHIELD_SHAPE;
+    droneShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | WEAPON_PICKUP_SHAPE | PROJECTILE_SHAPE | DRONE_SHAPE | SHIELD_SHAPE | PORTAL_SHAPE;
     droneShapeDef.filter.groupIndex = groupIdx;
     droneShapeDef.enableContactEvents = true;
     droneShapeDef.enableSensorEvents = true;
@@ -1733,6 +1852,46 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
     return true;
 }
 
+void droneTeleport(const iwEnv *e, droneEntity *drone, const b2Vec2 newPos, const b2Vec2 newVel) {
+    // terminate any active brake trail so it won't connect across the
+    // teleport, braking from the new position will start a new trail
+    if (drone->braking && e->client != NULL && drone->brakeTrailPoints != NULL) {
+        brakeTrailPoint *trailPoint = fastCalloc(1, sizeof(brakeTrailPoint));
+        trailPoint->pos = drone->pos;
+        trailPoint->lifetime = UINT16_MAX;
+        trailPoint->isEnd = true;
+        cc_array_add(drone->brakeTrailPoints, trailPoint);
+    }
+    if (drone->trailPoints != NULL) {
+        drone->trailPoints->length = 0;
+    }
+
+    b2Body_SetTransform(drone->bodyID, newPos, b2Rot_identity);
+    drone->pos = newPos;
+    drone->lastPos = newPos;
+    drone->mapCellIdx = entityPosToCellIdx(e, newPos);
+    if (drone->mapCellIdx == -1) {
+        DEBUG_LOGF("invalid position for drone: (%f, %f) killing it", newPos.x, newPos.y);
+        killDrone(e, drone, NULL);
+        return;
+    }
+
+    if (drone->shield != NULL) {
+        b2Body_SetTransform(drone->shield->bodyID, newPos, b2Rot_identity);
+        drone->shield->pos = newPos;
+    }
+
+    if (!b2Equal(newVel, b2Vec2_zero)) {
+        b2Body_SetLinearVelocity(drone->bodyID, newVel);
+        drone->velocity = newVel;
+        drone->lastVelocity = newVel;
+
+        if (drone->shield != NULL) {
+            b2Body_SetLinearVelocity(drone->shield->bodyID, newVel);
+        }
+    }
+}
+
 void createProjectile(iwEnv *e, droneEntity *drone, const weaponInformation *weaponInfo, const b2Vec2 normAim) {
     ASSERT_VEC_NORMALIZED(normAim);
 
@@ -1776,11 +1935,12 @@ void createProjectile(iwEnv *e, droneEntity *drone, const weaponInformation *wea
     b2BodyId projectileBodyID = b2CreateBody(e->worldID, &projectileBodyDef);
     b2ShapeDef projectileShapeDef = b2DefaultShapeDef();
     projectileShapeDef.enableContactEvents = true;
+    projectileShapeDef.enableSensorEvents = true;
     projectileShapeDef.density = weaponInfo->density;
     projectileShapeDef.material.restitution = PROJECTILE_RESTITUTION;
     projectileShapeDef.material.friction = 0.0f;
     projectileShapeDef.filter.categoryBits = PROJECTILE_SHAPE;
-    projectileShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | PROJECTILE_SHAPE | DRONE_SHAPE | SHIELD_SHAPE;
+    projectileShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | PROJECTILE_SHAPE | DRONE_SHAPE | SHIELD_SHAPE | PORTAL_SHAPE;
     const b2Circle projectileCircle = {.center = b2Vec2_zero, .radius = radius};
 
     b2ShapeId projectileShapeID = b2CreateCircleShape(projectileBodyID, &projectileShapeDef, &projectileCircle);
@@ -1822,13 +1982,18 @@ void createProjectile(iwEnv *e, droneEntity *drone, const weaponInformation *wea
         b2Shape_SetUserData(projectile->sensorID, ent);
     }
 
-    if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON) {
+    switch (projectile->weaponInfo->type) {
+    case MINE_LAUNCHER_WEAPON:
         e->minesCreated[drone->idx]++;
         drone->mine = projectile;
-    } else if (projectile->weaponInfo->type == GRAPPLE_WEAPON) {
+        break;
+    case GRAPPLE_WEAPON:
         projectile->grappleHealth = GRAPPLE_HEALTH;
         ASSERT(drone->grapple == NULL);
         drone->grapple = projectile;
+        break;
+    default:
+        break;
     }
 }
 
@@ -2678,6 +2843,26 @@ void handleSuddenDeath(iwEnv *e) {
             destroyProjectile(e, projectile, false, false);
         }
     }
+
+    // destroy portals whose wall face is now covered by a newly placed wall
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        // iterate backwards as destroying a portal swaps the drone's last
+        // portal into its place
+        for (int8_t j = drone->openPortals - 1; j >= 0; j--) {
+            const portalEntity *portal = drone->portals[j];
+            const b2Vec2 frontPos = b2MulAdd(portal->pos, WALL_THICKNESS / 2.0f, portal->normal);
+            const int16_t frontIdx = entityPosToCellIdx(e, frontPos);
+            if (frontIdx == -1) {
+                continue;
+            }
+
+            const mapCell *cell = &e->cells[frontIdx];
+            if (cell->ent != NULL && entityTypeIsWall(cell->ent->type)) {
+                destroyPortal(e, drone->portals[j]);
+            }
+        }
+    }
 }
 
 void droneEmptyEnergy(iwEnv *e, droneEntity *drone) {
@@ -2847,6 +3032,8 @@ uint8_t droneUtilityActive(const iwEnv *e, const droneEntity *drone) {
         return drone->grapple != NULL;
     case MINE_UTILITY:
         return e->minesCreated[drone->idx];
+    case PORTAL_UTILITY:
+        return drone->openPortals;
     default:
         return 0;
     }
@@ -2904,7 +3091,7 @@ void droneUtility(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool hel
         return;
     }
 
-    if (droneUtilityActive(e, drone) >= info->maxActive) {
+    if (info->maxActive != INFINITE && droneUtilityActive(e, drone) >= info->maxActive) {
         if (info->type == MINE_UTILITY && droneHasWeldedMine(e, drone)) {
             droneDetonateMines(e, drone);
             stats->utilityPressesUseful[info->type]++;
@@ -3592,6 +3779,7 @@ void handleBodyMoveEvents(iwEnv *e) {
             wall->pos = newPos;
             wall->rot = event->transform.q;
             wall->velocity = b2Body_GetLinearVelocity(wall->bodyID);
+            updatePortalsAttachedTo(e, wall);
             break;
         case PROJECTILE_ENTITY:
             proj = ent->entity;
@@ -3660,6 +3848,9 @@ bool projectileIgnoresBouncyWalls(projectileEntity *projectile) {
         // grapples can attach to all walls
     case MINE_LAUNCHER_WEAPON:
         // mines can attach to all walls as well
+        return true;
+    case PORTAL_WEAPON:
+        // portals open on all walls
         return true;
     default:
         return false;
@@ -3884,6 +4075,51 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         def.motorSpeed = -GRAPPLE_MOTOR_SPEED;
 
         drone->grappleJointID = b2CreateDistanceJoint(e->worldID, &def);
+    } else if (projectile->weaponInfo->type == PORTAL_WEAPON && bodyIDSet) {
+        if (!b2Contact_IsValid(contactID)) {
+            destroyProjectile(e, projectile, false, true);
+            return 1;
+        }
+
+        droneEntity *drone = safe_array_get_at(e->drones, projectile->droneIdx);
+        if (ent->type == DRONE_ENTITY) {
+            // destroy the portal if the drone that shot it hits itself
+            droneEntity *hitDrone = ent->entity;
+            if (hitDrone->idx != projectile->droneIdx && !hitDrone->dead && !drone->dead) {
+                // swap the hit drone with the shooting drone
+                const b2Vec2 hitDronePos = hitDrone->pos;
+                droneTeleport(e, hitDrone, drone->pos, b2Vec2_zero);
+                droneTeleport(e, drone, hitDronePos, b2Vec2_zero);
+            }
+
+            destroyProjectile(e, projectile, false, true);
+            return 1;
+        } else if (entityTypeIsWall(ent->type)) {
+            // destroy the older portal first if 2 are already open
+            if (drone->openPortals == _MAX_PORTALS) {
+                destroyPortal(e, drone->portals[0]);
+            }
+
+            const b2Manifold manifold = b2Contact_GetData(contactID).manifold;
+            ASSERT(manifold.pointCount == 1);
+
+            // the manifold normal points from shape A to shape B, make it
+            // point out of the wall
+            b2Vec2 normal = manifold.normal;
+            b2Vec2 anchor = manifold.points[0].anchorA;
+            if (projIsShapeA) {
+                normal = b2Neg(normal);
+                anchor = manifold.points[0].anchorB;
+            }
+
+            wallEntity *hitWall = ent->entity;
+            const b2Vec2 hitPos = b2Add(hitWall->pos, anchor);
+
+            createPortal(e, drone, hitWall, hitPos, normal);
+        }
+
+        destroyProjectile(e, projectile, false, true);
+        return 1;
     }
 
     const uint8_t maxBounces = projectile->weaponInfo->maxBounces;
@@ -4158,6 +4394,136 @@ void handleProjectileEndTouch(const entity *sensor, entity *visitor) {
     }
 }
 
+bool allowedThroughPortal(const portalEntity *portal, const b2Vec2 velocity) {
+    const b2Vec2 direction = b2Normalize(velocity);
+    if (-b2Dot(portal->normal, direction) < cosf(80.0f * DEG2RAD)) {
+        return false;
+    }
+
+    return true;
+}
+
+// rotation that maps an entity's motion through the entry portal onto the
+// exit portal: into the entry wall becomes out of the exit wall
+b2Rot portalTransitRot(const portalEntity *in, const portalEntity *out) {
+    const b2Rot inRot = b2MakeRotFromUnitVector(b2Neg(in->normal));
+    const b2Rot outRot = b2MakeRotFromUnitVector(out->normal);
+    return b2InvMulRot(inRot, outRot);
+}
+
+// where an entity moving from lastPos with lastVelocity reached the wall face
+// the portal is on, accurate even when the solver slid it along the wall
+// after it hit
+b2Vec2 portalEntryPos(const portalEntity *portal, const b2Vec2 lastPos, const b2Vec2 pos, const b2Vec2 lastVelocity, const float radius) {
+    // canEnterPortal ensures this is positive
+    const float approachSpeed = -b2Dot(lastVelocity, portal->normal);
+    const float distToFace = b2Dot(b2Sub(lastPos, portal->pos), portal->normal) - radius;
+    if (approachSpeed <= 0.0f || distToFace <= 0.0f) {
+        // already touching the face at the start of the step
+        return pos;
+    }
+    const float t = distToFace / approachSpeed;
+    return b2MulAdd(lastPos, t, lastVelocity);
+}
+
+b2Vec2 portalExitPos(const portalEntity *in, const portalEntity *out, const b2Rot rot, const b2Vec2 pos, const float radius) {
+    const b2Vec2 inTangent = b2LeftPerp(in->normal);
+    const float maxOffset = fmaxf(PORTAL_WIDTH / 2.0f - radius, 0.0f);
+    const float offset = clampValue(b2Dot(b2Sub(pos, in->pos), inTangent), -maxOffset, maxOffset);
+
+    const b2Vec2 outTangent = b2RotateVector(rot, inTangent);
+    const b2Vec2 exitPos = b2MulAdd(out->pos, offset, outTangent);
+    return b2MulAdd(exitPos, radius + PORTAL_EXIT_GAP, out->normal);
+}
+
+b2Vec2 portalExitVelocity(const portalEntity *in, const portalEntity *out, const b2Rot rot, const b2Vec2 velocity) {
+    // rotate the velocity relative to the entry wall so portals on moving
+    // floating walls carry their motion through
+    const b2Vec2 relVel = b2Sub(velocity, in->attachedWall->velocity);
+    return b2Add(b2RotateVector(rot, relVel), out->attachedWall->velocity);
+}
+
+void handlePortalBeginTouch(const iwEnv *e, const entity *sensor, entity *visitor) {
+    portalEntity *portal = sensor->entity;
+    if (portal->linkedPortal == NULL) {
+        return;
+    }
+    const portalEntity *exitPortal = portal->linkedPortal;
+
+    // const droneEntity *drone = safe_array_get_at(e->drones, portal->droneIdx);
+    const b2Rot rot = portalTransitRot(portal, exitPortal);
+    switch (visitor->type) {
+    case SHIELD_ENTITY: {
+        const shieldEntity *shield = visitor->entity;
+        droneEntity *drone = shield->drone;
+        if (!allowedThroughPortal(portal, drone->lastVelocity)) {
+            return;
+        }
+
+        const b2Vec2 entryPos = portalEntryPos(portal, drone->lastPos, drone->pos, drone->lastVelocity, DRONE_SHIELD_RADIUS);
+        const b2Vec2 exitPos = portalExitPos(portal, exitPortal, rot, entryPos, DRONE_SHIELD_RADIUS);
+        const b2Vec2 exitVel = portalExitVelocity(portal, exitPortal, rot, drone->lastVelocity);
+        droneTeleport(e, drone, exitPos, exitVel);
+
+        break;
+    }
+    case DRONE_ENTITY: {
+        droneEntity *drone = visitor->entity;
+        // if a drone has a shield only allow the shield to trigger a
+        // teleport, otherwise the shield and drone touching the sensor
+        // could trigger 2 teleports in 1 frame
+        if (drone->shield != NULL) {
+            return;
+        }
+        DEBUG_LOGF("step %d portal %p begin touch: drone %d", e->episodeLength, portal, drone->idx);
+        if (!allowedThroughPortal(portal, drone->lastVelocity)) {
+            // portal->dronesInRange[portal->numDronesInRange++] = drone->idx;
+            return;
+        }
+
+        const b2Vec2 entryPos = portalEntryPos(portal, drone->lastPos, drone->pos, drone->lastVelocity, DRONE_RADIUS);
+        const b2Vec2 exitPos = portalExitPos(portal, exitPortal, rot, entryPos, DRONE_RADIUS);
+        const b2Vec2 exitVel = portalExitVelocity(portal, exitPortal, rot, drone->lastVelocity);
+        droneTeleport(e, drone, exitPos, exitVel);
+
+        break;
+    }
+    case PROJECTILE_ENTITY: {
+        projectileEntity *projectile = visitor->entity;
+        if (!allowedThroughPortal(portal, projectile->lastVelocity)) {
+            return;
+        }
+
+        const b2Vec2 entryPos = portalEntryPos(portal, projectile->lastPos, projectile->pos, projectile->lastVelocity, projectile->weaponInfo->radius);
+        const b2Vec2 exitPos = portalExitPos(portal, exitPortal, rot, entryPos, projectile->weaponInfo->radius);
+        const b2Vec2 exitVel = portalExitVelocity(portal, exitPortal, rot, projectile->lastVelocity);
+
+        b2Body_SetTransform(projectile->bodyID, exitPos, b2Body_GetRotation(projectile->bodyID));
+        b2Body_SetLinearVelocity(projectile->bodyID, exitVel);
+
+        projectile->pos = exitPos;
+        projectile->lastPos = projectile->pos;
+        projectile->velocity = exitVel;
+        projectile->lastVelocity = projectile->velocity;
+
+        if (projectile->trailPoints != NULL) {
+            projectile->trailPoints->length = 0;
+        }
+
+        break;
+    }
+    default:
+        return;
+    }
+}
+
+void handlePortalEndTouch(const iwEnv *e, const entity *sensor, entity *visitor) {
+    portalEntity *portal = sensor->entity;
+    const droneEntity *drone = visitor->entity;
+
+    DEBUG_LOGF("step %d portal %p end touch: drone %d", e->episodeLength, portal, drone->idx);
+}
+
 void handleSensorEvents(iwEnv *e) {
     b2SensorEvents events = b2World_GetSensorEvents(e->worldID);
     for (int i = 0; i < events.beginCount; ++i) {
@@ -4176,10 +4542,16 @@ void handleSensorEvents(iwEnv *e) {
         entity *v = b2Shape_GetUserData(event->visitorShapeId);
         ASSERT(v != NULL);
 
-        if (s->type != PROJECTILE_ENTITY) {
+        if (s->type == PROJECTILE_ENTITY) {
+            handleProjectileBeginTouch(e, s, v);
+        } else if (s->type == PORTAL_ENTITY) {
+            if (b2Shape_IsSensor(event->visitorShapeId)) {
+                continue;
+            }
+            handlePortalBeginTouch(e, s, v);
+        } else {
             ERRORF("unknown entity type %d for sensor begin touch event", s->type);
         }
-        handleProjectileBeginTouch(e, s, v);
     }
 
     for (int i = 0; i < events.endCount; ++i) {
@@ -4189,15 +4561,26 @@ void handleSensorEvents(iwEnv *e) {
             continue;
         }
         entity *s = b2Shape_GetUserData(event->sensorShapeId);
-        ASSERT(s != NULL);
+        if (s == NULL) {
+            continue;
+        }
+
         entity *v = NULL;
         if (b2Shape_IsValid(event->visitorShapeId)) {
             v = b2Shape_GetUserData(event->visitorShapeId);
             ASSERT(v != NULL);
         }
 
-        ASSERT(s->type == PROJECTILE_ENTITY);
-        handleProjectileEndTouch(s, v);
+        if (s->type == PROJECTILE_ENTITY) {
+            handleProjectileEndTouch(s, v);
+        } else if (s->type == PORTAL_ENTITY) {
+            if (b2Shape_IsSensor(event->visitorShapeId)) {
+                continue;
+            }
+            handlePortalEndTouch(e, s, v);
+        } else {
+            ERRORF("unknown entity type %d for sensor end touch event", s->type);
+        }
     }
 }
 

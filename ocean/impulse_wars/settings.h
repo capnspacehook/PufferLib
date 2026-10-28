@@ -483,6 +483,22 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define MINE_LAUNCHER_EXPLOSION_IMPULSE 200.0f
 #define MINE_LAUNCHER_PROXIMITY_RADIUS 7.5f
 
+#define PORTAL_PROJECTILES 1
+#define PORTAL_RECOIL_MAGNITUDE 45.0f
+#define PORTAL_FIRE_MAGNITUDE 50.0f
+#define PORTAL_DAMPING 0.0f
+#define PORTAL_CHARGE 0.0f
+#define PORTAL_COOL_DOWN 1.0f
+#define PORTAL_MAX_DISTANCE INFINITE
+#define PORTAL_RADIUS 0.8f
+#define PORTAL_DENSITY 1.0f
+#define PORTAL_MASS MASS(PORTAL_DENSITY, PORTAL_RADIUS)
+#define PORTAL_INV_MASS INV_MASS(PORTAL_MASS)
+#define PORTAL_BOUNCE INFINITE
+#define PORTAL_HEIGHT 1.0f
+#define PORTAL_WIDTH 3.0f
+#define PORTAL_EXIT_GAP 0.1
+
 // utility settings
 #define GRAPPLE_UTILITY_AMMO 3
 #define GRAPPLE_UTILITY_REGEN_TIME 3.0f
@@ -493,6 +509,11 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define MINE_UTILITY_REGEN_TIME 6.0f
 #define MINE_UTILITY_MAX_ACTIVE 1
 #define MINE_UTILITY_SPAWN_WEIGHT 2.5f
+
+#define PORTAL_UTILITY_AMMO 2
+#define PORTAL_UTILITY_REGEN_TIME 10.0f
+#define PORTAL_UTILITY_MAX_ACTIVE INFINITE
+#define PORTAL_UTILITY_SPAWN_WEIGHT 15.0f
 
 static const weaponInformation unsetWeapon = {
     .type = UNSET_WEAPON,
@@ -820,6 +841,33 @@ static const weaponInformation mineLauncher = {
     .spawnWeight = 0.0f,
 };
 
+static const weaponInformation portal = {
+    .type = PORTAL_WEAPON,
+    .ammo = PORTAL_UTILITY_AMMO,
+    .isPhysicsBullet = false,
+    .canSleep = false,
+    .numProjectiles = PORTAL_PROJECTILES,
+    .fireMagnitude = PORTAL_FIRE_MAGNITUDE,
+    .recoilMagnitude = PORTAL_RECOIL_MAGNITUDE,
+    .damping = PORTAL_DAMPING,
+    .maxCharge = PORTAL_CHARGE,
+    .cooldown = PORTAL_COOL_DOWN,
+    .maxDistance = PORTAL_MAX_DISTANCE,
+    .radius = PORTAL_RADIUS,
+    .density = PORTAL_DENSITY,
+    .mass = PORTAL_MASS,
+    .invMass = PORTAL_INV_MASS,
+    .initialSpeed = 0.0f,
+    .maxBounces = 0,
+    .explosive = false,
+    .destroyedOnDroneHit = false,
+    .explodesOnDroneHit = false,
+    .hasSensor = false,
+    .energyRefillCoef = 0.0f,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
+    .spawnWeight = 0.0f,
+};
+
 static weaponInformation *weaponInfos[] = {
     (weaponInformation *)&unsetWeapon,
     (weaponInformation *)&standard,
@@ -833,6 +881,7 @@ static weaponInformation *weaponInfos[] = {
     (weaponInformation *)&nuke,
     (weaponInformation *)&grapple,
     (weaponInformation *)&mineLauncher,
+    (weaponInformation *)&portal,
 };
 
 static const utilityInformation unsetUtility = {
@@ -862,10 +911,20 @@ static const utilityInformation mineUtility = {
     .spawnWeight = MINE_UTILITY_SPAWN_WEIGHT,
 };
 
+static const utilityInformation portalUtility = {
+    .type = PORTAL_UTILITY,
+    .projectileInfo = &portal,
+    .ammo = PORTAL_UTILITY_AMMO,
+    .regenTime = PORTAL_UTILITY_REGEN_TIME,
+    .maxActive = PORTAL_UTILITY_MAX_ACTIVE,
+    .spawnWeight = PORTAL_UTILITY_SPAWN_WEIGHT,
+};
+
 static const utilityInformation *utilityInfos[] = {
     &unsetUtility,
     &grappleUtility,
     &mineUtility,
+    &portalUtility,
 };
 
 // the utility that fires a weapon's projectiles, or UNSET_UTILITY if the
@@ -876,6 +935,8 @@ static inline enum utilityType weaponUtility(const enum weaponType type) {
         return GRAPPLE_UTILITY;
     case MINE_LAUNCHER_WEAPON:
         return MINE_UTILITY;
+    case PORTAL_WEAPON:
+        return PORTAL_UTILITY;
     default:
         return UNSET_UTILITY;
     }
@@ -899,6 +960,7 @@ static const char *weaponNames[] = {
     "tactical_nuke",
     "grapple_gun",
     "mine_launcher",
+    "portal_gun",
 };
 
 static b2ShapeId weaponSensor(const b2BodyId bodyID, const enum weaponType type) {
@@ -959,6 +1021,8 @@ static float weaponFire(unsigned int *seed, const enum weaponType type) {
         return NUKE_FIRE_MAGNITUDE;
     case GRAPPLE_WEAPON:
         return GRAPPLE_FIRE_MAGNITUDE;
+    case PORTAL_WEAPON:
+        return PORTAL_FIRE_MAGNITUDE;
     default:
         ERRORF("unknown weapon type %d", type);
         return 0;

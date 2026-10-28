@@ -616,7 +616,7 @@ static float projectileObsKey(const droneEntity *drone, const projectileEntity *
     if (t <= PROJECTILE_THREAT_TIME && b2Length(b2MulAdd(relPos, t, relVel)) <= reach) {
         return t;
     }
-    
+
     return PROJECTILE_THREAT_TIME + distance;
 }
 
@@ -1087,6 +1087,13 @@ void clearEnv(iwEnv *e) {
     e->spawnedCrates = 0;
     memset(e->stats, 0x0, sizeof(e->stats));
     memset(e->analysisStats, 0x0, sizeof(e->analysisStats));
+
+    // portals need to be destroyed before the walls they're attached to
+    // and the drones that own them
+    for (size_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        destroyDronePortals(e, drone);
+    }
 
     for (size_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
         wallEntity *wall = safe_array_get_at(e->floatingWalls, i);

@@ -94,6 +94,15 @@ static const float GRAPPLE_DASH_LENGTH = 0.6f;
 static const float GRAPPLE_DASH_SPACING = 2.0f;
 static const float GRAPPLE_DASH_SPEED = 12.0f;
 
+// Portals are a glowing slab on the wall face with a faint field over the
+// sensor in front of it; bloom makes the slab look wider than it is.
+static const float PORTAL_SLAB_DEPTH = 0.15f;
+static const float PORTAL_SLAB_HEIGHT = 1.0f;
+static const float PORTAL_FIELD_MIN_ALPHA = 0.08f;
+static const float PORTAL_FIELD_MAX_ALPHA = 0.2f;
+// pulses per second of the field
+static const float PORTAL_PULSE_RATE = 1.5f;
+
 // Explosion visual lifetime in seconds (rebuild after tuning).
 // Reference radius/impulse produce BASE_TIME. Exponents of 0 ignore that factor.
 // Uses world radius and absolute impulse, so zoom and implosion direction don't affect timing.
@@ -402,8 +411,8 @@ agentActions getPlayerInputs(iwEnv *e, droneEntity *drone, uint8_t gamepadIdx) {
     return computeActions(e, drone, &actions);
 }
 
-static const float ZOOM_SPEED = 0.04f;
-static const float PAN_SPEED = 0.04f;
+static const float ZOOM_SPEED = 0.035f;
+static const float PAN_SPEED = 0.035f;
 static const float MAX_CAMERA_HEIGHT = 130.0f;
 static const float MIN_CAMERA_HEIGHT = 60.0f;
 static const float BOUNDS_PADDING = 4.0f;
@@ -488,7 +497,13 @@ static void syncRenderSize(iwEnv *e) {
     loadRenderTextures(client);
 }
 
-Rectangle calculatePlayersBoundingBox(const iwEnv *e) {
+#define MIN_MAX_POS(pos)       \
+    minX = fminf(pos.x, minX); \
+    minY = fminf(pos.y, minY); \
+    maxX = fmaxf(pos.x, maxX); \
+    maxY = fmaxf(pos.y, maxY)
+
+Rectangle calculateCameraBoundingBox(const iwEnv *e) {
     float minX = FLT_MAX;
     float minY = FLT_MAX;
     float maxX = -FLT_MAX;
@@ -500,10 +515,16 @@ Rectangle calculatePlayersBoundingBox(const iwEnv *e) {
             continue;
         }
 
-        minX = min(drone->pos.x, minX);
-        minY = min(drone->pos.y, minY);
-        maxX = max(drone->pos.x, maxX);
-        maxY = max(drone->pos.y, maxY);
+        MIN_MAX_POS(drone->pos);
+        if (drone->grapple != NULL) {
+            MIN_MAX_POS(drone->grapple->pos);
+        }
+        if (drone->mine != NULL) {
+            MIN_MAX_POS(drone->mine->pos);
+        }
+        for (uint8_t i = 0; i < drone->openPortals; i++) {
+            MIN_MAX_POS(drone->portals[i]->pos);
+        }
     }
 
     Rectangle bounds = {
@@ -538,13 +559,13 @@ void updateCamera(iwEnv *e) {
         return;
     }
 
-    const Rectangle droneBounds = calculatePlayersBoundingBox(e);
-    if (droneBounds.width == 0 && droneBounds.height == 0) {
+    const Rectangle bounds = calculateCameraBoundingBox(e);
+    if (bounds.width == 0 && bounds.height == 0) {
         return;
     }
 
     // smoothly move towards the center of players
-    const Vector2 centerPoint = {.x = droneBounds.x, .y = droneBounds.y};
+    const Vector2 centerPoint = {.x = bounds.x, .y = bounds.y};
     camera->targetPos = Vector2Lerp(camera->targetPos, centerPoint, PAN_SPEED);
     camera->targetPos.x = Clamp(camera->targetPos.x, e->map->bounds.min.x + MAP_MAX_X_OFFSET, e->map->bounds.max.x - MAP_MAX_X_OFFSET);
     camera->targetPos.y = Clamp(camera->targetPos.y, e->map->bounds.min.y + MAP_MAX_Y_OFFSET, e->map->bounds.max.y - MAP_MAX_Y_OFFSET);
@@ -556,7 +577,7 @@ void updateCamera(iwEnv *e) {
     camera->camera3D.position.z = camera->targetPos.y;
 
     // smoothly zoom in or out
-    const float zoom = calculateZoom(e, droneBounds);
+    const float zoom = calculateZoom(e, bounds);
     camera->camera3D.position.y = Lerp(camera->camera3D.position.y, zoom, ZOOM_SPEED);
     setCamera2DZoom(e);
 
@@ -585,6 +606,8 @@ char *getUtilityAbreviation(const enum utilityType type) {
         return "GRAP";
     case MINE_UTILITY:
         return "MINE";
+    case PORTAL_UTILITY:
+        return "PORT";
     default:
         return "";
     }
@@ -596,6 +619,8 @@ char *getUtilityName(const enum utilityType type) {
         return "Grapple";
     case MINE_UTILITY:
         return "Mines";
+    case PORTAL_UTILITY:
+        return "Portal";
     default:
         return "No Utility";
     }
@@ -634,6 +659,9 @@ char *getWeaponAbreviation(const enum weaponType type) {
         break;
     case GRAPPLE_WEAPON:
         name = "GRAP";
+        break;
+    case PORTAL_WEAPON:
+        name = "PORT";
         break;
     default:
         ERRORF("unknown weapon pickup type %d", type);
@@ -679,6 +707,9 @@ char *getWeaponName(const enum weaponType type) {
         break;
     case GRAPPLE_WEAPON:
         name = "Grapple Gun";
+        break;
+    case PORTAL_WEAPON:
+        name = "Portal";
         break;
     default:
         ERRORF("unknown weapon pickup type %d", type);
@@ -738,6 +769,9 @@ Color getProjectileColor(const enum weaponType type) {
         break;
     case GRAPPLE_WEAPON:
         color = LIGHTGRAY;
+        break;
+    case PORTAL_WEAPON:
+        color = PURPLE;
         break;
     default:
         ERRORF("unknown weapon when getting projectile color %d", type);
@@ -2086,6 +2120,38 @@ void renderBoostSparks(const iwEnv *e) {
     }
 }
 
+void renderPortal(const iwEnv *e, const portalEntity *portal) {
+    // rotate so local x is along the portal's normal and local z is along
+    // the wall face
+    const float angle = b2Rot_GetAngle(b2MakeRotFromUnitVector(portal->normal)) * RAD2DEG;
+    const Color color = getDroneColor(portal->droneIdx);
+
+    // use game time so animations follow the game speed
+    const float time = (float)e->episodeLength / e->frameRate;
+    const float pulse = 0.5f + 0.5f * sinf(2.0f * PI * PORTAL_PULSE_RATE * time);
+
+    rlPushMatrix();
+    rlTranslatef(portal->pos.x, 0.0f, portal->pos.y);
+    rlRotatef(-angle, 0.0f, 1.0f, 0.0f);
+
+    DrawCube(
+        (Vector3){.x = PORTAL_SLAB_DEPTH / 2.0f, .y = PORTAL_SLAB_HEIGHT / 2.0f, .z = 0.0f},
+        PORTAL_SLAB_DEPTH,
+        PORTAL_SLAB_HEIGHT,
+        PORTAL_WIDTH,
+        color
+    );
+    DrawCube(
+        (Vector3){.x = PORTAL_HEIGHT / 2.0f, .y = 0.0f, .z = 0.0f},
+        PORTAL_HEIGHT,
+        0.0f,
+        PORTAL_WIDTH,
+        Fade(color, Lerp(PORTAL_FIELD_MIN_ALPHA, PORTAL_FIELD_MAX_ALPHA, pulse))
+    );
+
+    rlPopMatrix();
+}
+
 void renderProjectile(const projectileEntity *projectile) {
     DrawSphere(
         (Vector3){.x = projectile->pos.x, .y = 0.5f, .z = projectile->pos.y},
@@ -2225,6 +2291,12 @@ void renderEnv(iwEnv *e) {
     }
 
     BeginBlendMode(BLEND_ALPHA);
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        const droneEntity *drone = safe_array_get_at(e->drones, i);
+        for (uint8_t j = 0; j < drone->openPortals; j++) {
+            renderPortal(e, drone->portals[j]);
+        }
+    }
     renderBoostSparks(e);
     EndBlendMode();
 

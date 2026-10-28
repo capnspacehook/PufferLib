@@ -13,6 +13,8 @@
 
 #define _MAX_DRONES 2
 
+#define _MAX_PORTALS 2
+
 // discrete aim is split into a coarse sector and a fine offset within
 // it, giving AIM_COARSE_SECTORS * AIM_FINE_STEPS evenly spaced directions
 // while only needing AIM_COARSE_SECTORS + AIM_FINE_STEPS logits; lives
@@ -36,6 +38,7 @@ enum entityType {
     DRONE_ENTITY,
     SHIELD_ENTITY,
     DRONE_PIECE_ENTITY,
+    PORTAL_ENTITY,
 };
 
 // the category bit that will be set on each entity's shape; this is
@@ -48,6 +51,7 @@ enum shapeCategory {
     DRONE_SHAPE = 16,
     SHIELD_SHAPE = 32,
     DRONE_PIECE_SHAPE = 64,
+    PORTAL_SHAPE = 128,
 };
 
 typedef struct entityID {
@@ -64,7 +68,7 @@ typedef struct entity {
     uint16_t lastBurstHit[_MAX_DRONES];
 } entity;
 
-#define _NUM_WEAPONS 12
+#define _NUM_WEAPONS 13
 static const uint8_t NUM_WEAPONS = _NUM_WEAPONS;
 
 enum weaponType {
@@ -80,19 +84,21 @@ enum weaponType {
     NUKE_WEAPON,
     GRAPPLE_WEAPON,
     MINE_LAUNCHER_WEAPON,
+    PORTAL_WEAPON,
 };
 
 // utilities live in their own slot next to the weapon and survive death;
 // their ammo regenerates over time. Their projectiles are
 // still weapon types (see utilityInformation) so physics, kill credit and
 // per weapon stats treat them like any other projectile
-#define _NUM_UTILITIES 3
+#define _NUM_UTILITIES 4
 static const uint8_t NUM_UTILITIES = _NUM_UTILITIES;
 
 enum utilityType {
     UNSET_UTILITY,
     GRAPPLE_UTILITY,
     MINE_UTILITY,
+    PORTAL_UTILITY,
 };
 
 typedef struct mapBounds {
@@ -224,7 +230,7 @@ typedef struct utilityInformation {
     // seconds to regenerate one ammo
     const float regenTime;
     // how many of its projectiles can exist at once
-    const uint8_t maxActive;
+    const int8_t maxActive;
     const float spawnWeight;
 } utilityInformation;
 
@@ -278,18 +284,44 @@ typedef struct projectileEntity {
     uint8_t bounces;
     uint8_t contacts;
     bool welded;
+    bool needsToBeDestroyed;
+    bool boosted;
+
     uint8_t numDronesBehindWalls;
     uint8_t dronesBehindWalls[_MAX_DRONES];
     CC_Array *entsInBlackHole;
+
     entity *grappledEnt;
     float grappleHealth;
-    bool needsToBeDestroyed;
-    bool boosted;
 
     entity *ent;
 
     trailPoints *trailPoints;
 } projectileEntity;
+
+typedef struct portalEntity portalEntity;
+struct portalEntity {
+    uint8_t droneIdx;
+
+    // the sensor lives on the attached wall's body so it follows
+    // floating walls exactly
+    b2ShapeId sensorID;
+    wallEntity *attachedWall;
+    // center of the portal on the wall face and the face's outward
+    // normal, in the attached wall's local frame
+    b2Vec2 localPos;
+    b2Vec2 localNormal;
+    // world space versions of the above, updated when the wall moves
+    b2Vec2 pos;
+    b2Vec2 normal;
+    int16_t mapCellIdx;
+    portalEntity *linkedPortal;
+
+    uint8_t numDronesInRange;
+    uint8_t dronesInRange[_MAX_DRONES];
+
+    entity *ent;
+};
 
 // used to keep track of what happened each step for reward purposes
 typedef struct droneStepInfo {
@@ -410,8 +442,13 @@ typedef struct droneEntity {
     projectileEntity *grapple;
     // the drone's live mine, see droneMine
     projectileEntity *mine;
+    // live attached portals
+    portalEntity *portals[_MAX_PORTALS];
+    uint8_t openPortals;
+
     float grappleLength;
     b2JointId grappleJointID;
+
     // episode frame + 1 this drone last pulled each drone with a black
     // hole or had its grapple attached to it, 0 if it hasn't
     uint16_t assistFrame[_MAX_DRONES][NUM_ASSIST_WEAPONS];
