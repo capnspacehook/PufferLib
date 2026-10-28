@@ -1284,6 +1284,9 @@ void renderUI(const iwEnv *e, const bool starting) {
             case DRONE_PHYSICS:
                 killDetails1 = "via a collision";
                 break;
+            case SWAP_PHYSICS:
+                killDetails1 = "by swapping places";
+                break;
             default:
                 DEBUG_LOGF("invalid kill source type %d", drone->killSource.type);
                 break;

@@ -386,8 +386,9 @@ enum physicsType {
     EXPLOSION_PHYSICS,
     GRAPPLE_PHYSICS,
     DRONE_PHYSICS,
+    SWAP_PHYSICS,
 };
-#define NUM_PHYSICS_TYPES (DRONE_PHYSICS + 1)
+#define NUM_PHYSICS_TYPES (SWAP_PHYSICS + 1)
 
 typedef struct physicsSource {
     enum physicsType type;
@@ -407,6 +408,13 @@ typedef struct physicsStepInfo {
     bool bounce;
     b2Vec2 normal;
     float restitution;
+    // set when the body went through a portal; rot is the rotation its
+    // velocity was given
+    bool portalTransit;
+    b2Rot rot;
+    // set when drone srcIdx swapped places with the body; srcIdx claims
+    // every other drone's contributions as source
+    bool claim;
     physicsSource source;
     uint16_t step;
 } physicsStepInfo;
@@ -499,6 +507,10 @@ typedef struct droneEntity {
     b2Vec2 lastAim;
     b2Vec2 velocity;
     b2Vec2 lastVelocity;
+    // set when an explosion overwrote lastVelocity mid step; tracked pushes
+    // from lastVelocityTrackIdx on aren't part of lastVelocity
+    uint16_t lastVelocityStep;
+    uint32_t lastVelocityTrackIdx;
     droneStepInfo stepInfo;
     float respawnWait;
     uint8_t livesLeft;

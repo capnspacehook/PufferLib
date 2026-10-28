@@ -1391,6 +1391,50 @@ void trackWallBounce(const iwEnv *e, const entity *e1, const entity *e2, const b
     cc_array_add(physicsTracking, physicsStep);
 }
 
+// track a drone going through a portal so findBiggestContributor can
+// rotate the pushes that moved it the same way its velocity was
+void trackPortalTransit(const iwEnv *e, const droneEntity *drone, const b2Rot rot) {
+    // the drone exits with the velocity it had before this step's physics,
+    // so drop this step's pushes and bounces as they no longer moved it;
+    // brake toggles and claims aren't pushes and are kept. If an explosion
+    // hit it this step lastVelocity is the velocity from just before the
+    // explosion, so only drop the pushes from then on. Grapple and black
+    // hole forces from last step's droneStep and projectilesStep act in this
+    // step's physics but are kept, a known one step inaccuracy
+    size_t firstDropped = 0;
+    if (drone->lastVelocityStep == e->episodeLength) {
+        firstDropped = drone->lastVelocityTrackIdx;
+    }
+    for (size_t i = cc_array_size(drone->physicsTracking); i > firstDropped; i--) {
+        physicsStepInfo *physicsStep = safe_array_get_at(drone->physicsTracking, i - 1);
+        if (physicsStep->step != e->episodeLength) {
+            break;
+        }
+        if (physicsStep->brakeToggled || physicsStep->claim) {
+            continue;
+        }
+        cc_array_remove_at(drone->physicsTracking, i - 1, NULL);
+        fastFree(physicsStep);
+    }
+
+    physicsStepInfo *physicsStep = fastCalloc(1, sizeof(physicsStepInfo));
+    physicsStep->portalTransit = true;
+    physicsStep->rot = rot;
+    physicsStep->step = e->episodeLength;
+    cc_array_add(drone->physicsTracking, physicsStep);
+}
+
+// track a drone swapping places with another using a portal shot so the
+// swapper is credited for where the swapped drone was sent
+void trackSwapClaim(const iwEnv *e, const droneEntity *drone, const uint8_t swapperIdx) {
+    physicsStepInfo *physicsStep = fastCalloc(1, sizeof(physicsStepInfo));
+    physicsStep->claim = true;
+    physicsStep->srcIdx = swapperIdx;
+    physicsStep->source = (physicsSource){.type = SWAP_PHYSICS, .weapon = PORTAL_WEAPON};
+    physicsStep->step = e->episodeLength;
+    cc_array_add(drone->physicsTracking, physicsStep);
+}
+
 // a pickup always replaces the weapon, or tops up its ammo if it's the
 // same weapon; returns true if it replaced the standard weapon
 bool droneChangeWeapon(droneEntity *drone, const enum weaponType newWeapon) {
@@ -1476,6 +1520,19 @@ b2Vec2 reflectContrib(const b2Vec2 contrib, const physicsStepInfo *physicsStep) 
     return contrib;
 }
 
+// returns the accumulated contribution of a drone from a source, adding
+// it if it isn't tracked yet
+sourceContrib *getSourceContrib(sourceContrib *sources, int16_t *sourceSlots, uint16_t *numSources, const uint16_t maxSources, const uint8_t srcIdx, const physicsSource source) {
+    const uint16_t slotIdx = (srcIdx * NUM_PHYSICS_TYPES + source.type) * _NUM_WEAPONS + source.weapon;
+    ASSERT(slotIdx < maxSources);
+    if (sourceSlots[slotIdx] == -1) {
+        sourceSlots[slotIdx] = *numSources;
+        sources[*numSources] = (sourceContrib){.contrib = b2Vec2_zero, .source = source, .srcIdx = srcIdx};
+        (*numSources)++;
+    }
+    return &sources[sourceSlots[slotIdx]];
+}
+
 int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const CC_Array *physicsTracking, const b2Vec2 lastVelocity, float *maxMoveContrib, physicsSource *source) {
     b2Vec2 contrib[e->numDrones];
     memset(contrib, 0x0, e->numDrones * sizeof(b2Vec2));
@@ -1520,6 +1577,38 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
             }
             continue;
         }
+        // rotate pushes along with the velocity when going through a
+        // portal so they still point the way the body is moving
+        if (physicsStep->portalTransit) {
+            for (uint8_t k = 0; k < e->numDrones; k++) {
+                contrib[k] = b2RotateVector(physicsStep->rot, contrib[k]);
+            }
+            for (uint16_t k = 0; k < numSources; k++) {
+                sources[k].contrib = b2RotateVector(physicsStep->rot, sources[k].contrib);
+            }
+            continue;
+        }
+        // the swapper is responsible for every other drone's pushes, as
+        // it chose where the body is now moving with them
+        if (physicsStep->claim) {
+            const uint8_t claimer = physicsStep->srcIdx;
+            for (uint8_t k = 0; k < e->numDrones; k++) {
+                if (k == claimer) {
+                    continue;
+                }
+                contrib[claimer] = b2Add(contrib[claimer], contrib[k]);
+                contrib[k] = b2Vec2_zero;
+            }
+            sourceContrib *claimSrc = getSourceContrib(sources, sourceSlots, &numSources, maxSources, claimer, physicsStep->source);
+            for (uint16_t k = 0; k < numSources; k++) {
+                if (sources[k].srcIdx == claimer) {
+                    continue;
+                }
+                claimSrc->contrib = b2Add(claimSrc->contrib, sources[k].contrib);
+                sources[k].contrib = b2Vec2_zero;
+            }
+            continue;
+        }
 
         const uint8_t srcIdx = physicsStep->srcIdx;
         const b2Vec2 invForce = b2MulSV(invMass, physicsStep->force);
@@ -1529,15 +1618,7 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
         }
         contrib[srcIdx] = b2Add(contrib[srcIdx], stepContrib);
 
-        const physicsSource stepSource = physicsStep->source;
-        const uint16_t slotIdx = (srcIdx * NUM_PHYSICS_TYPES + stepSource.type) * _NUM_WEAPONS + stepSource.weapon;
-        ASSERT(slotIdx < maxSources);
-        if (sourceSlots[slotIdx] == -1) {
-            sourceSlots[slotIdx] = numSources;
-            sources[numSources] = (sourceContrib){.contrib = b2Vec2_zero, .source = stepSource, .srcIdx = srcIdx};
-            numSources++;
-        }
-        sourceContrib *src = &sources[sourceSlots[slotIdx]];
+        sourceContrib *src = getSourceContrib(sources, sourceSlots, &numSources, maxSources, srcIdx, physicsStep->source);
         src->contrib = b2Add(src->contrib, stepContrib);
 
         // DEBUG_LOGF("# step %d drone %d contrib %f (%f, %f)", physicsStep->step, physicsStep->srcIdx, b2Length(contrib[physicsStep->srcIdx]), contrib[physicsStep->srcIdx].x, contrib[physicsStep->srcIdx].y);
@@ -1629,7 +1710,7 @@ int8_t findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall)
 }
 
 static inline bool physicsSourceIsWeapon(const physicsSource source) {
-    return source.type == RECOIL_PHYSICS || source.type == PROJECTILE_PHYSICS || source.type == EXPLOSION_PHYSICS || source.type == GRAPPLE_PHYSICS;
+    return source.type == RECOIL_PHYSICS || source.type == PROJECTILE_PHYSICS || source.type == EXPLOSION_PHYSICS || source.type == GRAPPLE_PHYSICS || source.type == SWAP_PHYSICS;
 }
 
 void recordDeathAnalysis(iwEnv *e, const droneEntity *drone, const int8_t killer, const wallEntity *killWall) {
@@ -2516,6 +2597,8 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
             DEBUG_LOGF("drone %d hit by explosion from weapon %d from drone %d", drone->idx, ctx->projectile->weaponInfo->type, ctx->parentDrone->idx);
         }
 
+        drone->lastVelocityStep = ctx->e->episodeLength;
+        drone->lastVelocityTrackIdx = cc_array_size(drone->physicsTracking);
         applyTrackedImpulse(ctx->e, drone->bodyID, drone->physicsTracking, impulse, ctx->parentDrone->idx, source);
         drone->lastVelocity = drone->velocity;
         drone->velocity = b2Body_GetLinearVelocity(drone->bodyID);
@@ -4203,6 +4286,9 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
                 startDroneSwapEffect(e, drone->pos, hitDronePos);
                 droneTeleport(e, hitDrone, drone->pos, b2Vec2_zero, false);
                 droneTeleport(e, drone, hitDronePos, b2Vec2_zero, false);
+                if (!hitDrone->dead) {
+                    trackSwapClaim(e, hitDrone, drone->idx);
+                }
             }
 
             destroyProjectile(e, projectile, false, true);
@@ -4582,6 +4668,9 @@ void sendDroneThroughPortal(const iwEnv *e, portalEntity *in, portalEntity *out,
     const b2Vec2 exitPos = portalExitPos(in, out, rot, entryPos, radius);
     const b2Vec2 exitVel = portalExitVelocity(in, out, rot, drone->lastVelocity);
     droneTeleport(e, drone, exitPos, exitVel, true);
+    if (!drone->dead) {
+        trackPortalTransit(e, drone, rot);
+    }
     startPortalTransitEffects(e, in, out);
 }
 
