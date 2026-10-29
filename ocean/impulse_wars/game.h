@@ -11,7 +11,7 @@ void createExplosion(iwEnv *e, droneEntity *drone, const projectileEntity *proje
 
 void updateTrailPoints(trailPoints *tp, const uint8_t maxLen, const b2Vec2 pos);
 
-entity *createEntity(iwEnv *e, enum entityType type, void *entityData) {
+entity *createEntity(iwEnv *e, const enum entityType type, void *entityData) {
     int32_t id = b2AllocId(&e->idPool);
     entity *ent = NULL;
     if (id == (int64_t)cc_array_size(e->entities)) {
@@ -343,7 +343,7 @@ uint8_t cellOffsets[8][2] = {
 // if quad is set to -1 a random valid position from anywhere on the map
 // will be returned, otherwise a position within the specified quadrant
 // will be returned
-bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos, int8_t quad) {
+bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos, const int8_t quad) {
     uint8_t checkedCells[BITNSLOTS(MAX_CELLS)] = {0};
     uint16_t attempts = 0;
     bool laxDroneDistanceChecks = false;
@@ -490,7 +490,7 @@ bool findOpenPos(iwEnv *e, const enum shapeCategory shapeType, b2Vec2 *emptyPos,
     }
 }
 
-entity *createWall(iwEnv *e, const b2Vec2 pos, const float width, const float height, int16_t cellIdx, const enum entityType type, const bool floating) {
+entity *createWall(iwEnv *e, const b2Vec2 pos, const float width, const float height, const int16_t cellIdx, const enum entityType type, const bool floating) {
     ASSERT(cellIdx != -1);
     ASSERT(entityTypeIsWall(type));
 
@@ -1168,7 +1168,7 @@ void createDrone(iwEnv *e, const uint8_t idx) {
     createDroneShield(e, drone, groupIdx);
 }
 
-void droneAddEnergy(droneEntity *drone, float energy) {
+void droneAddEnergy(droneEntity *drone, const float energy) {
     // if a burst is charging, add the energy to the burst charge
     if (drone->chargingBurst) {
         drone->burstCharge = clamp(drone->burstCharge + energy);
@@ -1177,7 +1177,7 @@ void droneAddEnergy(droneEntity *drone, float energy) {
     }
 }
 
-void createDronePiece(iwEnv *e, droneEntity *drone, const bool fromShield) {
+void createDronePiece(iwEnv *e, const droneEntity *drone, const bool fromShield) {
     const float distance = randFloat(&e->rng, DRONE_PIECE_MIN_DISTANCE, DRONE_PIECE_MAX_DISTANCE);
     const b2Vec2 direction = {.x = randFloat(&e->rng, -1.0f, 1.0f), .y = randFloat(&e->rng, -1.0f, 1.0f)};
     const b2Vec2 pos = b2MulAdd(drone->pos, distance, direction);
@@ -1977,7 +1977,7 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
     return true;
 }
 
-void droneTeleport(const iwEnv *e, droneEntity *drone, const b2Vec2 newPos, const b2Vec2 newVel, const bool setVel) {
+void droneTeleport(iwEnv *e, droneEntity *drone, const b2Vec2 newPos, const b2Vec2 newVel, const bool setVel) {
     // terminate any active brake trail so it won't connect across the
     // teleport, braking from the new position will start a new trail
     if (drone->braking && e->client != NULL && drone->brakeTrailPoints != NULL) {
@@ -2723,7 +2723,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     return true;
 }
 
-void applyDroneBurstImpulse(iwEnv *e, explosionCtx *ctx, const droneEntity *drone) {
+void applyDroneBurstImpulse(const iwEnv *e, explosionCtx *ctx, const droneEntity *drone) {
     wallBurstImpulse *hitWalls = ctx->wallImpulses;
     uint8_t wallsHit = ctx->wallsHit;
     const physicsSource source = {.type = BURST_PHYSICS};
@@ -3115,7 +3115,7 @@ void droneEmptyEnergy(iwEnv *e, droneEntity *drone) {
     e->stats[drone->idx].energyEmptied++;
 }
 
-void droneMove(const iwEnv *e, droneEntity *drone, b2Vec2 direction) {
+void droneMove(const iwEnv *e, const droneEntity *drone, b2Vec2 direction) {
     ASSERT_VEC_BOUNDED(direction);
 
     // if energy is fully depleted halve movement until energy starts
@@ -3155,7 +3155,7 @@ static void recordAimError(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
     stats->shotsAimedAway += err > 150.0f * PI / 180.0f;
 }
 
-void droneChargeEnergyDrain(const iwEnv *e, droneEntity *drone, const float holdTime) {
+void droneChargeEnergyDrain(iwEnv *e, droneEntity *drone, const float holdTime) {
     const float drainRate = DRONE_CHARGE_HOLD_DRAIN_RATE * (1.0f + holdTime);
     drone->energyLeft = max(drone->energyLeft - (drainRate * e->deltaTime), 0.0f);
     // don't set the refill wait when depleted as that would
@@ -3460,7 +3460,7 @@ void droneBrake(iwEnv *e, droneEntity *drone, const bool brake) {
 }
 
 // pressed is true on the step the burst button started being held
-void droneChargeBurst(iwEnv *e, droneEntity *drone, const bool pressed) {
+void droneChargeBurst(const iwEnv *e, droneEntity *drone, const bool pressed) {
     const bool energyBlocked = !droneEnergyUsable(drone) || (!drone->chargingBurst && drone->energyLeft < DRONE_BURST_BASE_COST);
     if (energyBlocked || drone->burstCooldown != 0.0f) {
         if (pressed && energyBlocked) {
@@ -3672,7 +3672,7 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
     return true;
 }
 
-void handleBlackHolePull(iwEnv *e, projectileEntity *projectile) {
+void handleBlackHolePull(const iwEnv *e, projectileEntity *projectile) {
     ASSERT(projectile->weaponInfo->type == BLACK_HOLE_WEAPON);
 
     CC_ArrayIter entIter;
@@ -4129,7 +4129,7 @@ void handleBodyMoveEvents(iwEnv *e) {
     }
 }
 
-bool projectileIgnoresBouncyWalls(projectileEntity *projectile) {
+bool projectileIgnoresBouncyWalls(const projectileEntity *projectile) {
     switch (projectile->weaponInfo->type) {
     case ACCELERATOR_WEAPON:
         // all accelerator wall bounces are counted
@@ -4146,7 +4146,7 @@ bool projectileIgnoresBouncyWalls(projectileEntity *projectile) {
     }
 }
 
-void createProjectileWeldJoint(iwEnv *e, projectileEntity *projectile, const b2BodyId bodyID, const b2Rot rot, const b2ContactId contactID, const bool projIsShapeA) {
+void createProjectileWeldJoint(const iwEnv *e, projectileEntity *projectile, const b2BodyId bodyID, const b2Rot rot, const b2ContactId contactID, const bool projIsShapeA) {
     ASSERT(b2Contact_IsValid(contactID));
     const b2Manifold manifold = b2Contact_GetData(contactID).manifold;
     ASSERT(manifold.pointCount == 1);
@@ -4355,7 +4355,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         }
 
         createProjectileWeldJoint(e, projectile, bodyID, b2Body_GetRotation(bodyID), contactID, projIsShapeA);
-        projectile->grappledEnt = ent;
+        projectile->grappledEnt = (entity *)ent;
         droneEntity *drone = safe_array_get_at(e->drones, projectile->droneIdx);
         uint8_t attachedTo = 2;
         if (entityTypeIsWall(ent->type)) {
@@ -4641,7 +4641,7 @@ void handleContactEvents(iwEnv *e) {
 // set pickup to respawn somewhere else randomly if a drone touched it,
 // mark the pickup as disabled if a floating wall is touching it
 // explode proximity detonating projectiles
-void handleProjectileBeginTouch(iwEnv *e, const entity *sensor, entity *visitor) {
+void handleProjectileBeginTouch(iwEnv *e, const entity *sensor, const entity *visitor) {
     projectileEntity *projectile = sensor->entity;
 
     switch (projectile->weaponInfo->type) {
@@ -4691,7 +4691,7 @@ void handleProjectileBeginTouch(iwEnv *e, const entity *sensor, entity *visitor)
     }
 }
 
-void handleProjectileEndTouch(const entity *sensor, entity *visitor) {
+void handleProjectileEndTouch(const entity *sensor, const entity *visitor) {
     projectileEntity *projectile = sensor->entity;
 
     switch (projectile->weaponInfo->type) {
@@ -4789,7 +4789,7 @@ void startPortalTransitEffects(const iwEnv *e, portalEntity *in, portalEntity *o
     out->transitEntry = false;
 }
 
-void sendDroneThroughPortal(const iwEnv *e, portalEntity *in, portalEntity *out, droneEntity *drone) {
+void sendDroneThroughPortal(iwEnv *e, portalEntity *in, portalEntity *out, droneEntity *drone) {
     float radius = DRONE_RADIUS;
     if (drone->shield != NULL) {
         radius = DRONE_SHIELD_RADIUS;
@@ -4818,7 +4818,7 @@ bool droneOverlapsPortal(const portalEntity *portal, const droneEntity *drone) {
 }
 
 // returns true if the drone was teleported
-bool handlePortalBeginTouch(const iwEnv *e, const entity *sensor, entity *visitor) {
+bool handlePortalBeginTouch(iwEnv *e, const entity *sensor, entity *visitor) {
     portalEntity *portal = sensor->entity;
 
     switch (visitor->type) {
@@ -4870,7 +4870,7 @@ bool handlePortalBeginTouch(const iwEnv *e, const entity *sensor, entity *visito
 
 // drones that entered a portal's sensor without being allowed through can
 // go through once they move towards the portal while still in the sensor
-void portalsStep(const iwEnv *e, uint8_t teleported) {
+void portalsStep(iwEnv *e, const uint8_t teleported) {
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
         if (drone->dead || (teleported & (1 << i)) != 0) {
