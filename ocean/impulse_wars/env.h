@@ -1810,6 +1810,90 @@ void endEpisode(iwEnv *e, const int8_t lastAlive, const int8_t lastAliveTeam) {
     e->needsReset = true;
 }
 
+// NaN guard: reports non-finite drone state, obs and rewards the first
+// NONFINITE_REPORTS times across all envs, and zeroes non-finite obs and
+// rewards so training can continue
+#define NONFINITE_REPORTS 20
+static uint32_t nonfiniteReports = 0;
+
+static inline bool vecFinite(const b2Vec2 v) {
+    return isfinite(v.x) && isfinite(v.y);
+}
+
+static void reportNonfinite(const iwEnv *e, const char *what, const int agent, const int idx, const int count, const float value) {
+    const uint32_t n = __atomic_fetch_add(&nonfiniteReports, 1, __ATOMIC_RELAXED);
+    if (n >= NONFINITE_REPORTS) {
+        return;
+    }
+
+    fprintf(stderr, "NONFINITE #%u %s: agent %d first idx %d count %d value %f map %d episode step %u needs reset %d\n", n + 1, what, agent, idx, count, value, e->mapIdx, e->episodeLength, e->needsReset);
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        const droneEntity *drone = safe_array_get_at(e->drones, i);
+        fprintf(stderr, "  drone %d dead %d pos %f %f vel %f %f last pos %f %f last vel %f %f weapon %d utility %d shield %d portals %d\n", drone->idx, drone->dead, drone->pos.x, drone->pos.y, drone->velocity.x, drone->velocity.y, drone->lastPos.x, drone->lastPos.y, drone->lastVelocity.x, drone->lastVelocity.y, drone->weapon.weaponInfo->type, drone->utility.utilityInfo->type, drone->shield != NULL, drone->openPortals);
+        for (uint8_t j = 0; j < drone->openPortals; j++) {
+            const portalEntity *portal = drone->portals[j];
+            const wallEntity *wall = portal->attachedWall;
+            fprintf(stderr, "    portal %d pos %f %f normal %f %f linked %d wall floating %d type %d pos %f %f vel %f %f\n", j, portal->pos.x, portal->pos.y, portal->normal.x, portal->normal.y, portal->linkedPortal != NULL, wall->isFloating, wall->type, wall->pos.x, wall->pos.y, wall->velocity.x, wall->velocity.y);
+        }
+    }
+    if (strcmp(what, "obs") == 0) {
+        const float *obs = agentObs(e, agent);
+        fprintf(stderr, "  bad obs idxs:");
+        for (uint16_t i = 0; i < e->obsSize; i++) {
+            if (!isfinite(obs[i])) {
+                fprintf(stderr, " %d", i);
+            }
+        }
+        fprintf(stderr, "\n");
+    }
+}
+
+// checked before a reset so the state of the step that went bad is reported
+static void checkDroneStateFinite(const iwEnv *e) {
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        const droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (drone->dead) {
+            continue;
+        }
+        if (!vecFinite(drone->pos) || !vecFinite(drone->velocity)) {
+            reportNonfinite(e, "drone state", drone->idx, -1, 0, isfinite(drone->pos.x) ? drone->velocity.x : drone->pos.x);
+            return;
+        }
+    }
+}
+
+static void checkObsRewardsFinite(iwEnv *e) {
+    for (uint8_t i = 0; i < e->numAgents; i++) {
+        float *obs = agentObs(e, i);
+        int first = -1;
+        int count = 0;
+        float value = 0.0f;
+        for (uint16_t j = 0; j < e->obsSize; j++) {
+            if (!isfinite(obs[j])) {
+                if (first == -1) {
+                    first = j;
+                    value = obs[j];
+                }
+                count++;
+            }
+        }
+        if (count != 0) {
+            reportNonfinite(e, "obs", i, first, count, value);
+            for (uint16_t j = 0; j < e->obsSize; j++) {
+                if (!isfinite(obs[j])) {
+                    obs[j] = 0.0f;
+                }
+            }
+        }
+
+        float *reward = agentRewards(e, i);
+        if (!isfinite(reward[0])) {
+            reportNonfinite(e, "reward", i, 0, 1, reward[0]);
+            reward[0] = 0.0f;
+        }
+    }
+}
+
 void puf_step(iwEnv *e) {
     // handle the start and end pause when rendering
     if (e->client != NULL) {
@@ -1912,11 +1996,15 @@ void puf_step(iwEnv *e) {
         endEpisode(e, lastAlive, lastAliveTeam);
     }
 
+    checkDroneStateFinite(e);
+
     if (e->client == NULL && e->needsReset) {
         puf_reset(e);
     } else if (e->client == NULL || e->tick_frames_left == 0) {
         computeObs(e);
     }
+
+    checkObsRewardsFinite(e);
 
 #ifdef PUF_DEBUG
     bool gotReward = false;

@@ -500,6 +500,13 @@ const char* PROF_NAMES[] = {
     "train_model",
 };
 
+// NaN guard: minibatch inputs checked when its grad isn't finite, in
+// nonfinite_flags bit order
+#define NUM_NONFINITE 7
+const char* NONFINITE_NAMES[NUM_NONFINITE] = {
+    "obs", "rnn_state", "rewards", "values", "logprobs", "advantages", "returns",
+};
+
 // Index must match LossIdx 0..LOSS_N-1 in algo.cu (not LOSS_N counter).
 const char* LOSS_NAMES[] = {
     "loss/policy",
@@ -548,6 +555,8 @@ typedef struct PuffeRL {
     cudaStream_t train_stream;    // dedicated learner stream (always non-default)
     int* act_sizes;        // device ACT_SIZES (NUM_ATNS ints)
     float* losses;         // device loss accumulator (NUM_LOSSES)
+    int* nonfinite_flags;  // NaN guard: NONFINITE_* inputs of skipped minibatches
+    int last_skips[MUON_NUM_SKIPS];  // NaN guard: skips already reported
     PPOBufs ppo_bufs; // Pre-allocated buffers for ppo_loss_fwd_bwd
     Prec actor_param;      // async flat actor params
     Prec grad;
@@ -1611,6 +1620,19 @@ static void train_epoch_gpu(PuffeRL* pufferl, RolloutBuf src, int slot,
         }
         muon_step(&pufferl->muon, primary->master_weights,
             pufferl->grad, hypers->max_grad_norm, stream);
+        // NaN guard: which inputs of a minibatch with a non-finite grad
+        // weren't finite; a no-op otherwise
+        Prec nonfinite_inputs[NUM_NONFINITE] = {
+            graph.mb_obs, pufferl->train_state, graph.mb_rewards,
+            graph.mb_values, graph.mb_logprobs, graph.mb_advantages,
+            graph.mb_returns,
+        };
+        for (int i = 0; i < NUM_NONFINITE; i++) {
+            long n = numel(nonfinite_inputs[i].shape);
+            nonfinite_flag<<<min((int)grid_size(n), 256), BLOCK_SIZE, 0, stream>>>(
+                pufferl->nonfinite_flags, 1 << i, pufferl->muon.grad_norm,
+                nonfinite_inputs[i].data, n);
+        }
         if (USE_BF16) {
             int n = numel(primary->param.shape);
             cast<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
@@ -2062,6 +2084,8 @@ PuffeRL* create_pufferl(Ini* ini, TrainContext* ctx) {
     cudaMemset(pufferl->rng_offset, 0, (num_buffers + 1) * sizeof(long));
     cudaMalloc((void**)&pufferl->act_sizes, num_action_heads * sizeof(int));
     cudaMalloc((void**)&pufferl->losses, NUM_LOSSES * sizeof(float));
+    cudaMalloc((void**)&pufferl->nonfinite_flags, sizeof(int));
+    cudaMemset(pufferl->nonfinite_flags, 0, sizeof(int));
 
     muon_init(&pufferl->muon, &primary->params_alloc, hypers.momentum, acts);
 
@@ -3251,6 +3275,32 @@ TrainResult run_train(Ini* ini, TrainContext* ctx) {
             dict_set(&new_log, LOSS_NAMES[i], losses_host[i] * inv_n);
         }
         cudaMemset(pufferl->losses, 0, NUM_LOSSES * sizeof(float));
+
+        // NaN guard: report updates skipped since the last log
+        int skips[MUON_NUM_SKIPS];
+        cudaMemcpy(skips, pufferl->muon.skips, sizeof(skips), cudaMemcpyDeviceToHost);
+        if (skips[MUON_SKIP_GRAD] != pufferl->last_skips[MUON_SKIP_GRAD]
+                || skips[MUON_SKIP_UPDATE] != pufferl->last_skips[MUON_SKIP_UPDATE]) {
+            int flags = 0;
+            cudaMemcpy(&flags, pufferl->nonfinite_flags, sizeof(int), cudaMemcpyDeviceToHost);
+            fprintf(stderr, "NONFINITE update skipped at step %ld epoch %ld: "
+                "non-finite grad %d (total %d), non-finite Muon update %d (total %d), "
+                "non-finite inputs so far:",
+                global_step * pufferl->hypers.world_size, pufferl->epoch,
+                skips[MUON_SKIP_GRAD] - pufferl->last_skips[MUON_SKIP_GRAD],
+                skips[MUON_SKIP_GRAD],
+                skips[MUON_SKIP_UPDATE] - pufferl->last_skips[MUON_SKIP_UPDATE],
+                skips[MUON_SKIP_UPDATE]);
+            for (int i = 0; i < NUM_NONFINITE; i++) {
+                if (flags & (1 << i)) {
+                    fprintf(stderr, " %s", NONFINITE_NAMES[i]);
+                }
+            }
+            fprintf(stderr, flags ? "\n" : " none\n");
+            memcpy(pufferl->last_skips, skips, sizeof(skips));
+        }
+        dict_set(&new_log, "nan_guard/skipped_grad", skips[MUON_SKIP_GRAD]);
+        dict_set(&new_log, "nan_guard/skipped_update", skips[MUON_SKIP_UPDATE]);
 
         log_util(pufferl, &new_log);
 

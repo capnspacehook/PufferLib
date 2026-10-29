@@ -1027,6 +1027,27 @@ Arch build_arch(int input_size, int hidden_size,
     };
 }
 
+// NaN guard counters, see muon_clip_nesterov and muon_weight_update
+enum MuonSkip {
+    MUON_SKIP_GRAD = 0, MUON_SKIP_UPDATE = 1, MUON_NUM_SKIPS = 2,
+};
+
+// NaN guard: sets bit in flags if any of x isn't finite, only checked when
+// the minibatch's grad sum of squares (gate) wasn't finite
+__global__ void nonfinite_flag(int* __restrict__ flags, int bit,
+        const float* __restrict__ gate, const precision_t* __restrict__ x, long n) {
+    if (isfinite(*gate)) {
+        return;
+    }
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n;
+            i += (long)blockDim.x * gridDim.x) {
+        if (!isfinite(to_float(x[i]))) {
+            atomicOr(flags, bit);
+            return;
+        }
+    }
+}
+
 __global__ void muon_sum_sq_partials(float* __restrict__ partials,
         const precision_t* __restrict__ src, int n) {
     __shared__ float sdata[256];
@@ -1049,11 +1070,24 @@ __global__ void muon_sum_sq_reduce(float* __restrict__ out,
 }
 
 // Global grad clip by L2, then Nesterov into f32 momentum buffer.
+// A non-finite grad norm zeroes the update and leaves the momentum
+// untouched, so one bad minibatch can't poison the weights; counted in
+// skips[MUON_SKIP_GRAD].
 __global__ void muon_clip_nesterov(float* __restrict__ mb,
         precision_t* __restrict__ gc, const float* __restrict__ sum_sq_ptr,
-        float max_norm, float eps, float mu, int n) {
-    float clip_coef = fminf(max_norm / (sqrtf(*sum_sq_ptr) + eps), 1.0f);
+        float max_norm, float eps, float mu, int n, int* __restrict__ skips) {
+    float sum_sq = *sum_sq_ptr;
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (!isfinite(sum_sq)) {
+        if (idx < n) {
+            gc[idx] = from_float(0.0f);
+        }
+        if (idx == 0) {
+            atomicAdd(&skips[MUON_SKIP_GRAD], 1);
+        }
+        return;
+    }
+    float clip_coef = fminf(max_norm / (sqrtf(sum_sq) + eps), 1.0f);
     if (idx < n) {
         float g = to_float(gc[idx]) * clip_coef;
         float m = mu * mb[idx] + g;
@@ -1082,12 +1116,21 @@ __global__ void muon_store_update(precision_t* __restrict__ dst,
 }
 
 // wb = wb * (1 - lr*wd) - lr * update  (update already scaled; one call for all params)
+// Skipped if the update isn't finite (Newton-Schulz blew up on a finite
+// grad); counted in skips[MUON_SKIP_UPDATE].
 __global__ void muon_weight_update(float* __restrict__ wb,
         const precision_t* __restrict__ update,
-        const float* __restrict__ lr_ptr, float wd, int n) {
+        const float* __restrict__ lr_ptr, float wd, int n,
+        const float* __restrict__ update_sum_sq, int* __restrict__ skips) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (!isfinite(*update_sum_sq)) {
+        if (idx == 0) {
+            atomicAdd(&skips[MUON_SKIP_UPDATE], 1);
+        }
+        return;
+    }
     float lr = *lr_ptr;
     float wd_scale = 1.0f - lr * wd;
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) {
         wb[idx] = wb[idx] * wd_scale - lr * to_float(update[idx]);
     }
@@ -1110,6 +1153,8 @@ struct Muon {
     float* grad_norm;
     float* ns_norm;
     float* norm_partials;  // 256
+    float* update_sum_sq;  // NaN guard: sum of squares of the final update
+    int* skips;            // NaN guard: MUON_NUM_SKIPS skipped update counters
     Float mb;              // flat momentum buffer (param-sized)
     Prec gram, gram_buf, x_buf;
     Allocator* param_alloc;
@@ -1122,6 +1167,9 @@ void muon_init(Muon* m, Allocator* param_alloc, double momentum, Allocator* allo
     cudaMalloc((void**)&m->grad_norm, sizeof(float));
     cudaMalloc((void**)&m->ns_norm, sizeof(float));
     cudaMalloc((void**)&m->norm_partials, 256 * sizeof(float));
+    cudaMalloc((void**)&m->update_sum_sq, sizeof(float));
+    cudaMalloc((void**)&m->skips, MUON_NUM_SKIPS * sizeof(int));
+    cudaMemset(m->skips, 0, MUON_NUM_SKIPS * sizeof(int));
     m->mb = {.shape = {param_alloc->total_elems}};
     alloc_register(alloc, &m->mb);
     long max_M = 0, max_N = 0;
@@ -1151,7 +1199,7 @@ void muon_step(Muon* m, Float weights, Prec grads,
         m->grad_norm, m->norm_partials, sum_blocks);
     muon_clip_nesterov<<<grid_size(n_grad), BLOCK_SIZE, 0, stream>>>(
         m->mb.data, grads.data, m->grad_norm,
-        max_grad_norm, 1e-6f, (float)m->momentum, n_grad);
+        max_grad_norm, 1e-6f, (float)m->momentum, n_grad, m->skips);
 
     // Per-param NS into workspace; write scaled update back into flat grads.
     // 1D params already hold their update in-place (scale 1).
@@ -1206,8 +1254,13 @@ void muon_step(Muon* m, Float weights, Prec grads,
         muon_store_update<<<grid_size(ne), BLOCK_SIZE, 0, stream>>>(
             gc_ptr, x_buf.data, scale, (int)ne);
     }
+    muon_sum_sq_partials<<<sum_blocks, 256, 0, stream>>>(
+        m->norm_partials, grads.data, n_grad);
+    muon_sum_sq_reduce<<<1, 256, 0, stream>>>(
+        m->update_sum_sq, m->norm_partials, sum_blocks);
     muon_weight_update<<<grid_size(n_grad), BLOCK_SIZE, 0, stream>>>(
-        weights.data, grads.data, m->lr, 0.0f, n_grad);
+        weights.data, grads.data, m->lr, 0.0f, n_grad,
+        m->update_sum_sq, m->skips);
 }
 
 // Train layout is (B, T). Views are sliced each mb; scratch is allocated.
