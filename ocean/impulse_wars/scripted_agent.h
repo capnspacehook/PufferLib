@@ -641,7 +641,7 @@ bool interceptAim(const droneEntity *drone, const b2Vec2 targetPos, const b2Vec2
             break;
         }
         dir = b2MulSV(1.0f / dist, toPredicted);
-        const float newT = dampedTravelTime(max(dist - spawnOffset, 0.0f), speed, weapon->damping);
+        const float newT = dampedTravelTime(fmaxf(dist - spawnOffset, 0.0f), speed, weapon->damping);
         if (newT < 0.0f) {
             return false;
         }
@@ -681,8 +681,8 @@ bool shotPathClear(const botCtx *c, const b2Vec2 aim, const float distance, cons
 // distance from a point to the closest point of a static wall
 static inline float staticWallDistance(const b2Vec2 wallPos, const b2Vec2 pos) {
     const float halfExtent = WALL_THICKNESS / 2.0f;
-    const float dx = max(fabsf(pos.x - wallPos.x) - halfExtent, 0.0f);
-    const float dy = max(fabsf(pos.y - wallPos.y) - halfExtent, 0.0f);
+    const float dx = fmaxf(fabsf(pos.x - wallPos.x) - halfExtent, 0.0f);
+    const float dy = fmaxf(fabsf(pos.y - wallPos.y) - halfExtent, 0.0f);
     return sqrtf(SQUARED(dx) + SQUARED(dy));
 }
 
@@ -757,7 +757,7 @@ float hazardClearance(botCtx *c, const b2Vec2 pos) {
         } else {
             dist = b2Distance(h->pos, pos) - h->radius;
         }
-        clearance = min(clearance, dist - droneRadius);
+        clearance = fminf(clearance, dist - droneRadius);
     }
     return clearance;
 }
@@ -957,8 +957,8 @@ static inline float octileDistance(const int16_t col, const int16_t row, const i
 
 static inline bool circleOverlapsCell(const b2Vec2 cellPos, const b2Vec2 pos, const float radius) {
     const float halfExtent = WALL_THICKNESS / 2.0f;
-    const float dx = max(fabsf(pos.x - cellPos.x) - halfExtent, 0.0f);
-    const float dy = max(fabsf(pos.y - cellPos.y) - halfExtent, 0.0f);
+    const float dx = fmaxf(fabsf(pos.x - cellPos.x) - halfExtent, 0.0f);
+    const float dy = fmaxf(fabsf(pos.y - cellPos.y) - halfExtent, 0.0f);
     return SQUARED(dx) + SQUARED(dy) < SQUARED(radius);
 }
 
@@ -1294,10 +1294,10 @@ void handleWallProximityVelocity(botCtx *c, const b2DistanceOutput *output, agen
     if (distance == 0.0f || b2Equal(wallDirection, b2Vec2_zero)) {
         wallDirection = b2Normalize(b2Sub(output->pointB, drone->pos));
     }
-    const float approachSpeed = max(b2Dot(drone->velocity, wallDirection), 0.0f);
+    const float approachSpeed = fmaxf(b2Dot(drone->velocity, wallDirection), 0.0f);
     const float brakingStop = approachSpeed / (DRONE_LINEAR_DAMPING * DRONE_BRAKE_DAMPING_COEF);
     const float coastingStop = approachSpeed / DRONE_LINEAR_DAMPING;
-    const float urgency = 1.0f / max(distance, 0.25f);
+    const float urgency = 1.0f / fmaxf(distance, 0.25f);
 
     // surviving is worth spending reserved ammo on
     const bool canFire = weaponSafeForMovement(drone);
@@ -1674,7 +1674,7 @@ weaponPickupEntity *choosePickup(botCtx *c) {
         if (c->enemy != NULL) {
             const float enemyDistance = b2Distance(pickup->pos, c->enemy->pos);
             if (enemyDistance < distance) {
-                score -= 2.0f * (1.0f - (enemyDistance / max(distance, 1.0f)));
+                score -= 2.0f * (1.0f - (enemyDistance / fmaxf(distance, 1.0f)));
             }
         }
         // stick with the pickup we already committed to
@@ -1818,9 +1818,9 @@ static void cellWallDistances(const iwEnv *e, const uint16_t cellIdx, float *dea
     for (uint8_t i = 0; i < MAX_NEAREST_WALLS; i++) {
         const float dist = staticWallDistance(walls[i].pos, pos);
         if (walls[i].type == DEATH_WALL_ENTITY) {
-            *deathWall = min(*deathWall, dist);
+            *deathWall = fminf(*deathWall, dist);
         } else {
-            *coverWall = min(*coverWall, dist);
+            *coverWall = fminf(*coverWall, dist);
         }
     }
 }
@@ -2593,7 +2593,7 @@ static agentActions botActions(const botCtx *ctx) {
 
         const wallEntity *wall = safe_array_get_at(e->walls, nearWalls[i].wallIdx);
         const b2DistanceOutput output = closestPoint(drone->ent, wall->ent);
-        closestWallDistance = min(closestWallDistance, output.distance);
+        closestWallDistance = fminf(closestWallDistance, output.distance);
         handleWallProximityVelocity(&c, &output, &actions);
     }
 
@@ -2607,7 +2607,7 @@ static agentActions botActions(const botCtx *ctx) {
         }
 
         const b2DistanceOutput output = closestPoint(drone->ent, floatingWall->ent);
-        closestWallDistance = min(closestWallDistance, output.distance);
+        closestWallDistance = fminf(closestWallDistance, output.distance);
         handleWallProximityVelocity(&c, &output, &actions);
     }
 
@@ -2642,7 +2642,7 @@ static agentActions botActions(const botCtx *ctx) {
             const b2Vec2 inward[4] = {{1.0f, 0.0f}, {-1.0f, 0.0f}, {0.0f, 1.0f}, {0.0f, -1.0f}};
             for (uint8_t i = 0; i < 4; i++) {
                 if (edges[i] < SUDDEN_DEATH_AVOID_DISTANCE) {
-                    actions.move = b2MulAdd(actions.move, 1.0f / max(edges[i], 0.25f), inward[i]);
+                    actions.move = b2MulAdd(actions.move, 1.0f / fmaxf(edges[i], 0.25f), inward[i]);
                 }
             }
         }
@@ -2658,7 +2658,7 @@ static agentActions botActions(const botCtx *ctx) {
         const float distance = b2Distance(h->pos, drone->pos) - h->radius;
         if (distance <= WALL_AVOID_DISTANCE) {
             const b2Vec2 away = b2Normalize(b2Sub(drone->pos, h->pos));
-            actions.move = b2MulAdd(actions.move, 1.0f / max(distance, 0.25f), away);
+            actions.move = b2MulAdd(actions.move, 1.0f / fmaxf(distance, 0.25f), away);
         }
     }
     steerForClearance(&c, &actions);

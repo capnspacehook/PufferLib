@@ -345,10 +345,10 @@ rayClient *createRayClient() {
     client->explosionSwirlsLoc = GetShaderLocation(client->explosionShader, "swirls[0]");
     client->explosionCountLoc = GetShaderLocation(client->explosionShader, "blastCount");
     const float distortionSettings[3] = {
-        max(max(0.0f, EXPLOSION_DISTORTION_MAX_PIXELS) * max(0.0f, EXPLOSION_DISTORTION_STRENGTH),
-            max(0.0f, BLACK_HOLE_DISTORTION_MAX_PIXELS) * max(0.0f, BLACK_HOLE_DISTORTION_STRENGTH)),
-        max(0.001f, EXPLOSION_DISTORTION_WAVE_WIDTH),
-        max(0.0f, EXPLOSION_DISTORTION_FADE_EXPONENT),
+        fmaxf(fmaxf(0.0f, EXPLOSION_DISTORTION_MAX_PIXELS) * fmaxf(0.0f, EXPLOSION_DISTORTION_STRENGTH),
+            fmaxf(0.0f, BLACK_HOLE_DISTORTION_MAX_PIXELS) * fmaxf(0.0f, BLACK_HOLE_DISTORTION_STRENGTH)),
+        fmaxf(0.001f, EXPLOSION_DISTORTION_WAVE_WIDTH),
+        fmaxf(0.0f, EXPLOSION_DISTORTION_FADE_EXPONENT),
     };
     SetShaderValue(client->explosionShader, GetShaderLocation(client->explosionShader, "distortionSettings"), distortionSettings, SHADER_UNIFORM_VEC3);
     const float blackHoleTint[4] = {
@@ -522,7 +522,7 @@ void setupEnvCamera(iwEnv *e) {
 
         camera->camera3D.projection = CAMERA_PERSPECTIVE;
         camera->maxZoom = (5 * e->map->rows) + 10;
-        const float startingZoom = max((camera->maxZoom + MIN_CAMERA_HEIGHT) / 2.0f, MIN_CAMERA_HEIGHT);
+        const float startingZoom = fmaxf((camera->maxZoom + MIN_CAMERA_HEIGHT) / 2.0f, MIN_CAMERA_HEIGHT);
         camera->camera3D.position = (Vector3){.x = 0.0f, .y = startingZoom, .z = 0.0f};
         camera->camera3D.target = (Vector3){.x = 0.0f, .y = 0.0f, .z = 0.0f};
         camera->camera3D.fovy = 45.0f;
@@ -609,7 +609,7 @@ Rectangle calculateCameraBoundingBox(const iwEnv *e) {
 
 float calculateZoom(const iwEnv *e, Rectangle droneBounds) {
     float boundsZoom = (droneBounds.width + droneBounds.height) * 0.5f;
-    boundsZoom += max(droneBounds.width, droneBounds.height) * 0.5f;
+    boundsZoom += fmaxf(droneBounds.width, droneBounds.height) * 0.5f;
 
     float fov = tanf((e->client->camera->camera3D.fovy * DEG2RAD) / 2.0f);
     float zoom = boundsZoom / fov;
@@ -1225,7 +1225,7 @@ void renderUI(const iwEnv *e, const bool starting) {
                 DrawCircleLinesV(pipPos, pipRadius, PUFF_WHITE);
             }
         }
-        weaponLineWidth = max(weaponLineWidth, utilityTextWidth + pipSpacing * (utilityInfo->ammo + 1));
+        weaponLineWidth = fmaxf(weaponLineWidth, utilityTextWidth + pipSpacing * (utilityInfo->ammo + 1));
 
         y += textSize.y + e->client->scale;
         DrawLine(x, y, x + weaponLineWidth, y, droneColor);
@@ -1502,13 +1502,13 @@ void renderBrakeTrails(iwEnv *e, const droneEntity *drone) {
 }
 
 static float explosionFadeTime(const b2ExplosionDef *def) {
-    const float radiusRatio = max(0.0f, def->radius) / max(0.001f, EXPLOSION_FADE_REFERENCE_RADIUS);
-    const float impulseRatio = fabsf(def->impulsePerLength) / max(0.001f, EXPLOSION_FADE_REFERENCE_IMPULSE);
+    const float radiusRatio = fmaxf(0.0f, def->radius) / fmaxf(0.001f, EXPLOSION_FADE_REFERENCE_RADIUS);
+    const float impulseRatio = fabsf(def->impulsePerLength) / fmaxf(0.001f, EXPLOSION_FADE_REFERENCE_IMPULSE);
     const float duration = EXPLOSION_FADE_BASE_TIME *
-                           powf(radiusRatio, max(0.0f, EXPLOSION_FADE_RADIUS_EXPONENT)) *
-                           powf(impulseRatio, max(0.0f, EXPLOSION_FADE_IMPULSE_EXPONENT));
-    const float minimum = max(0.0f, EXPLOSION_FADE_MIN_TIME);
-    return b2ClampFloat(duration, minimum, max(minimum, EXPLOSION_FADE_MAX_TIME));
+                           powf(radiusRatio, fmaxf(0.0f, EXPLOSION_FADE_RADIUS_EXPONENT)) *
+                           powf(impulseRatio, fmaxf(0.0f, EXPLOSION_FADE_IMPULSE_EXPONENT));
+    const float minimum = fmaxf(0.0f, EXPLOSION_FADE_MIN_TIME);
+    return b2ClampFloat(duration, minimum, fmaxf(minimum, EXPLOSION_FADE_MAX_TIME));
 }
 
 static float explosionRemaining(const explosionInfo *explosion) {
@@ -1531,11 +1531,11 @@ static float projectDistortionSource(const rayClient *client, b2Vec2 position, f
 }
 
 static uint16_t utilityShakeMaxSteps(const iwEnv *e) {
-    return (uint16_t)max(1.0f, ceilf(UTILITY_SHAKE_TIME * e->frameRate));
+    return (uint16_t)fmaxf(1.0f, ceilf(UTILITY_SHAKE_TIME * e->frameRate));
 }
 
 static uint16_t energyShakeMaxSteps(const iwEnv *e) {
-    return (uint16_t)max(1.0f, ceilf(ENERGY_SHAKE_TIME * e->frameRate));
+    return (uint16_t)fmaxf(1.0f, ceilf(ENERGY_SHAKE_TIME * e->frameRate));
 }
 
 // side to side offset of a shake that dies out, renderSteps counts down
@@ -1554,7 +1554,7 @@ static float shakeOffset(const iwEnv *e, const uint16_t renderSteps, const uint1
 }
 
 static uint16_t portalTransitMaxSteps(const iwEnv *e) {
-    return (uint16_t)max(1.0f, ceilf(PORTAL_TRANSIT_EFFECT_TIME * e->frameRate));
+    return (uint16_t)fmaxf(1.0f, ceilf(PORTAL_TRANSIT_EFFECT_TIME * e->frameRate));
 }
 
 // 1 when a portal effect just started, fading to 0
@@ -1584,7 +1584,7 @@ static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float am
             // Negative remaining life selects a steady pull field in the shared shader.
             blasts[count][3] = -1.0f;
             amplitudes[count] = BLACK_HOLE_DISTORTION_STRENGTH *
-                                min(radius * max(0.0f, BLACK_HOLE_DISTORTION_RADIUS_SCALE), BLACK_HOLE_DISTORTION_MAX_PIXELS);
+                                fminf(radius * fmaxf(0.0f, BLACK_HOLE_DISTORTION_RADIUS_SCALE), BLACK_HOLE_DISTORTION_MAX_PIXELS);
             count++;
         }
     }
@@ -1605,7 +1605,7 @@ static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float am
             blasts[count][2] = radius;
             blasts[count][3] = -remaining;
             amplitudes[count] = BLACK_HOLE_DISTORTION_STRENGTH *
-                                min(radius * max(0.0f, BLACK_HOLE_DISTORTION_RADIUS_SCALE), BLACK_HOLE_DISTORTION_MAX_PIXELS);
+                                fminf(radius * fmaxf(0.0f, BLACK_HOLE_DISTORTION_RADIUS_SCALE), BLACK_HOLE_DISTORTION_MAX_PIXELS);
             count++;
             continue;
         }
@@ -1616,11 +1616,11 @@ static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float am
         const float radius = projectDistortionSource(client, explosion->def.position, explosion->def.radius, blasts[count]);
         blasts[count][2] = explosion->def.impulsePerLength < 0.0f ? -radius : radius;
         blasts[count][3] = remaining;
-        const float impulseRatio = fabsf(explosion->def.impulsePerLength) / max(0.001f, EXPLOSION_DISTORTION_REFERENCE_IMPULSE);
+        const float impulseRatio = fabsf(explosion->def.impulsePerLength) / fmaxf(0.001f, EXPLOSION_DISTORTION_REFERENCE_IMPULSE);
         const float powerScale = Lerp(1.0f, sqrtf(impulseRatio), Clamp(EXPLOSION_DISTORTION_POWER_WEIGHT, 0.0f, 1.0f));
-        amplitudes[count] = max(0.0f, EXPLOSION_DISTORTION_STRENGTH) *
-                            min(radius * max(0.0f, EXPLOSION_DISTORTION_RADIUS_SCALE) * powerScale,
-                                max(0.0f, EXPLOSION_DISTORTION_MAX_PIXELS));
+        amplitudes[count] = fmaxf(0.0f, EXPLOSION_DISTORTION_STRENGTH) *
+                            fminf(radius * fmaxf(0.0f, EXPLOSION_DISTORTION_RADIUS_SCALE) * powerScale,
+                                fmaxf(0.0f, EXPLOSION_DISTORTION_MAX_PIXELS));
         count++;
     }
 
@@ -1705,16 +1705,16 @@ void renderExplosions(const iwEnv *e) {
         const bool implosion = explosion->def.impulsePerLength < 0.0f;
         const Color color = explosion->isBurst ? getDroneColor(explosion->droneIdx) : RAYWHITE;
         const float waveRadius = radius * (implosion ? 0.85f - 0.75f * travel : 0.15f + 0.7f * travel);
-        const float waveWidth = max(0.12f, radius * 0.045f * remaining);
+        const float waveWidth = fmaxf(0.12f, radius * 0.045f * remaining);
         const float waveOpacity = explosion->isBurst ? 0.35f : 0.15f;
 
         // Put simple 2D shapes on the arena's XZ plane.
         rlPushMatrix();
         rlTranslatef(explosion->def.position.x, 0.0f, explosion->def.position.y);
         rlRotatef(90.0f, 1.0f, 0.0f, 0.0f);
-        DrawRing(Vector2Zero(), max(0.0f, waveRadius - waveWidth), waveRadius, 0.0f, 360.0f, 64, Fade(color, remaining * remaining * waveOpacity));
+        DrawRing(Vector2Zero(), fmaxf(0.0f, waveRadius - waveWidth), waveRadius, 0.0f, 360.0f, 64, Fade(color, remaining * remaining * waveOpacity));
 
-        const float flash = max(0.0f, 1.0f - age * 4.0f);
+        const float flash = fmaxf(0.0f, 1.0f - age * 4.0f);
         if (flash > 0.0f) {
             DrawCircleV(Vector2Zero(), explosion->def.radius * (0.12f + 0.3f * flash), Fade(color, flash * flash * 0.3f));
         }
@@ -1727,11 +1727,11 @@ void renderExplosions(const iwEnv *e) {
             const Vector2 direction = {cosf(angle), sinf(angle)};
             const float reach = radius * randFloat(&sparkRng, 0.5f, 0.7f);
             const float head = reach * (implosion ? 1.0f - travel : 0.15f + 0.85f * travel);
-            const float tail = implosion ? head + reach * 0.18f * remaining : max(0.0f, head - reach * 0.18f * remaining);
-            DrawLineEx(Vector2Scale(direction, tail), Vector2Scale(direction, head), max(0.08f, radius * 0.012f * remaining), Fade(color, remaining * remaining * 0.45f));
+            const float tail = implosion ? head + reach * 0.18f * remaining : fmaxf(0.0f, head - reach * 0.18f * remaining);
+            DrawLineEx(Vector2Scale(direction, tail), Vector2Scale(direction, head), fmaxf(0.08f, radius * 0.012f * remaining), Fade(color, remaining * remaining * 0.45f));
         }
         // Keep the exact outer edge fixed while its outline fades away.
-        const float boundaryWidth = min(radius, Clamp(radius * 0.008f, 0.16f, 0.3f));
+        const float boundaryWidth = fminf(radius, Clamp(radius * 0.008f, 0.16f, 0.3f));
         DrawRing(Vector2Zero(), radius - boundaryWidth, radius, 0.0f, 360.0f, 96, Fade(color, 0.9f * remaining));
         rlPopMatrix();
     }
@@ -1941,7 +1941,7 @@ void renderDroneAimGuide(const iwEnv *e, const droneEntity *drone) {
 
     const b2DistanceOutput output = closestPoint(drone->ent, ent);
     float aimGuideWidth = getWeaponAimGuideWidth(drone->weapon.weaponInfo->type);
-    aimGuideWidth = min(aimGuideWidth, output.distance + 0.1f) + (DRONE_RADIUS * 2.0f);
+    aimGuideWidth = fminf(aimGuideWidth, output.distance + 0.1f) + (DRONE_RADIUS * 2.0f);
 
     // render laser aim guide
     const b2Vec2 pos = b2MulAdd(drone->pos, aimGuideWidth / 2.0f, drone->lastAim);
@@ -2112,7 +2112,7 @@ void renderDroneUI(const iwEnv *e, const droneEntity *drone) {
 
     // draw burst charge indicator
     if (drone->chargingBurst) {
-        const float alpha = min(drone->burstCharge + (50.0f / 255.0f), 1.0f);
+        const float alpha = fminf(drone->burstCharge + (50.0f / 255.0f), 1.0f);
         const Color burstChargeColor = Fade(RAYWHITE, alpha);
         const float burstChargeOuterRadius = (DRONE_BURST_RADIUS_BASE * drone->burstCharge) + DRONE_BURST_RADIUS_MIN;
         const float burstChargeInnerRadius = burstChargeOuterRadius - 0.15f;
@@ -2281,7 +2281,7 @@ void renderGrappleLine(const iwEnv *e, const droneEntity *drone) {
     const float offset = fmodf(time * GRAPPLE_DASH_SPEED, GRAPPLE_DASH_SPACING);
     for (float t = offset; t < len; t += GRAPPLE_DASH_SPACING) {
         const Vector3 dashStart = Vector3Add(end, Vector3Scale(dir, t));
-        const Vector3 dashEnd = Vector3Add(end, Vector3Scale(dir, min(t + GRAPPLE_DASH_LENGTH, len)));
+        const Vector3 dashEnd = Vector3Add(end, Vector3Scale(dir, fminf(t + GRAPPLE_DASH_LENGTH, len)));
         DrawCylinderEx(dashStart, dashEnd, GRAPPLE_DASH_WIDTH, GRAPPLE_DASH_WIDTH, 4, Fade(color, alpha));
     }
 }
@@ -2304,7 +2304,7 @@ void renderBoostSparks(const iwEnv *e) {
 
         const float projRadius = weaponInfos[sparks->weapon]->radius;
         const float reach = Clamp(projRadius * BOOST_SPARKS_REACH_RADII, BOOST_SPARKS_MIN_REACH, BOOST_SPARKS_MAX_REACH);
-        const float width = max(BOOST_SPARKS_MIN_WIDTH, projRadius * BOOST_SPARKS_WIDTH_RADII) * remaining;
+        const float width = fmaxf(BOOST_SPARKS_MIN_WIDTH, projRadius * BOOST_SPARKS_WIDTH_RADII) * remaining;
         const Color color = Fade(getProjectileColor(sparks->weapon), remaining);
         const float baseAngle = atan2f(sparks->direction.y, sparks->direction.x);
 
@@ -2324,7 +2324,7 @@ void renderBoostSparks(const iwEnv *e) {
             // backward sparks are shorter so the boost reads as forward
             const float sparkReach = reach * (forward ? 1.0f : 0.5f) * randFloat(&sparkRng, 0.5f, 1.0f);
             const float head = sparkReach * travel;
-            const float tail = max(0.0f, head - sparkReach * BOOST_SPARKS_STREAK_LENGTH * remaining);
+            const float tail = fmaxf(0.0f, head - sparkReach * BOOST_SPARKS_STREAK_LENGTH * remaining);
             DrawLineEx(Vector2Scale(dir, tail), Vector2Scale(dir, head), width, color);
         }
         rlPopMatrix();

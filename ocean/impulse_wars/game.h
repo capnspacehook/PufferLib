@@ -1182,7 +1182,7 @@ void createDronePiece(iwEnv *e, const droneEntity *drone, const bool fromShield)
     const b2Vec2 direction = {.x = randFloat(&e->rng, -1.0f, 1.0f), .y = randFloat(&e->rng, -1.0f, 1.0f)};
     const b2Vec2 pos = b2MulAdd(drone->pos, distance, direction);
     const b2Rot rot = b2MakeRot(randFloat(&e->rng, -PI, PI));
-    const float bonus = 1.0f + min(b2Length(drone->velocity) / 15.0f, 5.0f);
+    const float bonus = 1.0f + fminf(b2Length(drone->velocity) / 15.0f, 5.0f);
     const float speed = randFloat(&e->rng, DRONE_PIECE_MIN_SPEED, DRONE_PIECE_MAX_SPEED) * bonus;
     const float angularVelocity = randFloat(&e->rng, -PI, PI);
 
@@ -2504,9 +2504,9 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     // impulse, only strengthen it
     if (ctx->projectile != NULL) {
         if (isImplosion) {
-            parentSpeed = min(parentSpeed, 0.0f);
+            parentSpeed = fminf(parentSpeed, 0.0f);
         } else {
-            parentSpeed = max(parentSpeed, 0.0f);
+            parentSpeed = fmaxf(parentSpeed, 0.0f);
         }
     }
     // the parent entity's velocity affects the direction of the impulse
@@ -3157,11 +3157,11 @@ static void recordAimError(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
 
 void droneChargeEnergyDrain(iwEnv *e, droneEntity *drone, const float holdTime) {
     const float drainRate = DRONE_CHARGE_HOLD_DRAIN_RATE * (1.0f + holdTime);
-    drone->energyLeft = max(drone->energyLeft - (drainRate * e->deltaTime), 0.0f);
+    drone->energyLeft = fmaxf(drone->energyLeft - (drainRate * e->deltaTime), 0.0f);
     // don't set the refill wait when depleted as that would
     // block charging and cancel this charge before it drains
     if (!drone->energyFullyDepleted) {
-        drone->energyRefillWait = max(drone->energyRefillWait, DRONE_ENERGY_REFILL_WAIT);
+        drone->energyRefillWait = fmaxf(drone->energyRefillWait, DRONE_ENERGY_REFILL_WAIT);
     }
 
     if (drone->energyLeft == 0.0f) {
@@ -3224,7 +3224,7 @@ void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool trigg
                 return;
             }
 
-            weapon->charge = min(weapon->charge + e->deltaTime, weapon->weaponInfo->maxCharge);
+            weapon->charge = fminf(weapon->charge + e->deltaTime, weapon->weaponInfo->maxCharge);
         } else if (weapon->charge < weapon->weaponInfo->maxCharge) {
             droneEmptyCharge(drone);
         }
@@ -3387,7 +3387,7 @@ void droneUtility(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool hel
 
 // regenerates utility ammo and cools down the utility
 void utilityStep(const iwEnv *e, utilitySlot *utility) {
-    utility->cooldown = max(utility->cooldown - e->deltaTime, 0.0f);
+    utility->cooldown = fmaxf(utility->cooldown - e->deltaTime, 0.0f);
 
     const utilityInformation *info = utility->utilityInfo;
     if (utility->ammo >= info->ammo) {
@@ -3441,7 +3441,7 @@ void droneBrake(iwEnv *e, droneEntity *drone, const bool brake) {
             b2Body_SetLinearDamping(drone->bodyID, DRONE_LINEAR_DAMPING * DRONE_BRAKE_DAMPING_COEF);
             droneTrackBrake(e, drone);
         }
-        drone->energyLeft = max(drone->energyLeft - (DRONE_BRAKE_DRAIN_RATE * e->deltaTime), 0.0f);
+        drone->energyLeft = fmaxf(drone->energyLeft - (DRONE_BRAKE_DRAIN_RATE * e->deltaTime), 0.0f);
         e->stats[drone->idx].brakeTime += e->deltaTime;
     }
 
@@ -3471,11 +3471,11 @@ void droneChargeBurst(const iwEnv *e, droneEntity *drone, const bool pressed) {
 
     // take energy and put it into burst charge
     if (drone->chargingBurst) {
-        drone->burstCharge = min(drone->burstCharge + (DRONE_BURST_CHARGE_RATE * e->deltaTime), DRONE_ENERGY_MAX);
-        drone->energyLeft = max(drone->energyLeft - (DRONE_BURST_CHARGE_RATE * e->deltaTime), 0.0f);
+        drone->burstCharge = fminf(drone->burstCharge + (DRONE_BURST_CHARGE_RATE * e->deltaTime), DRONE_ENERGY_MAX);
+        drone->energyLeft = fmaxf(drone->energyLeft - (DRONE_BURST_CHARGE_RATE * e->deltaTime), 0.0f);
     } else {
-        drone->burstCharge = min(drone->burstCharge + DRONE_BURST_BASE_COST, DRONE_ENERGY_MAX);
-        drone->energyLeft = max(drone->energyLeft - DRONE_BURST_BASE_COST, 0.0f);
+        drone->burstCharge = fminf(drone->burstCharge + DRONE_BURST_BASE_COST, DRONE_ENERGY_MAX);
+        drone->energyLeft = fmaxf(drone->energyLeft - DRONE_BURST_BASE_COST, 0.0f);
         drone->chargingBurst = true;
     }
 
@@ -3530,10 +3530,10 @@ void droneBurst(iwEnv *e, droneEntity *drone) {
 
 void weaponStep(const iwEnv *e, weaponSlot *weapon) {
     if (weapon->cooldown > 0.0f) {
-        weapon->cooldown = max(weapon->cooldown - e->deltaTime, -e->deltaTime);
+        weapon->cooldown = fmaxf(weapon->cooldown - e->deltaTime, -e->deltaTime);
     } else {
         weapon->cooldown = 0.0f;
-        weapon->heat = max(weapon->heat - (MACHINEGUN_HEAT_COOL * e->deltaTime), 0);
+        weapon->heat = fmaxf(weapon->heat - (MACHINEGUN_HEAT_COOL * e->deltaTime), 0);
     }
 }
 
@@ -3642,16 +3642,16 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
 
     // manage drone energy
     if (drone->burstCooldown != 0.0f) {
-        drone->burstCooldown = max(drone->burstCooldown - e->deltaTime, 0.0f);
+        drone->burstCooldown = fmaxf(drone->burstCooldown - e->deltaTime, 0.0f);
     }
     if (drone->energyFullyDepletedThisStep) {
         drone->energyFullyDepletedThisStep = false;
     } else if (drone->energyRefillWait != 0.0f) {
-        drone->energyRefillWait = max(drone->energyRefillWait - e->deltaTime, 0.0f);
+        drone->energyRefillWait = fmaxf(drone->energyRefillWait - e->deltaTime, 0.0f);
     } else if (drone->energyLeft != DRONE_ENERGY_MAX && !drone->chargingBurst && drone->weapon.fullChargeHoldTime <= DRONE_CHARGE_FULL_DRAIN_WAIT) {
         // don't start recharging energy until the burst charge is used
         // or while a held weapon charge is draining energy
-        drone->energyLeft = min(drone->energyLeft + (DRONE_ENERGY_REFILL_RATE * e->deltaTime), DRONE_ENERGY_MAX);
+        drone->energyLeft = fminf(drone->energyLeft + (DRONE_ENERGY_REFILL_RATE * e->deltaTime), DRONE_ENERGY_MAX);
     }
     if (drone->energyLeft == DRONE_ENERGY_MAX) {
         drone->energyFullyDepleted = false;
@@ -3857,8 +3857,8 @@ static const float PICKUP_WALL_CHECK_DISTANCE_SQUARED =
 // squared distance from a point to the axis aligned pickup box
 static inline float pickupDistanceSquared(const b2Vec2 pickupPos, const b2Vec2 pos) {
     const float halfExtent = PICKUP_THICKNESS / 2.0f;
-    const float dx = max(fabsf(pos.x - pickupPos.x) - halfExtent, 0.0f);
-    const float dy = max(fabsf(pos.y - pickupPos.y) - halfExtent, 0.0f);
+    const float dx = fmaxf(fabsf(pos.x - pickupPos.x) - halfExtent, 0.0f);
+    const float dy = fmaxf(fabsf(pos.y - pickupPos.y) - halfExtent, 0.0f);
     return SQUARED(dx) + SQUARED(dy);
 }
 
@@ -3872,8 +3872,8 @@ static inline bool pickupOverlapsDrone(const b2Vec2 pickupPos, const b2Vec2 dron
 // approach exactly; the bounding box reject means it almost never runs.
 static bool pickupOverlapsDronePath(const b2Vec2 pickupPos, const b2Vec2 from, const b2Vec2 to) {
     const float reach = (PICKUP_THICKNESS / 2.0f) + DRONE_RADIUS;
-    if (min(from.x, to.x) - pickupPos.x > reach || pickupPos.x - max(from.x, to.x) > reach ||
-        min(from.y, to.y) - pickupPos.y > reach || pickupPos.y - max(from.y, to.y) > reach) {
+    if (fminf(from.x, to.x) - pickupPos.x > reach || pickupPos.x - fmaxf(from.x, to.x) > reach ||
+        fminf(from.y, to.y) - pickupPos.y > reach || pickupPos.y - fmaxf(from.y, to.y) > reach) {
         return false;
     }
 
@@ -3996,7 +3996,7 @@ void weaponPickupsStep(iwEnv *e) {
         if (pickup->respawnWait == 0.0f) {
             continue;
         }
-        pickup->respawnWait = max(pickup->respawnWait - e->deltaTime, 0.0f);
+        pickup->respawnWait = fmaxf(pickup->respawnWait - e->deltaTime, 0.0f);
         if (pickup->respawnWait != 0.0f) {
             continue;
         }
@@ -4487,7 +4487,7 @@ void handleProjectileEndContact(iwEnv *e, const entity *proj, const entity *ent)
     // after a collision and we want to keep the speed consistent
     float newSpeed = projectile->lastSpeed;
     if (projectile->weaponInfo->type == ACCELERATOR_WEAPON) {
-        newSpeed = min(projectile->lastSpeed * ACCELERATOR_BOUNCE_SPEED_COEF, ACCELERATOR_MAX_SPEED);
+        newSpeed = fminf(projectile->lastSpeed * ACCELERATOR_BOUNCE_SPEED_COEF, ACCELERATOR_MAX_SPEED);
         projectile->speed = newSpeed;
     }
 
@@ -5102,16 +5102,16 @@ static void findNearWallsSpiral(const iwEnv *e, const droneEntity *drone, nearWa
         // so equal-distance candidates still receive deterministic tie ordering.
         float remainingDistance = FLT_MAX;
         if (col - radius > 0) {
-            remainingDistance = min(remainingDistance, drone->pos.x - e->cells[col - radius - 1].pos.x);
+            remainingDistance = fminf(remainingDistance, drone->pos.x - e->cells[col - radius - 1].pos.x);
         }
         if (col + radius + 1 < e->map->columns) {
-            remainingDistance = min(remainingDistance, e->cells[col + radius + 1].pos.x - drone->pos.x);
+            remainingDistance = fminf(remainingDistance, e->cells[col + radius + 1].pos.x - drone->pos.x);
         }
         if (row - radius > 0) {
-            remainingDistance = min(remainingDistance, drone->pos.y - e->cells[(row - radius - 1) * e->map->columns].pos.y);
+            remainingDistance = fminf(remainingDistance, drone->pos.y - e->cells[(row - radius - 1) * e->map->columns].pos.y);
         }
         if (row + radius + 1 < e->map->rows) {
-            remainingDistance = min(remainingDistance, e->cells[(row + radius + 1) * e->map->columns].pos.y - drone->pos.y);
+            remainingDistance = fminf(remainingDistance, e->cells[(row + radius + 1) * e->map->columns].pos.y - drone->pos.y);
         }
         if (found == nWalls && (remainingDistance == FLT_MAX ||
                                 remainingDistance * remainingDistance > nearestWalls[nWalls - 1].distanceSquared)) {

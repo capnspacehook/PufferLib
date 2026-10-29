@@ -38,7 +38,7 @@ uint16_t findNearestCell(const iwEnv *e, const b2Vec2 pos, const uint16_t cellId
         }
         const int16_t newCellIdx = cellIndex(e, newCellCol, newCellRow);
         const mapCell *cell = (&e->cells[newCellIdx]);
-        if (minDistance != min(minDistance, b2DistanceSquared(pos, cell->pos))) {
+        if (minDistance != fminf(minDistance, b2DistanceSquared(pos, cell->pos))) {
             closestCell = newCellIdx;
         }
     }
@@ -1461,7 +1461,7 @@ void updateExplosions(iwEnv *e) {
     while (cc_array_iter_next(&iter, (void **)&explosion) != CC_ITER_END) {
         if (explosion->renderSteps == UINT16_MAX) {
             const float duration = explosion->isBlackHole ? BLACK_HOLE_DISTORTION_FADE_TIME : explosionFadeTime(&explosion->def);
-            explosion->maxRenderSteps = (uint16_t)min((float)(UINT16_MAX - 1), max(1.0f, ceilf(duration * e->frameRate)));
+            explosion->maxRenderSteps = (uint16_t)fminf((float)(UINT16_MAX - 1), fmaxf(1.0f, ceilf(duration * e->frameRate)));
             explosion->renderSteps = explosion->maxRenderSteps;
         } else if (explosion->renderSteps == 0) {
             fastFree(explosion);
@@ -1479,7 +1479,7 @@ void updateBoostSparks(iwEnv *e) {
 
     while (cc_array_iter_next(&iter, (void **)&sparks) != CC_ITER_END) {
         if (sparks->renderSteps == UINT16_MAX) {
-            sparks->maxRenderSteps = (uint16_t)max(1.0f, ceilf(BOOST_SPARKS_FADE_TIME * e->frameRate));
+            sparks->maxRenderSteps = (uint16_t)fmaxf(1.0f, ceilf(BOOST_SPARKS_FADE_TIME * e->frameRate));
             sparks->renderSteps = sparks->maxRenderSteps;
         } else if (sparks->renderSteps == 0) {
             fastFree(sparks);

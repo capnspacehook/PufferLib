@@ -1069,14 +1069,14 @@ static void deathWallDistances(iwEnv *e, const droneEntity *d, float *staticDist
         const nearWall *walls = e->map->nearestWalls + (MAX_NEAREST_WALLS * d->mapCellIdx);
         for (uint8_t i = 0; i < MAX_NEAREST_WALLS; i++) {
             if (walls[i].type == DEATH_WALL_ENTITY) {
-                *staticDist = min(*staticDist, staticWallDistance(walls[i].pos, d->pos));
+                *staticDist = fminf(*staticDist, staticWallDistance(walls[i].pos, d->pos));
             }
         }
     }
     for (uint8_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
         const wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
         if (wall->type == DEATH_WALL_ENTITY) {
-            *floatingDist = min(*floatingDist, floatingWallDistance(wall, d->pos));
+            *floatingDist = fminf(*floatingDist, floatingWallDistance(wall, d->pos));
         }
     }
 }
@@ -1570,7 +1570,7 @@ static void observeStep(gameSlot *slot) {
         }
         float staticDist, floatingDist;
         deathWallDistances(e, d, &staticDist, &floatingDist);
-        const float deathDist = min(staticDist, floatingDist) - DRONE_RADIUS;
+        const float deathDist = fminf(staticDist, floatingDist) - DRONE_RADIUS;
         s->nearDeath3 += deathDist < 3.0f;
         s->nearDeath6 += deathDist < 6.0f;
         s->nearFloatingDeath6 += floatingDist - DRONE_RADIUS < 6.0f;

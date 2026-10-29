@@ -416,9 +416,9 @@ static void reportVsPolicy(void) {
         }
         const double n = seedsPerPair;
         const double mean = sum / n;
-        const double ci = 1.96 * sqrt(max(sumSq / n - mean * mean, 0.0) / n);
+        const double ci = 1.96 * sqrt(fmax(sumSq / n - mean * mean, 0.0) / n);
         const double diffMean = diff / n;
-        const double diffCi = 1.96 * sqrt(max(diffSq / n - diffMean * diffMean, 0.0) / n);
+        const double diffCi = 1.96 * sqrt(fmax(diffSq / n - diffMean * diffMean, 0.0) / n);
         printf("%s vs policy: score %.4f +- %.4f  (W %.3f T %.3f L %.3f, len %.0f)", v->name, mean, ci, wins / n, ties / n,
                (n - wins - ties) / n, length / n);
         if (p != 0) {
@@ -580,7 +580,7 @@ int main(int argc, char **argv) {
         }
         const double n = seedsPerPair;
         const double mean = sum / n;
-        const double var = max(sumSq / n - mean * mean, 0.0);
+        const double var = fmax(sumSq / n - mean * mean, 0.0);
         const double ci = 1.96 * sqrt(var / n);
         const double games = n * 2;
         printf("%s vs %s: score %.4f +- %.4f  (W %.3f T %.3f L %.3f, len %.0f)\n", va->name, vb->name, mean, ci,
