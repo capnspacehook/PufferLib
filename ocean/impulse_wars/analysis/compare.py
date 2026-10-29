@@ -45,17 +45,21 @@ WEAPON_SETS = {
     # projectiles, ordered after the weapons
     'utilities': ['unset', 'standard', 'machinegun', 'sniper', 'shotgun', 'imploder', 'accelerator', 'flak',
                   'blackhole', 'nuke', 'grapple', 'mine'],
+    # from the portal utility on, its portal gun is the last utility
+    # projectile
+    'portals': ['unset', 'standard', 'machinegun', 'sniper', 'shotgun', 'imploder', 'accelerator', 'flak',
+                'blackhole', 'nuke', 'grapple', 'mine', 'portal'],
 }
 # weapons whose projectiles are only fired by a utility, as weaponIsUtility
 # in settings.h
-UTILITY_PROJECTILES = ('grapple', 'mine')
-WEAPONS = WEAPON_SETS['utilities']
+UTILITY_PROJECTILES = ('grapple', 'mine', 'portal')
+WEAPONS = WEAPON_SETS['portals']
 
 
 def weapon_names(drone):
     """Weapon names in the order a result's per weapon arrays use."""
     if 'utilitiesPickedUp' in drone:
-        return WEAPON_SETS['utilities']
+        return WEAPON_SETS['portals' if len(drone['shotsFired']) == len(WEAPON_SETS['portals']) else 'utilities']
     return WEAPON_SETS[len(drone['shotsFired'])]
 # action heads by how many there are; 8 is from before the utility slot
 ATNS = {
@@ -66,12 +70,20 @@ ATNS = {
 
 def atn_names(n):
     return ATNS.get(n, [f'head {i}' for i in range(n)])
-SOURCES = ['invalid', 'movement', 'recoil', 'burst', 'projectile', 'explosion', 'grapple', 'drone']
+SOURCES = ['invalid', 'movement', 'recoil', 'burst', 'projectile', 'explosion', 'grapple', 'drone', 'swap']
+# from before portal swaps were their own physics source
+SOURCES_NO_SWAP = SOURCES[:-1]
 # from before grapples were their own physics source
 SOURCES_NO_GRAPPLE = ['invalid', 'movement', 'recoil', 'burst', 'projectile', 'explosion', 'drone']
-# utilities by type, and the weapons their projectiles are
-UTILITIES = ['none', 'grapple', 'mines']
-UTILITY_WEAPONS = {1: 'grapple', 2: 'mine'}
+# utilities by type, and the weapons their projectiles are; results from
+# before the portal utility have the first three
+UTILITIES = ['none', 'grapple', 'mines', 'portals']
+UTILITY_WEAPONS = {1: 'grapple', 2: 'mine', 3: 'portal'}
+
+
+def utility_names(drone):
+    """Utility names in the order a result's per utility arrays use."""
+    return UTILITIES[:len(drone.get('utilitiesPickedUp', UTILITIES))]
 GRAPPLE_TARGETS = ['wall', 'floating wall', 'drone']
 OPPS = ['scripted', 'evader', 'camper', 'rusher', 'trapper', 'turtle', 'fundamentals']
 SECTIONS = ['opp', 'map', 'grid', 'weapons', 'boost', 'deaths', 'behavior', 'slots', 'utilities', 'pace', 'mapweapons',
@@ -291,7 +303,7 @@ def section_deaths(runs, side):
                      fmt(sum(g[side].get('assists', 0) for g in games) / n, 3)])
     table('kills and deaths per game', ['run', 'kills', 'deaths', 'self', 'floatSelf', 'floatDeaths', 'unknown', 'assists'], rows)
     rows = []
-    sources = SOURCES if len(games[0][side]['deathsBySource']) == len(SOURCES) else SOURCES_NO_GRAPPLE
+    sources = {len(s): s for s in (SOURCES, SOURCES_NO_SWAP, SOURCES_NO_GRAPPLE)}[len(games[0][side]['deathsBySource'])]
     for t, src in enumerate(sources[1:], 1):
         row = [src]
         for _, games in runs:
@@ -933,8 +945,9 @@ def main():
     for spec in args.runs:
         name, _, path = spec.rpartition('=')
         runs.append((name or os.path.splitext(os.path.basename(path))[0], load(path)))
-    global WEAPONS
+    global WEAPONS, UTILITIES
     WEAPONS = weapon_names(runs[0][1][0]['p'])
+    UTILITIES = utility_names(runs[0][1][0]['p'])
     sections = args.sections
     if sections is None:
         if 'loadout' in runs[0][1][0]:

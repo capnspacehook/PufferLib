@@ -51,6 +51,37 @@ git worktree add --detach ../iw-run <commit>
 ocean/impulse_wars/analysis/analyze_run.sh <run> --src ../iw-run
 ```
 
+### GPU inference
+
+The harness spends most of its time in the policy forward. On a machine
+with nvcc, the forward can run on the GPU with the trainer's CUDA net, while
+the envs, bots and stats stay on the CPU threads:
+
+```bash
+ocean/impulse_wars/analysis/build.sh --gpu          # -> build/iw_analyze_gpu, bf16
+ocean/impulse_wars/analysis/build.sh --gpu --fp32   # -> build/iw_analyze_gpu_fp32
+ocean/impulse_wars/analysis/run.sh hsp-5b bots.jsonl --gpu
+ocean/impulse_wars/analysis/analyze_run.sh accelerator-rework --gpu
+```
+
+A GPU build still runs the forward on the CPU without `--gpu`, and
+`--gpu 1` picks another device. With `--gpu` each thread plays `--batch`
+games (default 64) through one CUDA graph per net per step. On 24 threads
+the full bot ladder (9800 games) took 288s on the CPU, 23s on the GPU in
+fp32 and 15s in bf16, with bot scores within noise of each other, so the
+GPU build is bf16 by default, like training.
+
+- GPU games only pair game by game with results of the same build and
+  precision, `--batch` and GPU model. GPU and CPU results compare as means
+  only, like results from different env builds. `analyze_run.sh` refuses
+  to mix them in one results directory.
+- `build.sh --gpu` takes the CUDA net from `src_root`, like the env, so
+  `--src` worktrees work as on the CPU.
+- `gpu_check.sh <run>` builds all three variants, plays the bot ladder with
+  each and prints their times and scores side by side. It also replays some
+  games with other `--threads`, which should give identical games. Use it to
+  check the GPU build after changing the net.
+
 ### Comparing against earlier results
 
 Keep results under `build/iw_analysis/` (it's gitignored but survives

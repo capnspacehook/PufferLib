@@ -60,11 +60,22 @@
 //   both drones. Bot opponents are bot personality names and default to
 //   all of them. --batch games (default 6) run in lockstep per thread so
 //   the network weights are reused across the batch.
+//
+// GPU inference (build.sh --gpu): --gpu [device] runs the policy forward on
+// the GPU with the trainer's CUDA net while the envs still step on the CPU
+// threads; without --gpu, or in a CPU build, the forward is on the CPU.
+// Each thread runs its own --batch games (default 64 with --gpu) through
+// one forward per net per step. GPU results only pair game by game with
+// results of the same build (precision too), --batch and GPU model; against
+// CPU results they compare as means only.
 #include <pthread.h>
 #include <stdatomic.h>
 
 #include "puffercpu.c"
 #include "impulse_wars.h"
+#ifdef IW_GPU
+#include "iw_gpu.h"
+#endif
 
 #ifdef __FMA__
 #include <immintrin.h>
@@ -347,7 +358,7 @@ static const char *policyNames[NUM_BOT_POLICIES] = {
 
 static const char *analysisWeaponNames[NW] = {
     "unset", "standard", "machinegun", "sniper", "shotgun", "imploder",
-    "accelerator", "flak", "blackhole", "nuke", "grapple", "mine",
+    "accelerator", "flak", "blackhole", "nuke", "grapple", "mine", "portal",
 };
 
 // per step behavior stats polled from the env, per drone
@@ -534,6 +545,13 @@ typedef struct gameResult {
 
 typedef struct policyBatch {
     ImpulseWarsNet *net;
+#ifdef IW_GPU
+    // set instead of net with --gpu
+    iwGpuNet *gpu;
+#endif
+    // (size, atn_sum + 1) output of the last forward: every action head's
+    // logits, then the value
+    const float *logits;
     int size;
     float *obs;
     float *actions;
@@ -581,6 +599,8 @@ enum { STANDOFF_LOS, STANDOFF_CLOSE, STANDOFF_FAR };
 #define E_OBS IW_ENEMY_DRONE_OFFSET
 #define D_OBS IW_DRONE_OFFSET
 #define M_OBS (IW_DRONE_OFFSET + IW_DRONE_SIZE)
+// the portals' state, after the mine's in each drone block's utility
+#define P_OBS PORTAL_OBS_SIZE
 
 // named obs groups, each up to 2 index ranges {start, len}; the first group
 // covering an index is its group in the weights output
@@ -598,33 +618,36 @@ static const obsGroup obsGroups[] = {
     {"enemy_projectiles", {{IW_ENEMY_PROJECTILE_OFFSET, IW_NUM_ENEMY_PROJECTILES * IW_PROJECTILE_SIZE}}},
     {"enemy_weapon", {{E_OBS + 0, 5}}},
     // the utility's type, ammo, regen and active count, and the mine's
-    // state; the grapple's state between them is its own group
+    // state; the grapple's and portals' states after them are their own
+    // groups
     {"enemy_utility", {{E_OBS + 5, 4}, {E_OBS + 19, 4}}},
     {"enemy_grapple", {{E_OBS + 9, 10}}},
-    {"enemy_pos", {{E_OBS + 23, 3}}},
-    {"enemy_vel", {{E_OBS + 26, 2}}},
-    {"enemy_dir", {{E_OBS + 28, 2}}},
-    {"enemy_aim", {{E_OBS + 30, 2}}},
-    {"enemy_shield", {{E_OBS + 32, 2}}},
-    {"enemy_energy", {{E_OBS + 34, 7}}},
-    {"hit_flags", {{E_OBS + 41, 2}, {D_OBS + 42, 3}}},
-    {"enemy_lives", {{E_OBS + 43, 3}}},
-    {"aim_to_enemy", {{E_OBS + 46, 2}}},
-    {"enemy_ray", {{E_OBS + 48, 2}}},
+    {"enemy_portals", {{E_OBS + 23, P_OBS}}},
+    {"enemy_pos", {{E_OBS + P_OBS + 23, 3}}},
+    {"enemy_vel", {{E_OBS + P_OBS + 26, 2}}},
+    {"enemy_dir", {{E_OBS + P_OBS + 28, 2}}},
+    {"enemy_aim", {{E_OBS + P_OBS + 30, 2}}},
+    {"enemy_shield", {{E_OBS + P_OBS + 32, 2}}},
+    {"enemy_energy", {{E_OBS + P_OBS + 34, 7}}},
+    {"hit_flags", {{E_OBS + P_OBS + 41, 2}, {D_OBS + P_OBS + 42, 3}}},
+    {"enemy_lives", {{E_OBS + P_OBS + 43, 3}}},
+    {"aim_to_enemy", {{E_OBS + P_OBS + 46, 2}}},
+    {"enemy_ray", {{E_OBS + IW_ENEMY_RAY_IDX, 2}}},
     {"own_weapon", {{D_OBS + 0, 5}}},
     {"own_utility", {{D_OBS + 5, 4}, {D_OBS + 19, 4}}},
     {"own_grapple", {{D_OBS + 9, 10}}},
-    {"own_buttons", {{D_OBS + 23, 2}}},
-    {"own_pos", {{D_OBS + 25, 2}}},
-    {"own_vel", {{D_OBS + 27, 2}}},
-    {"own_aim", {{D_OBS + 29, 2}}},
-    {"aim_vel", {{D_OBS + 31, 2}}},
-    {"own_shield", {{D_OBS + 33, 2}}},
-    {"own_energy", {{D_OBS + 35, 7}}},
-    {"own_lives", {{D_OBS + 45, 3}}},
-    {"own_aim_ray", {{D_OBS + 48, 2}}},
-    {"own_vel_ray", {{D_OBS + 50, 2}}},
-    {"own_drift_ray", {{D_OBS + 52, 2}}},
+    {"own_portals", {{D_OBS + 23, P_OBS}}},
+    {"own_buttons", {{D_OBS + P_OBS + 23, 2}}},
+    {"own_pos", {{D_OBS + P_OBS + 25, 2}}},
+    {"own_vel", {{D_OBS + P_OBS + 27, 2}}},
+    {"own_aim", {{D_OBS + P_OBS + 29, 2}}},
+    {"aim_vel", {{D_OBS + P_OBS + 31, 2}}},
+    {"own_shield", {{D_OBS + P_OBS + 33, 2}}},
+    {"own_energy", {{D_OBS + P_OBS + 35, 7}}},
+    {"own_lives", {{D_OBS + P_OBS + 45, 3}}},
+    {"own_aim_ray", {{D_OBS + IW_DRONE_RAY_IDX, 2}}},
+    {"own_vel_ray", {{D_OBS + IW_DRONE_RAY_IDX + 2, 2}}},
+    {"own_drift_ray", {{D_OBS + IW_DRONE_RAY_IDX + 4, 2}}},
     {"misc", {{M_OBS, 3}}},
     // finer groups, not used for the weights output
     {"projectiles", {{IW_PROJECTILE_OFFSET, IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE}}},
@@ -632,24 +655,26 @@ static const obsGroup obsGroups[] = {
     {"own_weapon_state", {{D_OBS + 1, 4}}},
     {"own_charge", {{D_OBS + 3, 2}}},
     {"own_utility_type", {{D_OBS + 5, 1}}},
-    {"own_utility_state", {{D_OBS + 6, 17}}},
+    {"own_utility_state", {{D_OBS + 6, 17 + P_OBS}}},
     {"own_mine", {{D_OBS + 19, 4}}},
     {"own_mine_pos", {{D_OBS + 21, 2}}},
+    {"own_portal_pos", {{D_OBS + 24, 2}, {D_OBS + 24 + PORTAL_INFO_OBS_SIZE, 2}}},
     {"enemy_weapon_type", {{E_OBS + 0, 1}}},
     {"enemy_weapon_state", {{E_OBS + 1, 4}}},
     {"enemy_charge", {{E_OBS + 3, 2}}},
     {"enemy_utility_type", {{E_OBS + 5, 1}}},
-    {"enemy_utility_state", {{E_OBS + 6, 17}}},
+    {"enemy_utility_state", {{E_OBS + 6, 17 + P_OBS}}},
     {"enemy_mine", {{E_OBS + 19, 4}}},
     {"enemy_mine_pos", {{E_OBS + 21, 2}}},
-    {"enemy_loadout", {{E_OBS + 0, 23}}},
-    {"own_loadout", {{D_OBS + 0, 25}}},
+    {"enemy_portal_pos", {{E_OBS + 24, 2}, {E_OBS + 24 + PORTAL_INFO_OBS_SIZE, 2}}},
+    {"enemy_loadout", {{E_OBS + 0, 23 + P_OBS}}},
+    {"own_loadout", {{D_OBS + 0, 25 + P_OBS}}},
     {"steps_left", {{M_OBS + 1, 1}}},
     {"sudden_death", {{M_OBS + 2, 1}}},
 };
 #define NUM_OBS_GROUPS (sizeof(obsGroups) / sizeof(obsGroups[0]))
 // groups before this one partition the obs for the weights output
-#define NUM_PRIMARY_GROUPS 34
+#define NUM_PRIMARY_GROUPS 36
 
 typedef struct obsMask {
     char name[96];
@@ -668,6 +693,11 @@ static uint64_t baseSeed = 7;
 static uint8_t tourMaps[NUM_MAPS];
 static uint8_t numMaps = 0;
 static int batchSize = 6;
+static bool useGpu = false;
+#ifdef IW_GPU
+static iwGpuModel *policyGpu = NULL;
+static iwGpuModel *oppGpu = NULL;
+#endif
 static Weights *policyWeights = NULL;
 static int policyHidden = 0;
 static int policyLayers = 0;
@@ -727,6 +757,7 @@ static void buildObsNames(void) {
     static const char *weaponFields[IW_WEAPON_SIZE] = {"type", "ammo", "cooldown", "charge", "hold"};
     static const char *utilityFields[4] = {"type", "ammo", "regen", "active"};
     static const char *mineFields[MINE_OBS_SIZE] = {"in_flight", "welded", "x", "y"};
+    static const char *portalFields[PORTAL_INFO_OBS_SIZE] = {"open", "x", "y", "normal_x", "normal_y", "facing"};
     static const char *grappleFields[GRAPPLE_OBS_SIZE] = {"on", "x", "y", "tension", "reeling", "hp", "att_none", "att_wall", "att_floating", "att_drone"};
     static const char *rayFields[2] = {"type", "dist"};
     static const char *enemyFields[] = {"rel_x", "rel_y", "dist", "vel_x", "vel_y", "dir_x", "dir_y", "aim_x", "aim_y",
@@ -785,6 +816,11 @@ static void buildObsNames(void) {
     for (int k = 0; k < MINE_OBS_SIZE; k++) {
         snprintf(obsNames[i++], 48, "enemy_mine_%s", mineFields[k]);
     }
+    for (int p = 0; p < NUM_PORTAL_OBS; p++) {
+        for (int k = 0; k < PORTAL_INFO_OBS_SIZE; k++) {
+            snprintf(obsNames[i++], 48, "enemy_portal%d_%s", p, portalFields[k]);
+        }
+    }
     for (size_t k = 0; k < sizeof(enemyFields) / sizeof(enemyFields[0]); k++) {
         snprintf(obsNames[i++], 48, "enemy_%s", enemyFields[k]);
     }
@@ -807,6 +843,11 @@ static void buildObsNames(void) {
     }
     for (int k = 0; k < MINE_OBS_SIZE; k++) {
         snprintf(obsNames[i++], 48, "own_mine_%s", mineFields[k]);
+    }
+    for (int p = 0; p < NUM_PORTAL_OBS; p++) {
+        for (int k = 0; k < PORTAL_INFO_OBS_SIZE; k++) {
+            snprintf(obsNames[i++], 48, "own_portal%d_%s", p, portalFields[k]);
+        }
     }
     for (size_t k = 0; k < sizeof(ownFields) / sizeof(ownFields[0]); k++) {
         snprintf(obsNames[i++], 48, "own_%s", ownFields[k]);
@@ -890,12 +931,29 @@ static void applyMask(float *obs, const float *src, const int B, const obsMask *
     }
 }
 
+// starts the forward of the batch's obs; on the CPU it's done on return,
+// on the GPU after netWait
 static void netForward(policyBatch *p) {
+#ifdef IW_GPU
+    if (p->gpu != NULL) {
+        iw_gpu_launch(p->gpu);
+        return;
+    }
+#endif
     ImpulseWarsNet *net = p->net;
     mingru_zero_term(net->mingru, p->terminals);
     impulse_wars_encode(net, p->obs);
     iw_mingru(net->mingru, net->proj->output);
     iw_linear(net->decoder, net->mingru->output);
+}
+
+// waits for every forward this thread started
+static void netWait(void) {
+#ifdef IW_GPU
+    if (useGpu) {
+        iw_gpu_wait();
+    }
+#endif
 }
 
 // sample actions for the whole batch with each game's own rng
@@ -904,7 +962,7 @@ static void sampleActions(policyBatch *p) {
     const int atnSum = impulse_wars_atn_sum();
     for (int b = 0; b < p->size; b++) {
         // logits for every action head, followed by the value
-        const float *logits = p->net->decoder->output + b * (atnSum + 1);
+        const float *logits = p->logits + b * (atnSum + 1);
         for (int a = 0; a < NUM_ATNS; a++) {
             const int n = actSizes[a];
             int best = 0;
@@ -953,8 +1011,8 @@ static void logSoftmax(const float *x, const int n, float *out) {
 static void shadowCompare(const policyBatch *p, const policyBatch *sh, const int b, shadowStats *s) {
     const int actSizes[] = ACT_SIZES;
     const int atnSum = impulse_wars_atn_sum();
-    const float *lp = p->net->decoder->output + b * (atnSum + 1);
-    const float *lq = sh->net->decoder->output + b * (atnSum + 1);
+    const float *lp = p->logits + b * (atnSum + 1);
+    const float *lq = sh->logits + b * (atnSum + 1);
     float pl[AIM_DIRS], ql[AIM_DIRS];
     for (int a = 0; a < NUM_ATNS; a++) {
         const int n = actSizes[a];
@@ -1628,21 +1686,51 @@ static bool nextGame(gameResult **out) {
     return true;
 }
 
-static policyBatch *createPolicyBatch(const Weights *weights, const int B, const int hidden, const int layers) {
+// gpu is the weights' GPU model with --gpu, else NULL; inputs: the encoder
+// inputs are read after every forward
+static policyBatch *createPolicyBatch(const Weights *weights, void *gpu, const int B, const int hidden, const int layers, const bool inputs) {
     policyBatch *p = calloc(1, sizeof(policyBatch));
     p->size = B;
-    p->obs = calloc(B * OBS_SIZE, sizeof(float));
     p->actions = calloc(B * NUM_ATNS, sizeof(float));
     p->rewards = calloc(B, sizeof(float));
-    p->terminals = calloc(B, sizeof(float));
     p->rng = calloc(B, sizeof(unsigned int));
+#ifdef IW_GPU
+    if (gpu != NULL) {
+        // the net's pinned buffers, so the env writes straight to them
+        p->gpu = iw_gpu_net(gpu, B, inputs);
+        p->obs = iw_gpu_obs(p->gpu);
+        p->terminals = iw_gpu_terminals(p->gpu);
+        p->logits = iw_gpu_logits(p->gpu);
+        return p;
+    }
+#endif
+    MAYBE_UNUSED(gpu);
+    MAYBE_UNUSED(inputs);
+    p->obs = calloc(B * OBS_SIZE, sizeof(float));
+    p->terminals = calloc(B, sizeof(float));
     // layers point into the shared weight data, only the read index is
     // per net
     Weights *w = malloc(sizeof(Weights));
     *w = *weights;
     w->idx = 0;
     p->net = init_impulse_wars_net(w, B, hidden, layers);
+    p->logits = p->net->decoder->output;
     return p;
+}
+
+static void freePolicyBatch(policyBatch *p) {
+#ifdef IW_GPU
+    if (p->gpu != NULL) {
+        iw_gpu_free_net(p->gpu);
+        free(p->actions);
+        free(p->rewards);
+        free(p->rng);
+        free(p);
+        return;
+    }
+#endif
+    // CPU nets live until exit, as before
+    MAYBE_UNUSED(p);
 }
 
 // per worker input statistics for the weights output
@@ -1658,8 +1746,40 @@ typedef struct inputStats {
     double fwN;
 } inputStats;
 
-static void accumulateInputs(inputStats *st, const ImpulseWarsNet *net, const int b) {
-    const float *c = net->concat + b * IW_CONCAT;
+// the encoder inputs of a batch, from the CPU net or the GPU
+typedef struct encoderInputs {
+    const float *concat;
+    const float *rec[2];
+    const int *active[2];
+    const float *fwRec;
+    const int *fwActive;
+} encoderInputs;
+
+static encoderInputs readInputs(const policyBatch *p) {
+#ifdef IW_GPU
+    if (p->gpu != NULL) {
+        const iwGpuInputs g = iw_gpu_inputs(p->gpu);
+        return (encoderInputs){
+            .concat = g.concat,
+            .rec = {g.ownRec, g.enemyRec},
+            .active = {g.ownActive, g.enemyActive},
+            .fwRec = g.fwRec,
+            .fwActive = g.fwActive,
+        };
+    }
+#endif
+    const ImpulseWarsNet *net = p->net;
+    return (encoderInputs){
+        .concat = net->concat,
+        .rec = {net->own_rec, net->enemy_rec},
+        .active = {net->own_rec_active, net->enemy_rec_active},
+        .fwRec = net->fw_rec,
+        .fwActive = net->fw_rec_active,
+    };
+}
+
+static void accumulateInputs(inputStats *st, const encoderInputs *in, const int b) {
+    const float *c = in->concat + b * IW_CONCAT;
     for (int j = 0; j < IW_CONCAT; j++) {
         st->concatSum[j] += c[j];
         st->concatSq[j] += (double)c[j] * c[j];
@@ -1667,8 +1787,8 @@ static void accumulateInputs(inputStats *st, const ImpulseWarsNet *net, const in
     st->concatN++;
     for (int side = 0; side < 2; side++) {
         const int R = side == 0 ? IW_NUM_OWN_PROJECTILES : IW_NUM_ENEMY_PROJECTILES;
-        const float *rec = side == 0 ? net->own_rec : net->enemy_rec;
-        const int *active = side == 0 ? net->own_rec_active : net->enemy_rec_active;
+        const float *rec = in->rec[side];
+        const int *active = in->active[side];
         for (int r = 0; r < R; r++) {
             const int row = b * R + r;
             if (!active[row]) {
@@ -1684,11 +1804,11 @@ static void accumulateInputs(inputStats *st, const ImpulseWarsNet *net, const in
     }
     for (int r = 0; r < IW_NUM_FLOATING_WALLS; r++) {
         const int row = b * IW_NUM_FLOATING_WALLS + r;
-        if (!net->fw_rec_active[row]) {
+        if (!in->fwActive[row]) {
             continue;
         }
         for (int f = 0; f < IW_FW_FEATURES; f++) {
-            const float v = net->fw_rec[row * IW_FW_FEATURES + f];
+            const float v = in->fwRec[row * IW_FW_FEATURES + f];
             st->fwSum[f] += v;
             st->fwSq[f] += (double)v * v;
         }
@@ -1800,6 +1920,8 @@ static void buildScaleFeatures(void) {
     addScaleFeature("own_mine_pos", SCALE_TANH, MAX_OBS_RELATIVE_POS, "own_mine_x", "own_mine_y", "own_mine_in_flight", "own_mine_welded");
     addScaleFeature("enemy_mine_pos", SCALE_TANH, MAX_OBS_RELATIVE_POS, "enemy_mine_x", "enemy_mine_y", "enemy_mine_in_flight", "enemy_mine_welded");
     addScaleFeature("own_grapple_pos", SCALE_TANH, MAX_OBS_RELATIVE_POS, "own_grapple_x", "own_grapple_y", "own_grapple_on", NULL);
+    addScaleSlots("own_portal_pos", "own_portal%d", NUM_PORTAL_OBS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_open");
+    addScaleSlots("enemy_portal_pos", "enemy_portal%d", NUM_PORTAL_OBS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_open");
     addScaleSlots("near_wall", "near_wall%d", IW_NUM_NEAR_WALLS, SCALE_TANH, MAX_OBS_WALL_POS, "_x", "_y", "_type");
     addScaleSlots("pickup", "pickup%d", IW_NUM_PICKUPS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_type");
     addScaleSlots("fw_pos", "fw%d", IW_NUM_FLOATING_WALLS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_type");
@@ -1896,14 +2018,20 @@ static bool writeScales(const char *path) {
 static void *worker(void *arg) {
     MAYBE_UNUSED(arg);
     const int B = batchSize;
-    policyBatch *p = createPolicyBatch(policyWeights, B, policyHidden, policyLayers);
+    void *pGpu = NULL;
+    void *oGpu = NULL;
+#ifdef IW_GPU
+    pGpu = policyGpu;
+    oGpu = oppGpu;
+#endif
+    policyBatch *p = createPolicyBatch(policyWeights, pGpu, B, policyHidden, policyLayers, weightsOut != NULL);
     policyBatch *opp = NULL;
     if (oppWeights != NULL) {
-        opp = createPolicyBatch(oppWeights, B, oppHidden, oppLayers);
+        opp = createPolicyBatch(oppWeights, oGpu, B, oppHidden, oppLayers, false);
     }
     policyBatch *shadows[MAX_SHADOWS];
     for (int k = 0; k < numShadows; k++) {
-        shadows[k] = createPolicyBatch(policyWeights, B, policyHidden, policyLayers);
+        shadows[k] = createPolicyBatch(policyWeights, pGpu, B, policyHidden, policyLayers, false);
     }
     float *cleanObs = calloc(B * OBS_SIZE, sizeof(float));
     inputStats *inputs = weightsOut != NULL ? calloc(1, sizeof(inputStats)) : NULL;
@@ -1941,11 +2069,15 @@ static void *worker(void *arg) {
             applyMask(p->obs, cleanObs, B, &ablateMask, ablateMode);
         }
         netForward(p);
-        sampleActions(p);
         if (opp != NULL) {
             netForward(opp);
+        }
+        netWait();
+        sampleActions(p);
+        if (opp != NULL) {
             sampleActions(opp);
         }
+        const encoderInputs in = inputs != NULL ? readInputs(p) : (encoderInputs){0};
         for (int b = 0; b < B; b++) {
             gameSlot *slot = &slots[b];
             if (!slot->active || ((droneEntity *)safe_array_get_at(slot->e->drones, slot->g->seat))->dead) {
@@ -1955,7 +2087,7 @@ static void *worker(void *arg) {
                 shadowCompare(p, shadows[k], b, &slot->g->shadow[k]);
             }
             if (inputs != NULL) {
-                accumulateInputs(inputs, p->net, b);
+                accumulateInputs(inputs, &in, b);
             }
             if (scales != NULL) {
                 accumulateScales(scales, cleanObs + b * OBS_SIZE);
@@ -1991,6 +2123,13 @@ static void *worker(void *arg) {
         fastFree(slots[b].e);
     }
     pthread_mutex_unlock(&envMu);
+    freePolicyBatch(p);
+    if (opp != NULL) {
+        freePolicyBatch(opp);
+    }
+    for (int k = 0; k < numShadows; k++) {
+        freePolicyBatch(shadows[k]);
+    }
     return NULL;
 }
 
@@ -2033,7 +2172,12 @@ static void writeDrone(FILE *f, const gameResult *g, const uint8_t i) {
     WRITE_F(kills);
     WRITE_F(selfKills);
     WRITE_F(unknownKills);
-    WRITE_F(assists);
+    // droneStats no longer counts assists; the per weapon counts sum to it
+    double assists = 0;
+    for (int w = 0; w < NW; w++) {
+        assists += a->assistsByWeapon[w];
+    }
+    fprintf(f, "\"assists\":%g,", assists);
     WRITE_F(cratesPickedUp);
     WRITE_F(cratesRefilled);
     fprintf(f, "\"deaths\":%g,", (double)(o->kills + s->selfKills + s->unknownKills));
@@ -2057,6 +2201,9 @@ static void writeDrone(FILE *f, const gameResult *g, const uint8_t i) {
     WRITE_A(boostedShotsFired, NW);
     WRITE_A(boostedShotsHit, NW);
     WRITE_A(boostedKills, NW);
+    WRITE_A(deflections, NUM_DEFLECT_TYPES * NW);
+    WRITE_A(deflectedHits, NW);
+    WRITE_A(deflectedKills, NW);
     WRITE_A(boostedSelfKills, NW);
     WRITE_A(boostedSpeedBefore, NW);
     WRITE_A(utilityPresses, _NUM_UTILITIES);
@@ -2158,22 +2305,25 @@ static const char *pickupObsName(const int type) {
         return "ammo_crate";
     }
     if (type > AMMO_CRATE_OBS_TYPE) {
-        static const char *utilityPickups[] = {"utility_grapple", "utility_mines"};
+        static const char *utilityPickups[] = {"utility_grapple", "utility_mines", "utility_portals"};
+        _Static_assert(sizeof(utilityPickups) / sizeof(utilityPickups[0]) == IW_UTILITY_VOCAB - 1, "name every utility pickup");
         return utilityPickups[type - AMMO_CRATE_OBS_TYPE - 1];
     }
     return analysisWeaponNames[type];
 }
 
-// one-hot class name of a type slot value
-static const char *className(const int vocab, const int cls) {
+// one-hot class name of the value of type slot obsIdx; the slot tells
+// utilities apart, as their vocab can be the same size as another's
+static const char *className(const int obsIdx, const int vocab, const int cls) {
     static const char *walls[] = {"none", "standard", "bouncy", "death"};
     static const char *rays[] = {"none", "wall", "bouncy", "death", "fw", "fw_bouncy", "fw_death", "drone"};
-    static const char *utilities[] = {"none", "grapple", "mines"};
+    static const char *utilities[] = {"none", "grapple", "mines", "portals"};
+    _Static_assert(sizeof(utilities) / sizeof(utilities[0]) == IW_UTILITY_VOCAB, "name every utility");
+    if (obsIdx == E_OBS + IW_DRONE_UTILITY_TYPE || obsIdx == D_OBS + IW_DRONE_UTILITY_TYPE) {
+        return utilities[cls];
+    }
     if (vocab == IW_PICKUP_VOCAB || vocab == IW_WEAPON_VOCAB) {
         return pickupObsName(cls);
-    }
-    if (vocab == IW_UTILITY_VOCAB) {
-        return utilities[cls];
     }
     if (vocab == IW_WALL_VOCAB) {
         return walls[cls];
@@ -2228,7 +2378,7 @@ static bool writeWeights(const char *path) {
     for (int k = 0; k < IW_ONEHOT_COLS; k++) {
         const int c = IW_CONV_FLAT + k;
         const iwOneHotCol col = iw_onehot_col(k);
-        snprintf(name, sizeof(name), "%s=%s", obsNames[col.obsIdx], className(col.vocab, col.cls + 1));
+        snprintf(name, sizeof(name), "%s=%s", obsNames[col.obsIdx], className(col.obsIdx, col.vocab, col.cls + 1));
         writeFeature(f, "concat", obsGroups[obsGroupOf[col.obsIdx]].name, name, concatSum[c], concatSq[c], concatN, colNorm(proj, H, IW_CONCAT, c));
     }
     for (int j = 0; j < IW_NUM_SCALARS; j++) {
@@ -2254,7 +2404,7 @@ static bool writeWeights(const char *path) {
     static const char *fwScalars[] = {"x", "y", "sin", "cos", "vel_x", "vel_y"};
     for (int k = 0; k < IW_FW_USED_FEATURES; k++) {
         if (k < IW_WALL_VOCAB - 1) {
-            snprintf(name, sizeof(name), "type=%s", className(IW_WALL_VOCAB, k + 1));
+            snprintf(name, sizeof(name), "type=%s", className(-1, IW_WALL_VOCAB, k + 1));
         } else {
             snprintf(name, sizeof(name), "%s", fwScalars[k - (IW_WALL_VOCAB - 1)]);
         }
@@ -2297,6 +2447,8 @@ int main(int argc, char **argv) {
     uint32_t threads = 12;
     const char *out = "games.jsonl";
     bool episodesSet = false;
+    bool batchSet = false;
+    int gpuDevice = 0;
     buildObsNames();
     buildScaleFeatures();
     scaleTotals = calloc(1, sizeof(scaleStats));
@@ -2312,6 +2464,13 @@ int main(int argc, char **argv) {
             threads = (uint32_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--batch") == 0 && hasValue) {
             batchSize = atoi(argv[++i]);
+            batchSet = true;
+        } else if (strcmp(argv[i], "--gpu") == 0) {
+            useGpu = true;
+            // optional device index
+            if (hasValue && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
+                gpuDevice = atoi(argv[++i]);
+            }
         } else if (strcmp(argv[i], "--seed") == 0 && hasValue) {
             baseSeed = strtoull(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--maps") == 0 && hasValue) {
@@ -2434,8 +2593,28 @@ int main(int argc, char **argv) {
             opps[numOpps++] = (enum botPolicy)p;
         }
     }
+    if (useGpu && !batchSet) {
+        batchSize = 64;
+    }
     batchSize = max(batchSize, 1);
     threads = min(max(threads, 1), 64);
+#ifdef IW_GPU
+    if (useGpu) {
+        if (!iw_gpu_init(gpuDevice)) {
+            return 1;
+        }
+        policyGpu = iw_gpu_load(policyWeights->data, policyWeights->size, policyHidden, policyLayers);
+        if (oppWeights != NULL) {
+            oppGpu = iw_gpu_load(oppWeights->data, oppWeights->size, oppHidden, oppLayers);
+        }
+        fprintf(stderr, "policy forward on GPU %d (%s), batch %d per thread\n", gpuDevice, iw_gpu_precision(), batchSize);
+    }
+#else
+    if (useGpu) {
+        fprintf(stderr, "--gpu needs a GPU build (build.sh --gpu)\n");
+        return 1;
+    }
+#endif
 
     totalGames = numOpps * gamesPerOpp;
     if (combos) {

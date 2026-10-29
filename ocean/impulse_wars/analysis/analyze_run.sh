@@ -13,6 +13,10 @@
 #                       default 10, 0 to skip
 #   --no-bots, --no-combos   skip the bot ladder or the crate tournament
 #   --threads T         default every core
+#   --gpu [--fp32]      run the policy forward on the GPU (bf16 like
+#                       training, or fp32); needs nvcc to build. Results of a
+#                       directory must all come from the same inference, as
+#                       GPU and CPU games only compare as means
 #   Results already in the directory are kept, so an interrupted analysis
 #   resumes and a finished one only prints the summary again. Delete a file
 #   to redo it. The summary is also written to summary.txt.
@@ -20,7 +24,7 @@ set -e
 A="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$A/../../.." && pwd)"
 if [ $# -lt 1 ] || [ "${1#-}" != "$1" ]; then
-    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
 fi
 RUN="$1"
@@ -34,6 +38,8 @@ TRAJ=10
 BOTS=1
 COMBOS=1
 THREADS="$(nproc)"
+GPU=()
+BUILD_FLAGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
     --ckpt) CKPT="$2"; shift 2 ;;
@@ -45,6 +51,8 @@ while [ $# -gt 0 ]; do
     --no-bots) BOTS=0; shift ;;
     --no-combos) COMBOS=0; shift ;;
     --threads) THREADS="$2"; shift 2 ;;
+    --gpu) GPU=(--gpu); BUILD_FLAGS+=(--gpu); shift ;;
+    --fp32) BUILD_FLAGS+=(--fp32); shift ;;
     *) echo "unknown option $1" >&2; exit 1 ;;
     esac
 done
@@ -56,10 +64,20 @@ if [ -z "$CKPT" ]; then
 fi
 mkdir -p "$OUT/traj"
 
+# results of a directory pair up game by game only if they all come from
+# the same inference
+INFERENCE=cpu
+[ ${#GPU[@]} -gt 0 ] && INFERENCE="gpu $([[ " ${BUILD_FLAGS[*]} " == *" --fp32 "* ]] && echo fp32 || echo bf16)"
+if [ -f "$OUT/inference" ] && [ "$(cat "$OUT/inference")" != "$INFERENCE" ]; then
+    echo "$OUT has results from $(cat "$OUT/inference") inference, not $INFERENCE; use another --out or delete them" >&2
+    exit 1
+fi
+echo "$INFERENCE" > "$OUT/inference"
+
 # the harness is built per run so analyses of different env versions don't
 # overwrite each other's binary
 export IW_ANALYZE="$OUT/iw_analyze"
-"$A/build.sh" "$SRC" "$IW_ANALYZE" >&2
+"$A/build.sh" "$SRC" "$IW_ANALYZE" "${BUILD_FLAGS[@]}" >&2
 
 # runs one analysis unless its results already exist
 step() {
@@ -72,7 +90,7 @@ step() {
     echo "running $(basename "$out")" >&2
     local t
     t=$(date +%s)
-    "$A/run.sh" "$@" --threads "$THREADS" 2>"$out.log" || { echo "failed, see $out.log" >&2; rm -f "$out"; exit 1; }
+    "$A/run.sh" "$@" --threads "$THREADS" "${GPU[@]}" 2>"$out.log" || { echo "failed, see $out.log" >&2; rm -f "$out"; exit 1; }
     echo "  done in $(( $(date +%s) - t ))s" >&2
 }
 

@@ -10,13 +10,16 @@
 #   Defaults: every bot personality, 1400 games each (100 per map). With
 #   --opponent, 1400 games against that policy, each seed played from both
 #   drones; pass the same run twice for self-play.
-#   Set IW_ANALYZE to use a binary other than build/iw_analyze, e.g. one
-#   built from a balance change's worktree.
+#   Set IW_ANALYZE to use a binary other than build/iw_analyze (or
+#   build/iw_analyze_gpu with --gpu), e.g. one built from a balance change's
+#   worktree.
 set -e
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
-BIN="${IW_ANALYZE:-$REPO/build/iw_analyze}"
+DEFAULT_BIN="$REPO/build/iw_analyze"
+[[ " $* " == *" --gpu "* ]] && DEFAULT_BIN="$REPO/build/iw_analyze_gpu"
+BIN="${IW_ANALYZE:-$DEFAULT_BIN}"
 if [ $# -lt 2 ]; then
-    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
 fi
 
