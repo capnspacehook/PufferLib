@@ -648,7 +648,7 @@ static const obsGroup obsGroups[] = {
     {"own_aim_ray", {{D_OBS + IW_DRONE_RAY_IDX, 2}}},
     {"own_vel_ray", {{D_OBS + IW_DRONE_RAY_IDX + 2, 2}}},
     {"own_drift_ray", {{D_OBS + IW_DRONE_RAY_IDX + 4, 2}}},
-    {"misc", {{M_OBS, 3}}},
+    {"misc", {{M_OBS, 4}}},
     // finer groups, not used for the weights output
     {"projectiles", {{IW_PROJECTILE_OFFSET, IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE}}},
     {"own_weapon_type", {{D_OBS + 0, 1}}},
@@ -669,8 +669,9 @@ static const obsGroup obsGroups[] = {
     {"enemy_portal_pos", {{E_OBS + 24, 2}, {E_OBS + 24 + PORTAL_INFO_OBS_SIZE, 2}}},
     {"enemy_loadout", {{E_OBS + 0, 23 + P_OBS}}},
     {"own_loadout", {{D_OBS + 0, 25 + P_OBS}}},
-    {"steps_left", {{M_OBS + 1, 1}}},
-    {"sudden_death", {{M_OBS + 2, 1}}},
+    {"combo_ep", {{M_OBS + 1, 1}}},
+    {"steps_left", {{M_OBS + 2, 1}}},
+    {"sudden_death", {{M_OBS + 3, 1}}},
 };
 #define NUM_OBS_GROUPS (sizeof(obsGroups) / sizeof(obsGroups[0]))
 // groups before this one partition the obs for the weights output
@@ -771,7 +772,7 @@ static void buildObsNames(void) {
     static const char *ownRays[3] = {"aim_ray", "vel_ray", "drift_ray"};
     static const char *fwFields[IW_FLOATING_WALL_SIZE] = {"type", "x", "y", "sin", "cos", "vel_x", "vel_y"};
     static const char *projFields[IW_PROJECTILE_SIZE] = {"type", "x", "y", "vel_x", "vel_y", "dist"};
-    static const char *misc[3] = {"not_easy_ep", "steps_left", "sudden_death_steps"};
+    static const char *misc[4] = {"not_easy_ep", "combo_ep", "steps_left", "sudden_death_steps"};
 
     for (int i = 0; i < OBS_SIZE; i++) {
         snprintf(obsNames[i], sizeof(obsNames[i]), "obs%d", i);
@@ -861,7 +862,7 @@ static void buildObsNames(void) {
             snprintf(obsNames[i++], 48, "own_%s_%s", ownRays[r], rayFields[k]);
         }
     }
-    for (int k = 0; k < 3; k++) {
+    for (int k = 0; k < 4; k++) {
         snprintf(obsNames[i++], 48, "%s", misc[k]);
     }
     assert(i == OBS_SIZE);
