@@ -345,8 +345,7 @@ rayClient *createRayClient() {
     client->explosionSwirlsLoc = GetShaderLocation(client->explosionShader, "swirls[0]");
     client->explosionCountLoc = GetShaderLocation(client->explosionShader, "blastCount");
     const float distortionSettings[3] = {
-        fmaxf(fmaxf(0.0f, EXPLOSION_DISTORTION_MAX_PIXELS) * fmaxf(0.0f, EXPLOSION_DISTORTION_STRENGTH),
-            fmaxf(0.0f, BLACK_HOLE_DISTORTION_MAX_PIXELS) * fmaxf(0.0f, BLACK_HOLE_DISTORTION_STRENGTH)),
+        fmaxf(fmaxf(0.0f, EXPLOSION_DISTORTION_MAX_PIXELS) * fmaxf(0.0f, EXPLOSION_DISTORTION_STRENGTH), fmaxf(0.0f, BLACK_HOLE_DISTORTION_MAX_PIXELS) * fmaxf(0.0f, BLACK_HOLE_DISTORTION_STRENGTH)),
         fmaxf(0.001f, EXPLOSION_DISTORTION_WAVE_WIDTH),
         fmaxf(0.0f, EXPLOSION_DISTORTION_FADE_EXPONENT),
     };
@@ -1619,8 +1618,7 @@ static int collectSceneDistortions(const iwEnv *e, float blasts[16][4], float am
         const float impulseRatio = fabsf(explosion->def.impulsePerLength) / fmaxf(0.001f, EXPLOSION_DISTORTION_REFERENCE_IMPULSE);
         const float powerScale = Lerp(1.0f, sqrtf(impulseRatio), Clamp(EXPLOSION_DISTORTION_POWER_WEIGHT, 0.0f, 1.0f));
         amplitudes[count] = fmaxf(0.0f, EXPLOSION_DISTORTION_STRENGTH) *
-                            fminf(radius * fmaxf(0.0f, EXPLOSION_DISTORTION_RADIUS_SCALE) * powerScale,
-                                fmaxf(0.0f, EXPLOSION_DISTORTION_MAX_PIXELS));
+                            fminf(radius * fmaxf(0.0f, EXPLOSION_DISTORTION_RADIUS_SCALE) * powerScale, fmaxf(0.0f, EXPLOSION_DISTORTION_MAX_PIXELS));
         count++;
     }
 

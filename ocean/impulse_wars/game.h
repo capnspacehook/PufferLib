@@ -684,10 +684,10 @@ void updatePortalsAttachedTo(const iwEnv *e, const wallEntity *wall) {
     }
 }
 
-// whether something at pos with radius touching a wall is in front of an
-// open portal on it; death walls don't kill there so portals on them can
-// be used
-bool posInWallPortal(const iwEnv *e, const wallEntity *wall, const b2Vec2 pos, const float radius) {
+// the open portal on a wall that something at pos with radius touching
+// the wall is in front of, or NULL; touching a wall there touches what
+// blocks the linked portal's exit instead, see droneTouchedWall
+const portalEntity *wallPortalTouched(const iwEnv *e, const wallEntity *wall, const b2Vec2 pos, const float radius) {
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
         const droneEntity *drone = safe_array_get_at(e->drones, i);
         for (uint8_t j = 0; j < drone->openPortals; j++) {
@@ -702,11 +702,11 @@ bool posInWallPortal(const iwEnv *e, const wallEntity *wall, const b2Vec2 pos, c
             const float depth = b2Dot(rel, portal->normal);
             const float widthOffset = b2Dot(rel, b2LeftPerp(portal->normal));
             if (depth >= 0.0f && depth <= radius + PORTAL_HEIGHT && fabsf(widthOffset) <= PORTAL_WIDTH / 2.0f) {
-                return true;
+                return portal;
             }
         }
     }
-    return false;
+    return NULL;
 }
 
 void destroyWall(iwEnv *e, wallEntity *wall, const bool full) {
@@ -1041,6 +1041,10 @@ void createDroneShield(iwEnv *e, droneEntity *drone, const int8_t groupIdx) {
     shieldBufferShapeDef.filter.categoryBits = SHIELD_SHAPE;
     shieldBufferShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | SHIELD_SHAPE;
     shieldBufferShapeDef.filter.groupIndex = groupIdx;
+    // only death walls enable contact events, so without this touching
+    // other walls with a shield would be missed for bounce tracking and
+    // portals
+    shieldBufferShapeDef.enableContactEvents = true;
 
     shieldEntity *shield = fastCalloc(1, sizeof(shieldEntity));
     shield->drone = drone;
@@ -1882,7 +1886,7 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     resetWeapon(&drone->weapon);
 
     b2Body_Disable(drone->bodyID);
-    drone->inDeathWallPortal = false;
+    drone->inWallPortal = false;
     drone->triggerHeld = false;
     drone->utilityHeld = false;
     drone->brakeHeld = false;
@@ -2026,7 +2030,7 @@ void droneTeleport(iwEnv *e, droneEntity *drone, const b2Vec2 newPos, const b2Ve
     }
 
     b2Body_SetTransform(drone->bodyID, newPos, b2Rot_identity);
-    drone->inDeathWallPortal = false;
+    drone->inWallPortal = false;
     drone->pos = newPos;
     drone->lastPos = newPos;
     drone->mapCellIdx = entityPosToCellIdx(e, newPos);
@@ -4513,25 +4517,252 @@ static inline bool entityLive(const entity *ent) {
     return true;
 }
 
-// death walls kill drones that touch them, except in front of an open
-// portal so drones can go through it
-void droneTouchedDeathWall(iwEnv *e, droneEntity *drone, const wallEntity *wall) {
-    if (posInWallPortal(e, wall, drone->pos, DRONE_RADIUS)) {
-        drone->inDeathWallPortal = true;
-        return;
-    }
-    killDrone(e, drone, wall);
-}
-
-// death walls destroy shields that touch them, except in front of an open
-// portal; returns true if the shield was destroyed
-bool shieldTouchedDeathWall(iwEnv *e, shieldEntity *shield, const wallEntity *wall) {
-    if (posInWallPortal(e, wall, shield->drone->pos, DRONE_SHIELD_RADIUS)) {
+bool allowedThroughPortal(const portalEntity *portal, const b2Vec2 velocity) {
+    const b2Vec2 relVel = b2Sub(velocity, portal->attachedWall->velocity);
+    const b2Vec2 direction = b2Normalize(relVel);
+    if (-b2Dot(portal->normal, direction) < cosf(80.0f * DEG2RAD)) {
         return false;
     }
-    shield->health = 0.0f;
-    destroyDroneShield(e, shield, true);
+
     return true;
+}
+
+// rotation that maps an entity's motion through the entry portal onto the
+// exit portal: into the entry wall becomes out of the exit wall
+b2Rot portalTransitRot(const portalEntity *in, const portalEntity *out) {
+    const b2Rot inRot = b2MakeRotFromUnitVector(b2Neg(in->normal));
+    const b2Rot outRot = b2MakeRotFromUnitVector(out->normal);
+    return b2InvMulRot(inRot, outRot);
+}
+
+// where an entity moving from lastPos with lastVelocity reached the wall face
+// the portal is on, accurate even when the solver slid it along the wall
+// after it hit
+b2Vec2 portalEntryPos(const portalEntity *portal, const b2Vec2 lastPos, const b2Vec2 pos, const b2Vec2 lastVelocity, const float radius) {
+    // canEnterPortal ensures this is positive
+    const b2Vec2 relVel = b2Sub(lastVelocity, portal->attachedWall->velocity);
+    const float approachSpeed = -b2Dot(relVel, portal->normal);
+    const float distToFace = b2Dot(b2Sub(lastPos, portal->pos), portal->normal) - radius;
+    if (approachSpeed <= 0.0f || distToFace <= 0.0f) {
+        // already touching the face at the start of the step
+        return pos;
+    }
+    const float t = distToFace / approachSpeed;
+    return b2MulAdd(lastPos, t, relVel);
+}
+
+b2Vec2 portalExitPos(const portalEntity *in, const portalEntity *out, const b2Rot rot, const b2Vec2 pos, const float radius) {
+    const b2Vec2 inTangent = b2LeftPerp(in->normal);
+    const float maxOffset = fmaxf(PORTAL_WIDTH / 2.0f - radius, 0.0f);
+    const float offset = clampValue(b2Dot(b2Sub(pos, in->pos), inTangent), -maxOffset, maxOffset);
+
+    const b2Vec2 outTangent = b2RotateVector(rot, inTangent);
+    const b2Vec2 exitPos = b2MulAdd(out->pos, offset, outTangent);
+    return b2MulAdd(exitPos, radius + PORTAL_EXIT_GAP, out->normal);
+}
+
+b2Vec2 portalExitVelocity(const portalEntity *in, const portalEntity *out, const b2Rot rot, const b2Vec2 velocity) {
+    // rotate the velocity relative to the entry wall so portals on moving
+    // floating walls carry their motion through
+    const b2Vec2 relVel = b2Sub(velocity, in->attachedWall->velocity);
+    b2Vec2 exitRelVel = b2RotateVector(rot, relVel);
+    // ensure the exit speed relative to the exit wall isn't too slow or the
+    // teleported entity could move right back into the exit portal
+    if (b2Length(exitRelVel) < PORTAL_EXIT_MIN_SPEED) {
+        exitRelVel = b2MulSV(PORTAL_EXIT_MIN_SPEED, b2Normalize(exitRelVel));
+    }
+    return b2Add(exitRelVel, out->attachedWall->velocity);
+}
+
+// what blocks a portal's exit: the blocking entity and shape, ent is NULL
+// if the exit is clear
+typedef struct portalExitBlock {
+    const entity *ent;
+    b2ShapeId shapeID;
+} portalExitBlock;
+
+typedef struct portalExitBlockCtx {
+    // the drone going through, which with its shield doesn't block
+    const droneEntity *drone;
+    portalExitBlock block;
+} portalExitBlockCtx;
+
+static bool portalExitBlockCallback(b2ShapeId shapeID, void *context) {
+    portalExitBlockCtx *ctx = context;
+    const entity *ent = b2Shape_GetUserData(shapeID);
+    if (ent == NULL || b2Shape_IsSensor(shapeID)) {
+        return true;
+    }
+    if (!entityTypeIsWall(ent->type) && ent->type != DRONE_ENTITY && ent->type != SHIELD_ENTITY) {
+        return true;
+    }
+    const droneEntity *drone = ctx->drone;
+    if (drone != NULL && (ent == drone->ent || (drone->shield != NULL && ent == drone->shield->ent))) {
+        return true;
+    }
+
+    // a death wall decides what touching the portal does, so it's kept
+    // over anything else and the query can stop
+    if (ctx->block.ent == NULL || ent->type == DEATH_WALL_ENTITY) {
+        ctx->block.ent = ent;
+        ctx->block.shapeID = shapeID;
+    }
+    return ent->type != DEATH_WALL_ENTITY;
+}
+
+// what overlaps a circle of radius at exitPos, preferring death walls
+portalExitBlock portalExitBlocker(const iwEnv *e, const droneEntity *drone, const b2Vec2 exitPos, const float radius, const uint64_t categoryBits, const uint64_t maskBits) {
+    const b2ShapeProxy proxy = b2MakeProxy(&exitPos, 1, radius);
+    const b2QueryFilter filter = {.categoryBits = categoryBits, .maskBits = maskBits};
+    portalExitBlockCtx ctx = {.drone = drone, .block = {0}};
+    b2World_OverlapShape(e->worldID, &proxy, filter, portalExitBlockCallback, &ctx);
+    return ctx.block;
+}
+
+static inline float droneWallRadius(const droneEntity *drone) {
+    if (drone->shield != NULL) {
+        return DRONE_SHIELD_RADIUS;
+    }
+    return DRONE_RADIUS;
+}
+
+// what blocks a drone at pos from coming out of the portal linked to in;
+// nothing does if in isn't linked
+portalExitBlock droneExitBlocker(const iwEnv *e, const portalEntity *in, const droneEntity *drone, const b2Vec2 pos) {
+    const portalEntity *out = in->linkedPortal;
+    if (out == NULL) {
+        return (portalExitBlock){0};
+    }
+    const float radius = droneWallRadius(drone);
+    const b2Vec2 exitPos = portalExitPos(in, out, portalTransitRot(in, out), pos, radius);
+    return portalExitBlocker(e, drone, exitPos, radius, DRONE_SHAPE, WALL_SHAPE | FLOATING_WALL_SHAPE | DRONE_SHAPE | SHIELD_SHAPE);
+}
+
+// the wall bounce tracked for the drone this step, which a drone touching
+// a wall's begin contact tracks last, or NULL
+static physicsStepInfo *droneStepBounce(const iwEnv *e, const droneEntity *drone) {
+    const size_t numTracked = cc_array_size(drone->physicsTracking);
+    if (numTracked == 0) {
+        return NULL;
+    }
+    physicsStepInfo *physicsStep = safe_array_get_at(drone->physicsTracking, numTracked - 1);
+    if (!physicsStep->bounce || physicsStep->step != e->episodeLength) {
+        return NULL;
+    }
+    return physicsStep;
+}
+
+// a drone that bounced off the wall a portal is on bounces as it would
+// off the shape blocking the portal's exit: its speed away from the wall
+// is set to what the blocker's restitution would have given it, mixed with
+// the drone's as box2d does
+void bounceLikeExitBlocker(const iwEnv *e, droneEntity *drone, const wallEntity *wall, const portalEntity *portal, const b2ShapeId blockerShapeID, const b2ContactId contactID) {
+    if (!b2Contact_IsValid(contactID)) {
+        return;
+    }
+    const b2ContactData contactData = b2Contact_GetData(contactID);
+    const b2Manifold manifold = contactData.manifold;
+    if (manifold.pointCount == 0) {
+        return;
+    }
+
+    // restitution isn't applied below the threshold, whatever bounced
+    float approachSpeed = 0.0f;
+    for (uint8_t i = 0; i < manifold.pointCount; i++) {
+        approachSpeed = fmaxf(approachSpeed, -manifold.points[i].normalVelocity);
+    }
+    if (approachSpeed <= b2World_GetRestitutionThreshold(e->worldID)) {
+        return;
+    }
+    const float applied = fmaxf(b2Shape_GetRestitution(contactData.shapeIdA), b2Shape_GetRestitution(contactData.shapeIdB));
+    const float restitution = fmaxf(DRONE_RESTITUTION, b2Shape_GetRestitution(blockerShapeID));
+    if (applied == restitution) {
+        return;
+    }
+
+    const b2Vec2 velocity = b2Body_GetLinearVelocity(drone->bodyID);
+    const float awaySpeed = b2Dot(b2Sub(velocity, wall->velocity), portal->normal);
+    const b2Vec2 newVelocity = b2MulAdd(velocity, (restitution * approachSpeed) - awaySpeed, portal->normal);
+    b2Body_SetLinearVelocity(drone->bodyID, newVelocity);
+    drone->velocity = newVelocity;
+    if (drone->shield != NULL) {
+        b2Body_SetLinearVelocity(drone->shield->bodyID, newVelocity);
+    }
+
+    // the bounce tracked for this contact has the wall's restitution
+    physicsStepInfo *bounce = droneStepBounce(e, drone);
+    if (bounce != NULL) {
+        bounce->restitution = restitution;
+    }
+}
+
+// death walls kill drones and destroy shields that touch them; returns
+// true if the shield was destroyed
+static bool droneTouchedDeath(iwEnv *e, droneEntity *drone, shieldEntity *shield, const wallEntity *wall) {
+    if (shield != NULL) {
+        shield->health = 0.0f;
+        destroyDroneShield(e, shield, true);
+        return true;
+    }
+    killDrone(e, drone, wall);
+    return false;
+}
+
+// a drone or its shield (ent) touched a wall. In front of an open portal
+// it touches what blocks the linked portal's exit instead of the wall: a
+// death wall there kills it even through a portal on a standard wall,
+// other blockers bounce it as they would and nothing blocking means
+// nothing happens, so death walls with portals on them can be used. A
+// kill is credited as if the wall was touched. contactID is the begin
+// contact, or null when checking a drone that's still touching; returns
+// true if the shield was destroyed
+bool droneTouchedWall(iwEnv *e, const entity *ent, const wallEntity *wall, const b2ContactId contactID) {
+    droneEntity *drone = NULL;
+    shieldEntity *shield = NULL;
+    float radius = DRONE_RADIUS;
+    if (ent->type == DRONE_ENTITY) {
+        drone = ent->entity;
+    } else if (ent->type == SHIELD_ENTITY) {
+        shield = ent->entity;
+        drone = shield->drone;
+        radius = DRONE_SHIELD_RADIUS;
+    } else {
+        return false;
+    }
+    if (drone->dead) {
+        return false;
+    }
+
+    const portalEntity *portal = wallPortalTouched(e, wall, drone->pos, radius);
+    if (portal == NULL) {
+        if (wall->type == DEATH_WALL_ENTITY) {
+            return droneTouchedDeath(e, drone, shield, wall);
+        }
+        return false;
+    }
+
+    drone->inWallPortal = true;
+    const portalExitBlock block = droneExitBlocker(e, portal, drone, drone->pos);
+    if (block.ent == NULL) {
+        return false;
+    }
+
+    if (block.ent->type == DEATH_WALL_ENTITY) {
+        // the drone didn't bounce off the wall but died, as touching a
+        // death wall doesn't track a bounce. Pushes towards the wall would
+        // otherwise be reflected away from it and the kill not credited
+        if (shield == NULL && b2Contact_IsValid(contactID)) {
+            physicsStepInfo *bounce = droneStepBounce(e, drone);
+            if (bounce != NULL) {
+                cc_array_remove_last(drone->physicsTracking, NULL);
+                fastFree(bounce);
+            }
+        }
+        return droneTouchedDeath(e, drone, shield, wall);
+    }
+
+    bounceLikeExitBlocker(e, drone, wall, portal, block.shapeID, contactID);
+    return false;
 }
 
 void handleContactEvents(iwEnv *e) {
@@ -4593,14 +4824,8 @@ void handleContactEvents(iwEnv *e) {
                     }
                 }
             } else if (entityTypeIsWall(e1->type) && e2 != NULL) {
-                if (e1->type == DEATH_WALL_ENTITY) {
-                    if (e2->type == DRONE_ENTITY) {
-                        droneTouchedDeathWall(e, e2->entity, e1->entity);
-                    } else if (e2->type == SHIELD_ENTITY) {
-                        if (shieldTouchedDeathWall(e, e2->entity, e1->entity)) {
-                            e2 = NULL;
-                        }
-                    }
+                if (droneTouchedWall(e, e2, e1->entity, event->contactId)) {
+                    e2 = NULL;
                 }
             }
         }
@@ -4609,13 +4834,7 @@ void handleContactEvents(iwEnv *e) {
             if (e2->type == PROJECTILE_ENTITY) {
                 handleProjectileBeginContact(e, e2, e1, event->contactId, false);
             } else if (entityTypeIsWall(e2->type) && e1 != NULL) {
-                if (e2->type == DEATH_WALL_ENTITY) {
-                    if (e1->type == DRONE_ENTITY) {
-                        droneTouchedDeathWall(e, e1->entity, e2->entity);
-                    } else if (e1->type == SHIELD_ENTITY) {
-                        shieldTouchedDeathWall(e, e1->entity, e2->entity);
-                    }
-                }
+                droneTouchedWall(e, e1, e2->entity, event->contactId);
             }
         }
     }
@@ -4725,63 +4944,6 @@ void handleProjectileEndTouch(const entity *sensor, const entity *visitor) {
     }
 }
 
-bool allowedThroughPortal(const portalEntity *portal, const b2Vec2 velocity) {
-    const b2Vec2 relVel = b2Sub(velocity, portal->attachedWall->velocity);
-    const b2Vec2 direction = b2Normalize(relVel);
-    if (-b2Dot(portal->normal, direction) < cosf(80.0f * DEG2RAD)) {
-        return false;
-    }
-
-    return true;
-}
-
-// rotation that maps an entity's motion through the entry portal onto the
-// exit portal: into the entry wall becomes out of the exit wall
-b2Rot portalTransitRot(const portalEntity *in, const portalEntity *out) {
-    const b2Rot inRot = b2MakeRotFromUnitVector(b2Neg(in->normal));
-    const b2Rot outRot = b2MakeRotFromUnitVector(out->normal);
-    return b2InvMulRot(inRot, outRot);
-}
-
-// where an entity moving from lastPos with lastVelocity reached the wall face
-// the portal is on, accurate even when the solver slid it along the wall
-// after it hit
-b2Vec2 portalEntryPos(const portalEntity *portal, const b2Vec2 lastPos, const b2Vec2 pos, const b2Vec2 lastVelocity, const float radius) {
-    // canEnterPortal ensures this is positive
-    const b2Vec2 relVel = b2Sub(lastVelocity, portal->attachedWall->velocity);
-    const float approachSpeed = -b2Dot(relVel, portal->normal);
-    const float distToFace = b2Dot(b2Sub(lastPos, portal->pos), portal->normal) - radius;
-    if (approachSpeed <= 0.0f || distToFace <= 0.0f) {
-        // already touching the face at the start of the step
-        return pos;
-    }
-    const float t = distToFace / approachSpeed;
-    return b2MulAdd(lastPos, t, relVel);
-}
-
-b2Vec2 portalExitPos(const portalEntity *in, const portalEntity *out, const b2Rot rot, const b2Vec2 pos, const float radius) {
-    const b2Vec2 inTangent = b2LeftPerp(in->normal);
-    const float maxOffset = fmaxf(PORTAL_WIDTH / 2.0f - radius, 0.0f);
-    const float offset = clampValue(b2Dot(b2Sub(pos, in->pos), inTangent), -maxOffset, maxOffset);
-
-    const b2Vec2 outTangent = b2RotateVector(rot, inTangent);
-    const b2Vec2 exitPos = b2MulAdd(out->pos, offset, outTangent);
-    return b2MulAdd(exitPos, radius + PORTAL_EXIT_GAP, out->normal);
-}
-
-b2Vec2 portalExitVelocity(const portalEntity *in, const portalEntity *out, const b2Rot rot, const b2Vec2 velocity) {
-    // rotate the velocity relative to the entry wall so portals on moving
-    // floating walls carry their motion through
-    const b2Vec2 relVel = b2Sub(velocity, in->attachedWall->velocity);
-    b2Vec2 exitRelVel = b2RotateVector(rot, relVel);
-    // ensure the exit speed relative to the exit wall isn't too slow or the
-    // teleported entity could move right back into the exit portal
-    if (b2Length(exitRelVel) < PORTAL_EXIT_MIN_SPEED) {
-        exitRelVel = b2MulSV(PORTAL_EXIT_MIN_SPEED, b2Normalize(exitRelVel));
-    }
-    return b2Add(exitRelVel, out->attachedWall->velocity);
-}
-
 // flash both portals and swirl them in opposite directions when a drone
 // goes through
 void startPortalTransitEffects(const iwEnv *e, portalEntity *in, portalEntity *out) {
@@ -4794,14 +4956,17 @@ void startPortalTransitEffects(const iwEnv *e, portalEntity *in, portalEntity *o
     out->transitEntry = false;
 }
 
-void sendDroneThroughPortal(iwEnv *e, portalEntity *in, portalEntity *out, droneEntity *drone) {
-    float radius = DRONE_RADIUS;
-    if (drone->shield != NULL) {
-        radius = DRONE_SHIELD_RADIUS;
+// returns false without teleporting if something blocks the exit, the
+// drone then touches the blocker when it reaches the wall, see
+// droneTouchedWall
+bool sendDroneThroughPortal(iwEnv *e, portalEntity *in, portalEntity *out, droneEntity *drone) {
+    const float radius = droneWallRadius(drone);
+    const b2Vec2 entryPos = portalEntryPos(in, drone->lastPos, drone->pos, drone->lastVelocity, radius);
+    if (droneExitBlocker(e, in, drone, entryPos).ent != NULL) {
+        return false;
     }
 
     const b2Rot rot = portalTransitRot(in, out);
-    const b2Vec2 entryPos = portalEntryPos(in, drone->lastPos, drone->pos, drone->lastVelocity, radius);
     const b2Vec2 exitPos = portalExitPos(in, out, rot, entryPos, radius);
     const b2Vec2 exitVel = portalExitVelocity(in, out, rot, drone->lastVelocity);
     droneTeleport(e, drone, exitPos, exitVel, true);
@@ -4809,6 +4974,7 @@ void sendDroneThroughPortal(iwEnv *e, portalEntity *in, portalEntity *out, drone
         trackPortalTransit(e, drone, rot);
     }
     startPortalTransitEffects(e, in, out);
+    return true;
 }
 
 // whether a drone's circle overlaps a portal's sensor box
@@ -4832,14 +4998,12 @@ bool handlePortalBeginTouch(iwEnv *e, const entity *sensor, entity *visitor) {
         if (drone->dead) {
             return false;
         }
-        // track the drone even if the portal isn't linked yet so it can
-        // go through once it is
-        if (portal->linkedPortal == NULL || !allowedThroughPortal(portal, drone->lastVelocity)) {
+        // track the drone even if the portal isn't linked yet or its exit
+        // is blocked so it can go through once it can
+        if (portal->linkedPortal == NULL || !allowedThroughPortal(portal, drone->lastVelocity) || !sendDroneThroughPortal(e, portal, portal->linkedPortal, drone)) {
             portal->droneInRange[drone->idx] = true;
             return false;
         }
-
-        sendDroneThroughPortal(e, portal, portal->linkedPortal, drone);
         return true;
     }
     case PROJECTILE_ENTITY: {
@@ -4852,6 +5016,11 @@ bool handlePortalBeginTouch(iwEnv *e, const entity *sensor, entity *visitor) {
         const b2Rot rot = portalTransitRot(portal, exitPortal);
         const b2Vec2 entryPos = portalEntryPos(portal, projectile->lastPos, projectile->pos, projectile->lastVelocity, projectile->weaponInfo->radius);
         const b2Vec2 exitPos = portalExitPos(portal, exitPortal, rot, entryPos, projectile->weaponInfo->radius);
+        // a wall blocking the exit leaves the projectile to hit the wall
+        // the portal is on; drones at the exit are hit once it's through
+        if (portalExitBlocker(e, NULL, exitPos, projectile->weaponInfo->radius, PROJECTILE_SHAPE, WALL_SHAPE | FLOATING_WALL_SHAPE).ent != NULL) {
+            return false;
+        }
         const b2Vec2 exitVel = portalExitVelocity(portal, exitPortal, rot, projectile->lastVelocity);
 
         b2Body_SetTransform(projectile->bodyID, exitPos, b2Body_GetRotation(projectile->bodyID));
@@ -4898,8 +5067,9 @@ void portalsStep(iwEnv *e, const uint8_t teleported) {
                 if (portal->linkedPortal == NULL || !allowedThroughPortal(portal, drone->lastVelocity)) {
                     continue;
                 }
-
-                sendDroneThroughPortal(e, portal, portal->linkedPortal, drone);
+                if (!sendDroneThroughPortal(e, portal, portal->linkedPortal, drone)) {
+                    continue;
+                }
                 done = true;
                 break;
             }
@@ -4907,16 +5077,16 @@ void portalsStep(iwEnv *e, const uint8_t teleported) {
     }
 }
 
-// drones safely touching a death wall in front of a portal die if they
-// slide out of the portal's area or the portal closes while still touching
-// the wall, as no new begin contact event would kill them
-void deathWallPortalsStep(iwEnv *e) {
+// drones touching a wall in front of a portal get no new begin contact
+// when they slide out of the portal's area, the portal closes or the
+// linked portal's exit becomes blocked, so they're checked every step
+void wallPortalsStep(iwEnv *e) {
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
-        if (!drone->inDeathWallPortal || drone->dead) {
+        if (!drone->inWallPortal || drone->dead) {
             continue;
         }
-        drone->inDeathWallPortal = false;
+        drone->inWallPortal = false;
 
         const int capacity = b2Body_GetContactCapacity(drone->bodyID);
         if (capacity == 0) {
@@ -4928,21 +5098,22 @@ void deathWallPortalsStep(iwEnv *e) {
             if (contacts[j].manifold.pointCount == 0) {
                 continue;
             }
-            b2ShapeId otherShapeID = contacts[j].shapeIdA;
-            if (B2_ID_EQUALS(otherShapeID, drone->shapeID)) {
-                otherShapeID = contacts[j].shapeIdB;
+            // the drone's shape or its shield's buffer shape, both on the
+            // drone's body
+            b2ShapeId ownShapeID = contacts[j].shapeIdA;
+            b2ShapeId otherShapeID = contacts[j].shapeIdB;
+            if (!B2_ID_EQUALS(b2Shape_GetBody(ownShapeID), drone->bodyID)) {
+                ownShapeID = contacts[j].shapeIdB;
+                otherShapeID = contacts[j].shapeIdA;
             }
-            const entity *ent = b2Shape_GetUserData(otherShapeID);
-            if (ent == NULL || ent->type != DEATH_WALL_ENTITY) {
+            const entity *ownEnt = b2Shape_GetUserData(ownShapeID);
+            const entity *otherEnt = b2Shape_GetUserData(otherShapeID);
+            if (ownEnt == NULL || otherEnt == NULL || !entityTypeIsWall(otherEnt->type)) {
                 continue;
             }
-            const wallEntity *wall = ent->entity;
-            if (posInWallPortal(e, wall, drone->pos, DRONE_RADIUS)) {
-                drone->inDeathWallPortal = true;
-                continue;
+            if (droneTouchedWall(e, ownEnt, otherEnt->entity, b2_nullContactId) || drone->dead) {
+                break;
             }
-            killDrone(e, drone, wall);
-            break;
         }
     }
 }
@@ -5027,7 +5198,7 @@ void handleSensorEvents(iwEnv *e) {
     }
 
     portalsStep(e, teleported);
-    deathWallPortalsStep(e);
+    wallPortalsStep(e);
 }
 
 static inline void considerNearWallCell(const iwEnv *e, const droneEntity *drone, const int16_t col, const int16_t row, nearWall nearestWalls[], const uint8_t nWalls, uint8_t *found) {

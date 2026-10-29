@@ -473,7 +473,7 @@ typedef struct droneEntity {
 
     weaponSlot weapon;
     utilitySlot utility;
-    // the weapon the drone's loadout started it with in combo training 
+    // the weapon the drone's loadout started it with in combo training
     // episodes, UNSET_WEAPON if it had none; in combo episodes ammo
     // crates restore it once it runs dry
     enum weaponType loadoutWeapon;
@@ -497,10 +497,11 @@ typedef struct droneEntity {
     // live attached portals
     portalEntity *portals[_MAX_PORTALS];
     uint8_t openPortals;
-    // touching a death wall inside an open portal's area, which doesn't
-    // kill; checked each step so leaving the area while still touching
-    // does
-    bool inDeathWallPortal;
+    // touching a wall inside an open portal's area, which touches what
+    // blocks the linked portal's exit instead of the wall; checked each
+    // step as leaving the area or the exit becoming blocked while still
+    // touching starts no new contact
+    bool inWallPortal;
 
     float grappleLength;
     b2JointId grappleJointID;
