@@ -473,6 +473,10 @@ typedef struct droneEntity {
 
     weaponSlot weapon;
     utilitySlot utility;
+    // the weapon the drone's loadout started it with in combo training 
+    // episodes, UNSET_WEAPON if it had none; in combo episodes ammo
+    // crates restore it once it runs dry
+    enum weaponType loadoutWeapon;
     // the utility button was held last step
     bool utilityHeld;
     bool triggerHeld;

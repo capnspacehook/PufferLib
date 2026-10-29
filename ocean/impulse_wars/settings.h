@@ -136,8 +136,9 @@ static const uint8_t ENEMY_DRONE_OBS_SIZE = ENEMY_DRONE_RAY_OBS_IDX + RAY_OBS_SI
 static const uint8_t DRONE_RAY_OBS_IDX = 60;
 static const uint8_t DRONE_OBS_SIZE = DRONE_RAY_OBS_IDX + (NUM_DRONE_RAY_OBS * RAY_OBS_SIZE);
 
-// easy episode flag, steps left and sudden death steps left
-static const uint8_t MISC_OBS_SIZE = 3;
+// easy episode flag, combo episode flag, steps left and sudden death steps
+// left
+static const uint8_t MISC_OBS_SIZE = 4;
 
 static const uint16_t DISCRETE_OBS_SIZE = MAP_OBS_SIZE;
 static const uint16_t _CONTINUOUS_OBS_SIZE = NEAR_WALL_OBS_SIZE + FLOATING_WALL_OBS_SIZE + WEAPON_PICKUP_OBS_SIZE + PROJECTILE_OBS_SIZE + DRONE_OBS_SIZE + MISC_OBS_SIZE;

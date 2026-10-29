@@ -882,6 +882,7 @@ void computeObs(iwEnv *e) {
         ASSERTF(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + ((e->numDrones - 1) * ENEMY_DRONE_OBS_SIZE) + DRONE_OBS_SIZE, "offset: %d", continuousObsOffset);
 
         continuousObs[continuousObsOffset++] = !e->easyEp;
+        continuousObs[continuousObsOffset++] = e->comboEp;
         continuousObs[continuousObsOffset++] = scaleValue(e->stepsLeft, e->totalSteps, true);
         continuousObs[continuousObsOffset++] = scaleValue(e->suddenDeathSteps, e->totalSuddenDeathSteps, true);
     }
@@ -915,6 +916,7 @@ static void droneSetLoadout(droneEntity *drone, const enum weaponType weapon, co
     drone->weapon.weaponInfo = weaponInfos[weapon];
     resetWeapon(&drone->weapon);
     drone->weapon.ammo = weaponInfos[weapon]->ammo;
+    drone->loadoutWeapon = weapon;
     droneSetUtility(drone, utility);
 }
 
@@ -930,7 +932,8 @@ void setupEnv(iwEnv *e) {
         e->botState[i] = (scriptedBotState){.pickupIdx = -1, .pathSrcIdx = -1, .pathDstIdx = -1, .spotCellIdx = -1};
     }
 
-    e->easyEp = e->easyEpProb > 0.0f && randFloat(&e->rng, 0.0f, 1.0f) < e->easyEpProb;
+    e->easyEp = e->easyEpProb > 0.0f && randFloat(&e->rng, 0.0f, 1.0f) <= e->easyEpProb;
+    DEBUG_LOGF("easy episode: %d", e->easyEp);
 
     int8_t mapIdx = e->pinnedMapIdx;
     if (e->easyEp && e->numAgents != e->numDrones) {
@@ -953,9 +956,11 @@ void setupEnv(iwEnv *e) {
 
     // start drones with random weapon and utility loadouts so rare ones
     // and combos get practiced; easy episodes are left alone
-    e->comboEp = e->isTraining && !e->easyEp && e->comboTrainingProb > 0.0f && randFloat(&e->rng, 0.0f, 1.0f) < e->comboTrainingProb;
+    e->comboEp = e->isTraining && !e->easyEp && e->comboTrainingProb > 0.0f && randFloat(&e->rng, 0.0f, 1.0f) <= e->comboTrainingProb;
     if (e->comboEp) {
         const bool symmetric = randInt(&e->rng, 0, 1) == 1;
+        DEBUG_LOGF("setting loadout for combo training episode; symmetric=%d", symmetric);
+
         enum weaponType weapon = UNSET_WEAPON;
         enum utilityType utility = UNSET_UTILITY;
         for (uint8_t i = 0; i < e->numDrones; i++) {

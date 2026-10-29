@@ -20,7 +20,7 @@ typedef float obs_t;
 #define ACT_SIZES {9, AIM_COARSE_SECTORS, AIM_FINE_STEPS, 2, 2, 2, 2}
 #define CONTINUOUS_ACTIONS 0
 
-#define OBS_SIZE 425 // for 2 drones (players)
+#define OBS_SIZE 426 // for 2 drones (players)
 
 #ifdef __cplusplus
 // Game/Box2D/collections-c are C (void* implicit conv); pufferl.cu is C++17.

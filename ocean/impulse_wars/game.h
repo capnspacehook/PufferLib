@@ -1134,6 +1134,7 @@ void createDrone(iwEnv *e, const uint8_t idx) {
     drone->bodyID = droneBodyID;
     drone->weapon.weaponInfo = weaponInfos[STANDARD_WEAPON];
     drone->weapon.ammo = drone->weapon.weaponInfo->ammo;
+    drone->loadoutWeapon = UNSET_WEAPON;
     droneSetUtility(drone, UNSET_UTILITY);
     drone->energyLeft = DRONE_ENERGY_MAX;
     drone->idx = idx;
@@ -1493,11 +1494,15 @@ bool droneChangeUtility(iwEnv *e, droneEntity *drone, const enum utilityType new
 }
 
 // an ammo crate fills the weapon, unless it's the standard weapon, and the
-// utility to full ammo; returns true if it added any ammo
-bool droneRefillAmmo(droneEntity *drone) {
+// utility to full ammo; in combo episodes it also gives back the loadout
+// weapon once it has run dry. Returns true if it added any ammo
+bool droneRefillAmmo(const iwEnv *e, droneEntity *drone) {
     bool refilled = false;
     weaponSlot *weapon = &drone->weapon;
-    if (weapon->weaponInfo->type != STANDARD_WEAPON && weapon->ammo < weapon->weaponInfo->ammo) {
+    if (e->comboEp && weapon->weaponInfo->type == STANDARD_WEAPON && drone->loadoutWeapon != UNSET_WEAPON) {
+        droneChangeWeapon(drone, drone->loadoutWeapon);
+        refilled = true;
+    } else if (weapon->weaponInfo->type != STANDARD_WEAPON && weapon->ammo < weapon->weaponInfo->ammo) {
         weapon->ammo = weapon->weaponInfo->ammo;
         refilled = true;
     }
@@ -3962,7 +3967,7 @@ void weaponPickupsOverlapStep(iwEnv *e) {
             disableWeaponPickup(e, pickup);
             drone->stepInfo.pickedUpWeapon = true;
             if (pickup->kind == CRATE_PICKUP) {
-                const bool refilled = droneRefillAmmo(drone);
+                const bool refilled = droneRefillAmmo(e, drone);
                 e->stats[drone->idx].cratesPickedUp++;
                 e->stats[drone->idx].cratesRefilled += refilled;
                 DEBUG_LOGF("drone %d picked up an ammo crate", drone->idx);
