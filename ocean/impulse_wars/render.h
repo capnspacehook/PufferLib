@@ -420,7 +420,7 @@ void destroyRayClient(rayClient *client) {
 }
 
 void updateConnectedControllers(iwEnv *e) {
-    for (uint8_t i = 0; i < e->numDrones; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         if (IsGamepadAvailable(i)) {
             e->connectedControllers++;
         }
@@ -438,7 +438,7 @@ void updateHumanInputToggle(iwEnv *e) {
         updateConnectedControllers(e);
     }
     if (e->connectedControllers > 1) {
-        e->humanDroneInput = e->numDrones - e->connectedControllers;
+        e->humanDroneInput = NUM_DRONES - e->connectedControllers;
         return;
     }
 
@@ -448,10 +448,10 @@ void updateHumanInputToggle(iwEnv *e) {
     if (IsKeyPressed(KEY_TWO) || IsKeyPressed(KEY_KP_2)) {
         e->humanDroneInput = 1;
     }
-    if (e->numDrones >= 3 && (IsKeyPressed(KEY_THREE) || IsKeyPressed(KEY_KP_3))) {
+    if (NUM_DRONES >= 3 && (IsKeyPressed(KEY_THREE) || IsKeyPressed(KEY_KP_3))) {
         e->humanDroneInput = 2;
     }
-    if (e->numDrones >= 4 && (IsKeyPressed(KEY_FOUR) || IsKeyPressed(KEY_KP_4))) {
+    if (NUM_DRONES >= 4 && (IsKeyPressed(KEY_FOUR) || IsKeyPressed(KEY_KP_4))) {
         e->humanDroneInput = 3;
     }
 }
@@ -1188,7 +1188,7 @@ void renderUI(const iwEnv *e, const bool starting) {
     const uint16_t xMargin = 5 * e->client->scale;
     const uint16_t yMargin = 12 * e->client->scale;
 
-    for (int i = 0; i < e->numDrones; i++) {
+    for (int i = 0; i < NUM_DRONES; i++) {
         const droneEntity *drone = safe_array_get_at(e->drones, i);
 
         const char *droneNum = TextFormat("Drone %d", drone->idx + 1);
@@ -2921,7 +2921,7 @@ void puf_render(iwEnv *e) {
     // take inputs from humans every frame
     updateHumanInputToggle(e);
 
-    for (uint8_t i = 0; i < e->numDrones; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
         if (drone->dead) {
             continue;

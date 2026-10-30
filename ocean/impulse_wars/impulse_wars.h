@@ -67,7 +67,6 @@ int b2InternalAssertFcn(const char *condition, const char *fileName, int lineNum
 }
 
 void puf_init(Env *env, Dict *kwargs) {
-    uint8_t num_drones = dict_get(kwargs, "num_drones");
     uint8_t num_agents = dict_get(kwargs, "num_agents");
     int8_t map_idx = dict_get(kwargs, "map_idx");
     bool enable_teams = dict_get(kwargs, "enable_teams");
@@ -77,7 +76,6 @@ void puf_init(Env *env, Dict *kwargs) {
     float bot_cl_decay = dict_get(kwargs, "bot_cl_decay");
     initEnv(
         env,
-        num_drones,
         num_agents,
         map_idx,
         env->rng,
@@ -104,8 +102,10 @@ void puf_init(Env *env, Dict *kwargs) {
         dict_get(kwargs, "reward_life"),
         dict_get(kwargs, "reward_kill"),
         dict_get(kwargs, "reward_self_kill"),
-        0.0f, // teammate death punishment
-        0.0f, // teammate kill punishment
+        // a death costs the whole team, and killing a teammate costs
+        // what killing an enemy earns
+        -dict_get(kwargs, "reward_life"),
+        -dict_get(kwargs, "reward_kill"),
         dict_get(kwargs, "reward_energy_emptied"),
         dict_get(kwargs, "reward_weapon_pickup"),
         dict_get(kwargs, "reward_shield_break"),
@@ -116,8 +116,11 @@ void puf_init(Env *env, Dict *kwargs) {
     env->easyEpHitRate = dict_get(kwargs, "easy_ep_hit_rate");
     env->comboTrainingProb = dict_get(kwargs, "combo_training_prob");
 
+    // in envs that play a past checkpoint, agents are trained (policy 0)
+    // or played by the checkpoint (policy 1) by team: with teams the
+    // learner's team is team 0, without the learner is the first agent
     for (int i = 0; i < env->num_agents; i++) {
-        env->agents[i].policy = i;
+        env->agents[i].policy = droneTeam(env, i) == 0 ? 0 : 1;
         env->agents[i].action_mask = NULL;
     }
 }
@@ -143,6 +146,7 @@ void puf_set_bot_policy(iwEnv *e, int botPolicy) {
     dict_set(out, "drone_" idxStr "_own_shield_broken", log->stats[idx].ownShieldBroken);         \
     dict_set(out, "drone_" idxStr "_self_kills", log->stats[idx].selfKills);                      \
     dict_set(out, "drone_" idxStr "_kills", log->stats[idx].kills);                               \
+    dict_set(out, "drone_" idxStr "_teammate_kills", log->stats[idx].teammateKills);              \
     dict_set(out, "drone_" idxStr "_unknown_kills", log->stats[idx].unknownKills);                \
     dict_set(out, "drone_" idxStr "_total_shots_fired", log->stats[idx].totalShotsFired);         \
     dict_set(out, "drone_" idxStr "_total_shots_hit", log->stats[idx].totalShotsHit);             \

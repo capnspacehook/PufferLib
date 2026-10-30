@@ -205,7 +205,7 @@ static void addStats(sideStats *s, const droneStats *d) {
 }
 
 static void initTournamentEnv(iwEnv *e, policyRunner *p) {
-    initEnv(e, 2, p != NULL ? 1 : 0, -1, 1, false, !evalMode, false, BOT_SCRIPTED, 0.0f, 0.0f);
+    initEnv(e, p != NULL ? 1 : 0, -1, 1, false, !evalMode, false, BOT_SCRIPTED, 0.0f, 0.0f);
     if (p != NULL) {
         e->agents[0].observations = p->obs;
         e->agents[0].actions = p->actions;

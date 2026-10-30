@@ -816,7 +816,7 @@ static float utilitySpawnWeights(const iwEnv *e, const float *heldWeights, float
 // how much each utility is held, for discounting its spawn weight; utilities
 // with the max weight aren't discounted so featured ones stay common
 static void heldUtilityWeights(const iwEnv *e, float *heldWeights) {
-    for (uint8_t i = 0; i < e->numDrones; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         const droneEntity *drone = safe_array_get_at(e->drones, i);
         const enum utilityType type = drone->utility.utilityInfo->type;
         if (type != UNSET_UTILITY && e->map->utilityWeights[type] < MAX_PICKUP_SPAWN_WEIGHT) {
@@ -885,7 +885,7 @@ void randPickupType(iwEnv *e, weaponPickupEntity *pickup, const bool episodeStar
         float spawnWeights[_NUM_WEAPONS - 1] = {0};
 
         // reduce the weight of weapons currently being held
-        for (uint8_t i = 0; i < e->numDrones; i++) {
+        for (uint8_t i = 0; i < NUM_DRONES; i++) {
             const droneEntity *drone = safe_array_get_at(e->drones, i);
             if (drone->dead) {
                 continue;
@@ -1018,7 +1018,7 @@ void createUtilityPickup(iwEnv *e, const uint8_t droneIdx) {
             continue;
         }
         found = true;
-        for (uint8_t i = 0; i < e->numDrones; i++) {
+        for (uint8_t i = 0; i < NUM_DRONES; i++) {
             const droneEntity *other = safe_array_get_at(e->drones, i);
             if (i != droneIdx && b2DistanceSquared(pos, other->pos) <= distance) {
                 found = false;
@@ -1163,6 +1163,15 @@ void createDroneTrails(droneEntity *drone) {
     drone->trailPoints = fastCalloc(1, sizeof(trailPoints));
 }
 
+// with teams the first half of the drones are team 0 and the rest team 1,
+// otherwise every drone is its own team
+static inline uint8_t droneTeam(const iwEnv *e, const uint8_t idx) {
+    if (e->teamsEnabled) {
+        return idx / (NUM_DRONES / 2);
+    }
+    return idx;
+}
+
 void createDrone(iwEnv *e, const uint8_t idx) {
     const int8_t groupIdx = -(idx + 1);
     b2BodyDef droneBodyDef = b2DefaultBodyDef();
@@ -1176,7 +1185,7 @@ void createDrone(iwEnv *e, const uint8_t idx) {
         // due to drones starting much farther apart
         if (e->lastSpawnQuad == -1) {
             spawnQuad = randInt(&e->rng, 0, 3);
-        } else if (e->numDrones == 2) {
+        } else if (NUM_DRONES == 2) {
             spawnQuad = 3 - e->lastSpawnQuad;
         } else {
             spawnQuad = (e->lastSpawnQuad + 1) % 4;
@@ -1209,10 +1218,7 @@ void createDrone(iwEnv *e, const uint8_t idx) {
     droneSetUtility(drone, UNSET_UTILITY);
     drone->energyLeft = DRONE_ENERGY_MAX;
     drone->idx = idx;
-    drone->team = idx;
-    if (e->teamsEnabled) {
-        drone->team = idx / (e->numDrones / 2);
-    }
+    drone->team = droneTeam(e, idx);
     drone->initalPos = droneBodyDef.position;
     drone->lastPos = droneBodyDef.position;
     drone->pos = droneBodyDef.position;
@@ -1603,7 +1609,7 @@ typedef struct sourceContrib {
 void applyContribDamping(const iwEnv *e, const uint16_t stepDiff, const float damping, b2Vec2 *contrib, sourceContrib *sources, const uint16_t numSources) {
     const float perStepDamping = 1.0f / (1.0f + damping * e->deltaTime);
     const float damp = powf(perStepDamping, stepDiff);
-    for (uint8_t k = 0; k < e->numDrones; k++) {
+    for (uint8_t k = 0; k < NUM_DRONES; k++) {
         contrib[k] = b2MulSV(damp, contrib[k]);
     }
     for (uint16_t k = 0; k < numSources; k++) {
@@ -1635,9 +1641,9 @@ sourceContrib *getSourceContrib(sourceContrib *sources, int16_t *sourceSlots, ui
 }
 
 int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const CC_Array *physicsTracking, const b2Vec2 lastVelocity, float *maxMoveContrib, physicsSource *source) {
-    b2Vec2 contrib[e->numDrones];
-    memset(contrib, 0x0, e->numDrones * sizeof(b2Vec2));
-    const uint16_t maxSources = e->numDrones * NUM_PHYSICS_TYPES * _NUM_WEAPONS * 2;
+    b2Vec2 contrib[NUM_DRONES];
+    memset(contrib, 0x0, NUM_DRONES * sizeof(b2Vec2));
+    const uint16_t maxSources = NUM_DRONES * NUM_PHYSICS_TYPES * _NUM_WEAPONS * 2;
     sourceContrib sources[maxSources];
     int16_t sourceSlots[maxSources];
     memset(sourceSlots, 0xff, maxSources * sizeof(int16_t));
@@ -1670,7 +1676,7 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
             }
         }
         if (physicsStep->bounce) {
-            for (uint8_t k = 0; k < e->numDrones; k++) {
+            for (uint8_t k = 0; k < NUM_DRONES; k++) {
                 contrib[k] = reflectContrib(contrib[k], physicsStep);
             }
             for (uint16_t k = 0; k < numSources; k++) {
@@ -1681,7 +1687,7 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
         // rotate pushes along with the velocity when going through a
         // portal so they still point the way the body is moving
         if (physicsStep->portalTransit) {
-            for (uint8_t k = 0; k < e->numDrones; k++) {
+            for (uint8_t k = 0; k < NUM_DRONES; k++) {
                 contrib[k] = b2RotateVector(physicsStep->rot, contrib[k]);
             }
             for (uint16_t k = 0; k < numSources; k++) {
@@ -1693,7 +1699,7 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
         // it chose where the body is now moving with them
         if (physicsStep->claim) {
             const uint8_t claimer = physicsStep->srcIdx;
-            for (uint8_t k = 0; k < e->numDrones; k++) {
+            for (uint8_t k = 0; k < NUM_DRONES; k++) {
                 if (k == claimer) {
                     continue;
                 }
@@ -1732,7 +1738,7 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
     DEBUG_LOGF("> death normal (%f, %f) velocity (%f, %f)", deathNormal.x, deathNormal.y, lastVelocity.x, lastVelocity.y);
     float maxContrib = 1e-6f;
     int8_t killer = -1;
-    for (uint8_t i = 0; i < e->numDrones; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         DEBUG_LOGF("---\n> src drone contrib %d %f (%f, %f)", i, b2Length(contrib[i]), contrib[i].x, contrib[i].y);
         if (b2Equal(contrib[i], b2Vec2_zero)) {
             continue;
@@ -1798,14 +1804,16 @@ int8_t findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall)
 
     DEBUG_LOGF(">>> drone %d killed by drone %d", drone->idx, killer);
 
+    droneEntity *killerDrone = safe_array_get_at(e->drones, killer);
     if (killer == drone->idx) {
         e->stats[drone->idx].selfKills++;
+    } else if (killerDrone->team == drone->team) {
+        e->stats[killer].teammateKills++;
     } else {
         e->stats[killer].kills++;
     }
     drone->killedBy = killer;
     drone->killSource = source;
-    droneEntity *killerDrone = safe_array_get_at(e->drones, killer);
     killerDrone->killed[drone->idx] = true;
     return killer;
 }
@@ -1837,7 +1845,8 @@ void recordDeathAnalysis(iwEnv *e, const droneEntity *drone, const int8_t killer
 
     stats->deathsBySource[source.type]++;
     stats->floatingWallDeaths += floatingWall;
-    if (weapon) {
+    const droneEntity *killerDrone = safe_array_get_at(e->drones, killer);
+    if (weapon && killerDrone->team != drone->team) {
         droneAnalysisStats *killerStats = &e->analysisStats[killer];
         if (source.deflected) {
             killerStats->deflectedKills[source.weapon]++;
@@ -1985,7 +1994,7 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
 
     // attempt to respawn the drone in a different part of the map than
     // living drones
-    for (uint8_t i = 0; i < e->numDrones; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         if (i == drone->idx) {
             continue;
         }
@@ -2003,7 +2012,7 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
     }
 
     // if all drones are dead just pick a random position
-    if (deadDrones == e->numDrones - 1 || openQuads == 0) {
+    if (deadDrones == NUM_DRONES - 1 || openQuads == 0) {
         if (!findOpenPos(e, DRONE_SHAPE, &pos, -1)) {
             return false;
         }
@@ -2033,6 +2042,9 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
 
     drone->dead = false;
     drone->respawnWait = 0.0f;
+    // actions aren't computed for dead drones, so the cached ones are
+    // from before it died; do nothing until the next step's actions
+    e->cachedActions[drone->idx] = (agentActions){.aim = drone->lastAim};
     drone->pos = pos;
     drone->lastPos = pos;
     drone->mapCellIdx = entityPosToCellIdx(e, drone->pos);
@@ -2073,7 +2085,7 @@ void droneTeleport(iwEnv *e, droneEntity *drone, const b2Vec2 newPos, const b2Ve
     if (drone->grapple != NULL) {
         destroyProjectile(e, drone->grapple, false, true);
     }
-    for (uint8_t i = 0; i < e->numDrones; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         if (i == drone->idx) {
             continue;
         }
@@ -3287,7 +3299,7 @@ void handleSuddenDeath(iwEnv *e) {
 
     // mark drones as dead if they touch a newly placed wall
     const enum entityType deathWallType = DEATH_WALL_ENTITY;
-    for (uint8_t i = 0; i < e->numDrones; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
         const b2QueryFilter filter = {
             .categoryBits = DRONE_SHAPE,
@@ -3379,7 +3391,7 @@ void droneMove(const iwEnv *e, const droneEntity *drone, b2Vec2 direction) {
 static void recordAimError(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
     float bestDist = FLT_MAX;
     b2Vec2 bearing = b2Vec2_zero;
-    for (uint8_t i = 0; i < e->numDrones; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         const droneEntity *other = safe_array_get_at(e->drones, i);
         if (other->idx == drone->idx || other->dead || other->team == drone->team) {
             continue;
@@ -4178,7 +4190,7 @@ void weaponPickupsOverlapStep(iwEnv *e) {
     b2Vec2 droneLastPositions[_MAX_DRONES];
     uint8_t liveDrones[_MAX_DRONES];
     uint8_t numLiveDrones = 0;
-    for (uint8_t i = 0; i < e->numDrones; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         const droneEntity *drone = safe_array_get_at(e->drones, i);
         if (drone->dead) {
             continue;

@@ -36,7 +36,7 @@ static const float DRONE_RESPAWN_WAIT = 2.0f;
 static const uint8_t ROUND_STEPS = 90;
 static const uint8_t SUDDEN_DEATH_STEPS = 5;
 
-static const uint8_t MAX_DRONES = _MAX_DRONES;
+static const uint8_t NUM_DRONES = _MAX_DRONES;
 
 // the reported impulses from collisions seem to be roughly half what is
 // actually applied (the bounce impulse isn't included in normalImpulse),

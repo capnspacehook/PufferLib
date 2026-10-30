@@ -34,9 +34,9 @@
 // map grid centered on the agent's cell. Each cell is a packed code: bits
 // 0-2 hold the static wall id (0 for empty, wall type + 1, or
 // IW_GRID_OUT_OF_BOUNDS), bits 3-4 hold the overlapping floating wall type
-// + 1, bit 5 is set if an available weapon pickup is in the cell and bit 6
-// if an enemy drone overlaps it; codes stay below 256 so they're exact in
-// bf16
+// + 1, bit 5 is set if an available weapon pickup is in the cell, bit 6 if
+// an enemy drone overlaps it and bit 7 if a teammate does; codes stay below
+// 256 so they're exact in bf16
 #define IW_GRID_SIZE 11
 #define IW_MAP_CELLS (IW_GRID_SIZE * IW_GRID_SIZE)
 #define IW_GRID_OUT_OF_BOUNDS 4
@@ -44,7 +44,8 @@
 #define IW_GRID_FLOATING_SHIFT 3
 #define IW_GRID_PICKUP_BIT (1 << 5)
 #define IW_GRID_ENEMY_BIT (1 << 6)
-#define IW_GRID_CODE_MAX (IW_GRID_ENEMY_BIT | IW_GRID_PICKUP_BIT | (0x3 << IW_GRID_FLOATING_SHIFT) | IW_GRID_STATIC_MASK)
+#define IW_GRID_ALLY_BIT (1 << 7)
+#define IW_GRID_CODE_MAX (IW_GRID_ALLY_BIT | IW_GRID_ENEMY_BIT | IW_GRID_PICKUP_BIT | (0x3 << IW_GRID_FLOATING_SHIFT) | IW_GRID_STATIC_MASK)
 
 // type and position of the nearest walls
 #define IW_NUM_NEAR_WALLS 4
@@ -134,16 +135,28 @@
 
 // map grid CNN: cell codes are unpacked into IW_GRID_CHANNELS one-hot
 // planes padded by 1 cell, then 3 unpadded convs with ReLU:
-// 10x13x13 -> 3x3 s1 -> 32x11x11 -> 3x3 s2 -> 64x5x5 -> 3x3 s1 -> 64x3x3
+// ICx13x13 -> 3x3 s1 -> 32x11x11 -> 3x3 s2 -> 64x5x5 -> 3x3 s1 -> 64x3x3
 // The CUDA encoder keeps conv activations NHWC, as its matmul rows, so im2col
 // columns and conv weights are (kh, kw, channel) with the channel fastest,
 // and the CNN block of the concat is the 3x3 output flattened NHWC
 #define IW_GRID_PAD 1
 // channels: static empty, standard, bouncy, death, out of bounds, floating
 // standard, bouncy, death, pickup, enemy; the empty channel stands in for
-// a conv bias
+// a conv bias. Builds with more than one other drone add an ally channel,
+// and an always empty one as conv1's im2col writes pairs of channels;
+// 1v1 builds leave them out so their checkpoints still load
 #define IW_GRID_STATIC_IDS (IW_GRID_OUT_OF_BOUNDS + 1)
+#define IW_GRID_PICKUP_CHANNEL (IW_GRID_STATIC_IDS + 3)
+#define IW_GRID_ENEMY_CHANNEL (IW_GRID_PICKUP_CHANNEL + 1)
+#define IW_GRID_ALLY_CHANNEL (IW_GRID_ENEMY_CHANNEL + 1)
+#ifndef OBS_SIZE
+#error "OBS_SIZE must be defined before impulse_wars_obs.h is included"
+#endif
+#if IW_NUM_ENEMIES > 1
+#define IW_GRID_CHANNELS 12
+#else
 #define IW_GRID_CHANNELS 10
+#endif
 
 #define IW_C1_IN (IW_GRID_SIZE + 2 * IW_GRID_PAD)
 #define IW_C1_IC IW_GRID_CHANNELS
@@ -334,10 +347,16 @@ IW_FN float iw_grid_channel(float v, int ch) {
     if (ch < IW_GRID_STATIC_IDS + 3) {
         return ((code >> IW_GRID_FLOATING_SHIFT) & 0x3) == ch - IW_GRID_STATIC_IDS + 1 ? 1.0f : 0.0f;
     }
-    if (ch == IW_GRID_STATIC_IDS + 3) {
+    if (ch == IW_GRID_PICKUP_CHANNEL) {
         return (code & IW_GRID_PICKUP_BIT) != 0 ? 1.0f : 0.0f;
     }
-    return (code & IW_GRID_ENEMY_BIT) != 0 ? 1.0f : 0.0f;
+    if (ch == IW_GRID_ENEMY_CHANNEL) {
+        return (code & IW_GRID_ENEMY_BIT) != 0 ? 1.0f : 0.0f;
+    }
+    if (ch == IW_GRID_ALLY_CHANNEL) {
+        return (code & IW_GRID_ALLY_BIT) != 0 ? 1.0f : 0.0f;
+    }
+    return 0.0f;
 }
 
 // map grid cell read by conv1 output position s at im2col column c, or -1

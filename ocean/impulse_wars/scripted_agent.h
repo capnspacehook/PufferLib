@@ -492,7 +492,7 @@ static inline uint16_t botStep(const iwEnv *e) {
 // death isn't active or no more walls will be placed
 static int8_t nextSuddenDeathRing(const iwEnv *e) {
     // matches when stepEnv places sudden death walls
-    if (e->stepsLeft != 0 || (e->isTraining && e->numDrones != e->numAgents)) {
+    if (e->stepsLeft != 0 || (e->isTraining && NUM_DRONES != e->numAgents)) {
         return -1;
     }
     if (e->suddenDeathWallCounter >= e->map->maxSuddenDeathWalls) {

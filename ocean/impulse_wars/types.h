@@ -618,6 +618,7 @@ typedef struct droneStats {
     float ownShieldBroken;
     float selfKills;
     float kills;
+    float teammateKills;
     float unknownKills;
     // ammo crates picked up, and those that added ammo
     float cratesPickedUp;
@@ -948,7 +949,6 @@ struct Env {
     int boundary_reached;
     unsigned int rng;
 
-    uint8_t numDrones;
     uint8_t numAgents;
     uint8_t numTeams;
     bool teamsEnabled;
