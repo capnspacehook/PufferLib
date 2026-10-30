@@ -173,6 +173,41 @@ static const float PORTAL_SWIRL_TWIST = 1.0f;
 // direction of the entry portal's twirl, 1 is clockwise on screen and -1
 // counterclockwise; exits twirl the other way
 static const float PORTAL_SWIRL_ENTRY = 1.0f;
+// Line drawn between portals when they link: it sweeps from the old portal
+// to the new one along an arc that bends left of that direction, then fades
+// out. It's whitest in the middle, in the drone's color at the ends. Bloom
+// makes it look wider than it is so keep it thin.
+static const float PORTAL_LINK_EFFECT_TIME = 0.7f;
+// fraction of the effect spent sweeping, the rest fades
+static const float PORTAL_LINK_SWEEP = 0.35f;
+static const float PORTAL_LINK_WIDTH = 0.07f;
+static const float PORTAL_LINK_ALPHA = 0.6f;
+// how far the middle of the arc bends out, as a fraction of the line's
+// length, and at most PORTAL_LINK_MAX_BEND
+static const float PORTAL_LINK_BEND = 0.15f;
+static const float PORTAL_LINK_MAX_BEND = 5.0f;
+static const float PORTAL_LINK_WHITEN = 0.3f;
+#define PORTAL_LINK_SEGMENTS 16
+// Linked portals have motes drifting into each portal that come out of the
+// linked one, so pairs read as connected. Each mote speeds up as it falls in
+// and slows as it comes out, keeping its offset along the face mirrored like
+// teleported entities. Each mote's offset, height and speed are random.
+// Unlinked portals have none.
+// range of seconds for a mote to go in one portal and out the other
+static const float PORTAL_MOTE_MIN_TIME = 1.0f;
+static const float PORTAL_MOTE_MAX_TIME = 2.2f;
+// most seconds a mote waits before starting again once it's out
+static const float PORTAL_MOTE_MAX_GAP = 0.4f;
+// how far in front of the face motes start and end
+static const float PORTAL_MOTE_DEPTH = 1.4f;
+static const float PORTAL_MOTE_RADIUS = 0.1f;
+static const float PORTAL_MOTE_MIN_HEIGHT = 0.25f;
+static const float PORTAL_MOTE_MAX_HEIGHT = 0.75f;
+// fraction of the portal's width motes spread over
+static const float PORTAL_MOTE_SPREAD = 0.85f;
+// whitens the drone color so motes stand out over the field
+static const float PORTAL_MOTE_WHITEN = 0.35f;
+static const float PORTAL_MOTE_ALPHA = 0.9f;
 
 // Explosion visual lifetime in seconds (rebuild after tuning).
 // Reference radius/impulse produce BASE_TIME. Exponents of 0 ignore that factor.
@@ -1548,6 +1583,10 @@ static uint16_t portalTransitMaxSteps(const iwEnv *e) {
     return (uint16_t)fmaxf(1.0f, ceilf(PORTAL_TRANSIT_EFFECT_TIME * e->frameRate));
 }
 
+static uint16_t portalLinkMaxSteps(const iwEnv *e) {
+    return (uint16_t)fmaxf(1.0f, ceilf(PORTAL_LINK_EFFECT_TIME * e->frameRate));
+}
+
 // 1 when a portal effect just started, fading to 0
 static float portalEffectRemaining(const iwEnv *e, const uint16_t renderSteps) {
     if (renderSteps == UINT16_MAX) {
@@ -2367,6 +2406,120 @@ void renderPortal(const iwEnv *e, const portalEntity *portal) {
     rlPopMatrix();
 }
 
+// line between a portal and its linked portal when the portal just linked
+void renderPortalLink(const iwEnv *e, const portalEntity *portal) {
+    if (portal->linkRenderSteps == 0 || portal->linkedPortal == NULL) {
+        return;
+    }
+    float elapsed = 0.0f;
+    if (portal->linkRenderSteps != UINT16_MAX) {
+        elapsed = 1.0f - Clamp((float)portal->linkRenderSteps / portalLinkMaxSteps(e), 0.0f, 1.0f);
+    }
+    // the head slows as it reaches the new portal, then the whole line fades
+    const float sweep = Clamp(elapsed / PORTAL_LINK_SWEEP, 0.0f, 1.0f);
+    const float head = 1.0f - (1.0f - sweep) * (1.0f - sweep);
+    const float fade = 1.0f - Clamp((elapsed - PORTAL_LINK_SWEEP) / (1.0f - PORTAL_LINK_SWEEP), 0.0f, 1.0f);
+    const float alpha = PORTAL_LINK_ALPHA * fade * fade;
+    if (head <= 0.0f || alpha <= 0.0f) {
+        return;
+    }
+
+    // a quadratic bezier between the centers of the portals' fields; the
+    // middle of the curve is half as far out as the control point
+    const portalEntity *old = portal->linkedPortal;
+    const b2Vec2 start = b2MulAdd(old->pos, PORTAL_HEIGHT / 2.0f, old->normal);
+    const b2Vec2 end = b2MulAdd(portal->pos, PORTAL_HEIGHT / 2.0f, portal->normal);
+    const b2Vec2 toEnd = b2Sub(end, start);
+    const float bend = fminf(b2Length(toEnd) * PORTAL_LINK_BEND, PORTAL_LINK_MAX_BEND);
+    const b2Vec2 control = b2MulAdd(b2Lerp(start, end, 0.5f), 2.0f * bend, b2LeftPerp(b2Normalize(toEnd)));
+
+    const Color color = getDroneColor(portal->droneIdx);
+    b2Vec2 prev = start;
+    for (int i = 1; i <= PORTAL_LINK_SEGMENTS; i++) {
+        const float t0 = (float)(i - 1) / PORTAL_LINK_SEGMENTS;
+        if (t0 >= head) {
+            break;
+        }
+        const float t = fminf((float)i / PORTAL_LINK_SEGMENTS, head);
+        const float u = 1.0f - t;
+        const b2Vec2 pos = b2Add(b2Add(b2MulSV(u * u, start), b2MulSV(2.0f * u * t, control)), b2MulSV(t * t, end));
+        const float whiten = PORTAL_LINK_WHITEN * sinf(PI * 0.5f * (t0 + t));
+        DrawCylinderEx(
+            (Vector3){.x = prev.x, .y = 0.5f, .z = prev.y},
+            (Vector3){.x = pos.x, .y = 0.5f, .z = pos.y},
+            PORTAL_LINK_WIDTH,
+            PORTAL_LINK_WIDTH,
+            4,
+            Fade(ColorLerp(color, RAYWHITE, whiten), alpha)
+        );
+        prev = pos;
+    }
+}
+
+// starts a mote at time, picking where it goes and how fast
+static void startPortalMote(iwEnv *e, portalMote *mote, const float time) {
+    const float maxOffset = PORTAL_WIDTH * PORTAL_MOTE_SPREAD / 2.0f;
+    mote->start = time;
+    mote->duration = randFloat(&e->renderRng, PORTAL_MOTE_MIN_TIME, PORTAL_MOTE_MAX_TIME);
+    mote->offset = randFloat(&e->renderRng, -maxOffset, maxOffset);
+    mote->height = randFloat(&e->renderRng, PORTAL_MOTE_MIN_HEIGHT, PORTAL_MOTE_MAX_HEIGHT);
+}
+
+// draws the motes going into portal and coming out of its linked portal
+void renderPortalMotes(iwEnv *e, portalEntity *portal) {
+    const portalEntity *out = portal->linkedPortal;
+    if (out == NULL) {
+        // start over when linked again
+        for (int i = 0; i < _NUM_PORTAL_MOTES; i++) {
+            portal->motes[i].duration = 0.0f;
+        }
+        return;
+    }
+
+    const Color color = ColorLerp(getDroneColor(portal->droneIdx), RAYWHITE, PORTAL_MOTE_WHITEN);
+    const b2Vec2 inTangent = b2LeftPerp(portal->normal);
+    // entities keep their offset along the face through portals, which
+    // flips it relative to the exit's left perpendicular
+    const b2Vec2 outTangent = b2Neg(b2LeftPerp(out->normal));
+    const float time = (float)e->episodeLength / e->frameRate;
+    for (int i = 0; i < _NUM_PORTAL_MOTES; i++) {
+        portalMote *mote = &portal->motes[i];
+        if (mote->duration == 0.0f) {
+            // spread the first motes out so they don't all start together
+            startPortalMote(e, mote, time + randFloat(&e->renderRng, 0.0f, PORTAL_MOTE_MAX_TIME));
+        } else if (time >= mote->start + mote->duration) {
+            startPortalMote(e, mote, time + randFloat(&e->renderRng, 0.0f, PORTAL_MOTE_MAX_GAP));
+        }
+        if (time < mote->start) {
+            continue;
+        }
+        const float phase = (time - mote->start) / mote->duration;
+        const float offset = mote->offset;
+        const float height = mote->height;
+
+        b2Vec2 pos;
+        if (phase < 0.5f) {
+            const float t = phase * 2.0f;
+            const float depth = PORTAL_MOTE_DEPTH * (1.0f - t * t);
+            pos = b2MulAdd(b2MulAdd(portal->pos, offset, inTangent), depth, portal->normal);
+        } else {
+            const float t = 2.0f - phase * 2.0f;
+            const float depth = PORTAL_MOTE_DEPTH * (1.0f - t * t);
+            pos = b2MulAdd(b2MulAdd(out->pos, offset, outTangent), depth, out->normal);
+        }
+        // brightest at the faces, fading in and out at the ends
+        const float alpha = PORTAL_MOTE_ALPHA * (1.0f - fabsf(2.0f * phase - 1.0f));
+
+        DrawSphereEx(
+            (Vector3){.x = pos.x, .y = height, .z = pos.y},
+            PORTAL_MOTE_RADIUS,
+            4,
+            6,
+            Fade(color, alpha)
+        );
+    }
+}
+
 void renderProjectile(const projectileEntity *projectile) {
     DrawSphere(
         (Vector3){.x = projectile->pos.x, .y = 0.5f, .z = projectile->pos.y},
@@ -2510,6 +2663,8 @@ void renderEnv(iwEnv *e) {
         const droneEntity *drone = safe_array_get_at(e->drones, i);
         for (uint8_t j = 0; j < drone->openPortals; j++) {
             renderPortal(e, drone->portals[j]);
+            renderPortalMotes(e, drone->portals[j]);
+            renderPortalLink(e, drone->portals[j]);
         }
     }
     renderBoostSparks(e);

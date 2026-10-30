@@ -621,6 +621,7 @@ void createPortal(iwEnv *e, droneEntity *drone, wallEntity *wall, const b2Vec2 p
     if (drone->openPortals == 2) {
         drone->portals[0]->linkedPortal = portal;
         portal->linkedPortal = drone->portals[0];
+        portal->linkRenderSteps = UINT16_MAX;
     }
 }
 
@@ -639,6 +640,7 @@ void destroyPortal(iwEnv *e, portalEntity *portal) {
     drone->portals[--drone->openPortals] = NULL;
     if (drone->openPortals != 0) {
         drone->portals[0]->linkedPortal = NULL;
+        drone->portals[0]->linkRenderSteps = 0;
     }
 
     fastFree(portal);

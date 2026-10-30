@@ -1566,6 +1566,11 @@ void updatePortalTransitEffects(iwEnv *e) {
             } else if (portal->transitRenderSteps != 0) {
                 portal->transitRenderSteps--;
             }
+            if (portal->linkRenderSteps == UINT16_MAX) {
+                portal->linkRenderSteps = portalLinkMaxSteps(e);
+            } else if (portal->linkRenderSteps != 0) {
+                portal->linkRenderSteps--;
+            }
         }
     }
 }

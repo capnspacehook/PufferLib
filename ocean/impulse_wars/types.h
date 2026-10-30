@@ -309,6 +309,19 @@ typedef struct projectileEntity {
     trailPoints *trailPoints;
 } projectileEntity;
 
+// a mote drifting into a portal and out of the linked one, purely visual;
+// drawn from renderRng when it starts so motes are random but stable across
+// frames
+#define _NUM_PORTAL_MOTES 4
+typedef struct portalMote {
+    // game time in seconds the mote starts going in, and how long it takes
+    // to come out of the linked portal; 0 duration until it's first started
+    float start;
+    float duration;
+    float offset;
+    float height;
+} portalMote;
+
 typedef struct portalEntity portalEntity;
 struct portalEntity {
     uint8_t droneIdx;
@@ -335,6 +348,11 @@ struct portalEntity {
     // the drone went in this portal, which swirls the opposite way to the
     // exit portal
     bool transitEntry;
+    // frames left of the line drawn to the linked portal when this portal
+    // formed the link, UINT16_MAX until the render code starts it
+    uint16_t linkRenderSteps;
+    // motes going into this portal, reset when it's unlinked
+    portalMote motes[_NUM_PORTAL_MOTES];
 
     entity *ent;
 };
