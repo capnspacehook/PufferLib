@@ -145,6 +145,10 @@ static const float UTILITY_ARMED_RING_ALPHA = 0.9f;
 
 // Portals are a glowing slab on the wall face with a faint field over the
 // sensor in front of it; bloom makes the slab look wider than it is.
+static const float MIRROR_RENDER_HEIGHT = 1.0f;
+static const float MIRROR_RENDER_WHITEN = 0.5f;
+static const float MIRROR_RENDER_ALPHA = 0.8f;
+
 static const float PORTAL_SLAB_DEPTH = 0.15f;
 static const float PORTAL_SLAB_HEIGHT = 1.0f;
 static const float PORTAL_UNLINKED_FADE = 0.3f;
@@ -713,6 +717,8 @@ char *getUtilityAbreviation(const enum utilityType type) {
         return "MINE";
     case PORTAL_UTILITY:
         return "PORT";
+    case MIRROR_UTILITY:
+        return "MIRR";
     default:
         return "";
     }
@@ -726,6 +732,8 @@ char *getUtilityName(const enum utilityType type) {
         return "Mines";
     case PORTAL_UTILITY:
         return "Portal";
+    case MIRROR_UTILITY:
+        return "Mirror";
     default:
         return "No Utility";
     }
@@ -764,6 +772,9 @@ char *getWeaponAbreviation(const enum weaponType type) {
         break;
     case PORTAL_WEAPON:
         name = "PORT";
+        break;
+    case MIRROR_WEAPON:
+        name = "MIRR";
         break;
     default:
         ERRORF("unknown weapon pickup type %d", type);
@@ -809,6 +820,9 @@ char *getWeaponName(const enum weaponType type) {
         break;
     case PORTAL_WEAPON:
         name = "Portal";
+        break;
+    case MIRROR_WEAPON:
+        name = "Mirror";
         break;
     default:
         ERRORF("unknown weapon pickup type %d", type);
@@ -2520,6 +2534,27 @@ void renderPortalMotes(iwEnv *e, portalEntity *portal) {
     }
 }
 
+void renderMirror(const mirrorEntity *mirror) {
+    // rotate so local x is along the face's normal and local z is along
+    // the face
+    const float angle = b2Rot_GetAngle(mirror->rot) * RAD2DEG;
+    const Color color = getDroneColor(mirror->droneIdx);
+
+    rlPushMatrix();
+    rlTranslatef(mirror->pos.x, 0.0f, mirror->pos.y);
+    rlRotatef(-angle, 0.0f, 1.0f, 0.0f);
+
+    DrawCube(
+        (Vector3){.x = 0.0f, .y = MIRROR_RENDER_HEIGHT / 2.0f, .z = 0.0f},
+        MIRROR_THICKNESS,
+        MIRROR_RENDER_HEIGHT,
+        2.0f * mirror->halfWidth,
+        Fade(ColorLerp(color, RAYWHITE, MIRROR_RENDER_WHITEN), MIRROR_RENDER_ALPHA)
+    );
+
+    rlPopMatrix();
+}
+
 void renderProjectile(const projectileEntity *projectile) {
     DrawSphere(
         (Vector3){.x = projectile->pos.x, .y = 0.5f, .z = projectile->pos.y},
@@ -2666,6 +2701,9 @@ void renderEnv(iwEnv *e) {
             renderPortalMotes(e, drone->portals[j]);
             renderPortalLink(e, drone->portals[j]);
         }
+    }
+    for (size_t i = 0; i < cc_array_size(e->mirrors); i++) {
+        renderMirror(safe_array_get_at(e->mirrors, i));
     }
     renderBoostSparks(e);
     EndBlendMode();

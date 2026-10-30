@@ -107,17 +107,22 @@ static const uint8_t MINE_OBS_SIZE = 4;
 static const uint8_t PORTAL_INFO_OBS_SIZE = 6;
 static const uint8_t NUM_PORTAL_OBS = _MAX_PORTALS;
 static const uint8_t PORTAL_OBS_SIZE = NUM_PORTAL_OBS * PORTAL_INFO_OBS_SIZE;
-// type, ammo, regen progress and active count, then the grapple, mine and
-// portal state
-static const uint8_t UTILITY_OBS_SIZE = 4 + GRAPPLE_OBS_SIZE + MINE_OBS_SIZE + PORTAL_OBS_SIZE;
+// live flag, relative position, the face's normal pointing towards the
+// observer, growth, time left and relative velocity, per live mirror
+static const uint8_t MIRROR_INFO_OBS_SIZE = 9;
+static const uint8_t NUM_MIRROR_OBS = _MAX_MIRRORS;
+static const uint8_t MIRROR_OBS_SIZE = NUM_MIRROR_OBS * MIRROR_INFO_OBS_SIZE;
+// type, ammo, regen progress and active count, then the grapple, mine,
+// portal and mirror state
+static const uint8_t UTILITY_OBS_SIZE = 4 + GRAPPLE_OBS_SIZE + MINE_OBS_SIZE + PORTAL_OBS_SIZE + MIRROR_OBS_SIZE;
 
 static const uint16_t ENEMY_DRONE_OBS_OFFSET = WEAPON_PICKUP_INFO_OBS_OFFSET + WEAPON_PICKUP_OBS_SIZE;
 // the ray to the enemy is last
-static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 60;
+static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 78;
 static const uint8_t ENEMY_DRONE_OBS_SIZE = ENEMY_DRONE_RAY_OBS_IDX + RAY_OBS_SIZE;
 
 // the rays are last
-static const uint8_t DRONE_RAY_OBS_IDX = 60;
+static const uint8_t DRONE_RAY_OBS_IDX = 78;
 static const uint8_t DRONE_OBS_SIZE = DRONE_RAY_OBS_IDX + (NUM_DRONE_RAY_OBS * RAY_OBS_SIZE);
 
 // easy episode flag, combo episode flag, steps left and sudden death steps
@@ -476,6 +481,23 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define PORTAL_EXIT_MIN_SPEED 5.0f
 #define PORTAL_EXIT_GAP 0.1
 
+// Retrograde Arena's mirror scaled up by 2, IW's drone radius over RA's
+// player radius; RA launches it at 2 u/s plus the shooter's velocity
+#define MIRROR_RECOIL_MAGNITUDE 20.0f
+#define MIRROR_COOL_DOWN 1.0f
+#define MIRROR_SPEED 4.0f
+#define MIRROR_DRONE_VELOCITY_COEF 0.33f
+#define MIRROR_WIDTH 10.0f
+#define MIRROR_THICKNESS 0.8f
+// it grows from a square to its full width
+#define MIRROR_GROW_TIME 0.5f
+#define MIRROR_LIFETIME 10.0f
+// distance from the drone's center to the mirror's when placed
+#define MIRROR_SPAWN_DISTANCE (DRONE_RADIUS + 1.0f)
+// how far inside a mirror a projectile can start a step and still be
+// reversed by it, as box2d leaves touching bodies slightly overlapping
+#define MIRROR_INSIDE_TOLERANCE 0.05f
+
 // utility settings
 #define GRAPPLE_UTILITY_AMMO 3
 #define GRAPPLE_UTILITY_REGEN_TIME 3.0f
@@ -491,6 +513,11 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define PORTAL_UTILITY_REGEN_TIME 10.0f
 #define PORTAL_UTILITY_MAX_ACTIVE INFINITE
 #define PORTAL_UTILITY_SPAWN_WEIGHT 2.5f
+
+#define MIRROR_UTILITY_AMMO 2
+#define MIRROR_UTILITY_REGEN_TIME 10.0f
+#define MIRROR_UTILITY_MAX_ACTIVE _MAX_MIRRORS
+#define MIRROR_UTILITY_SPAWN_WEIGHT 2.5f
 
 static const weaponInformation unsetWeapon = {
     .type = UNSET_WEAPON,
@@ -818,6 +845,19 @@ static const weaponInformation portal = {
     .spawnWeight = 0.0f,
 };
 
+// the mirror utility only has recoil, it fires no projectiles
+static const weaponInformation mirror = {
+    .type = MIRROR_WEAPON,
+    .ammo = MIRROR_UTILITY_AMMO,
+    .isPhysicsBullet = false,
+    .canSleep = false,
+    .numProjectiles = 0,
+    .recoilMagnitude = MIRROR_RECOIL_MAGNITUDE,
+    .cooldown = MIRROR_COOL_DOWN,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
+    .spawnWeight = 0.0f,
+};
+
 static weaponInformation *weaponInfos[] = {
     (weaponInformation *)&unsetWeapon,
     (weaponInformation *)&standard,
@@ -831,6 +871,7 @@ static weaponInformation *weaponInfos[] = {
     (weaponInformation *)&grapple,
     (weaponInformation *)&mineLauncher,
     (weaponInformation *)&portal,
+    (weaponInformation *)&mirror,
 };
 
 static const utilityInformation unsetUtility = {
@@ -869,11 +910,21 @@ static const utilityInformation portalUtility = {
     .spawnWeight = PORTAL_UTILITY_SPAWN_WEIGHT,
 };
 
+static const utilityInformation mirrorUtility = {
+    .type = MIRROR_UTILITY,
+    .projectileInfo = &mirror,
+    .ammo = MIRROR_UTILITY_AMMO,
+    .regenTime = MIRROR_UTILITY_REGEN_TIME,
+    .maxActive = MIRROR_UTILITY_MAX_ACTIVE,
+    .spawnWeight = MIRROR_UTILITY_SPAWN_WEIGHT,
+};
+
 static const utilityInformation *utilityInfos[] = {
     &unsetUtility,
     &grappleUtility,
     &mineUtility,
     &portalUtility,
+    &mirrorUtility,
 };
 
 // the utility that fires a weapon's projectiles, or UNSET_UTILITY if the
@@ -886,6 +937,8 @@ static inline enum utilityType weaponUtility(const enum weaponType type) {
         return MINE_UTILITY;
     case PORTAL_WEAPON:
         return PORTAL_UTILITY;
+    case MIRROR_WEAPON:
+        return MIRROR_UTILITY;
     default:
         return UNSET_UTILITY;
     }
@@ -909,6 +962,7 @@ static const char *weaponNames[] = {
     "grapple_gun",
     "mine_launcher",
     "portal_gun",
+    "mirror",
 };
 
 static b2ShapeId weaponSensor(const b2BodyId bodyID, const enum weaponType type) {

@@ -414,10 +414,10 @@ static inline void computeDroneGrappleObs(const droneEntity *drone, const b2Vec2
 }
 
 // the utility's state, then the state of each utility's projectiles in
-// utility type order; pos is what the grapple and mine positions are
-// relative to. Mine state is of the drone's mine whatever its utility, as
-// placed mines outlast a switch to another utility
-static inline void computeUtilityObs(const iwEnv *e, const droneEntity *drone, const b2Vec2 pos, float *obs, uint16_t offset) {
+// utility type order; pos and vel are what positions and velocities are
+// relative to. Mine and mirror state is of the drone's mine and mirrors
+// whatever its utility, as they outlast a switch to another utility
+static inline void computeUtilityObs(const iwEnv *e, const droneEntity *drone, const b2Vec2 pos, const b2Vec2 vel, float *obs, uint16_t offset) {
     const utilitySlot *utility = &drone->utility;
     const utilityInformation *info = utility->utilityInfo;
 
@@ -457,6 +457,35 @@ static inline void computeUtilityObs(const iwEnv *e, const droneEntity *drone, c
         obs[offset++] = portal->normal.x;
         obs[offset++] = portal->normal.y;
         obs[offset++] = clampValue(b2Dot(portal->normal, toDrone), -1.0f, 1.0f);
+    }
+    offset += (NUM_PORTAL_OBS - drone->openPortals) * PORTAL_INFO_OBS_SIZE;
+
+    // mirrors are kept oldest first
+    uint8_t mirrors = 0;
+    for (uint8_t i = 0; i < cc_array_size(e->mirrors) && mirrors < NUM_MIRROR_OBS; i++) {
+        const mirrorEntity *mirror = safe_array_get_at(e->mirrors, i);
+        if (mirror->droneIdx != drone->idx) {
+            continue;
+        }
+        mirrors++;
+
+        const b2Vec2 mirrorRelPos = squashVec(b2Sub(mirror->pos, pos), MAX_OBS_RELATIVE_POS);
+        const b2Vec2 mirrorRelVel = squashVec(b2Sub(mirror->velocity, vel), MAX_OBS_ENTITY_SPEED);
+        // the face's normal on the side facing the observer
+        b2Vec2 normal = b2Rot_GetXAxis(mirror->rot);
+        if (b2Dot(normal, b2Sub(pos, mirror->pos)) < 0.0f) {
+            normal = b2Neg(normal);
+        }
+
+        obs[offset++] = 1.0f;
+        obs[offset++] = mirrorRelPos.x;
+        obs[offset++] = mirrorRelPos.y;
+        obs[offset++] = normal.x;
+        obs[offset++] = normal.y;
+        obs[offset++] = scaleValue(fminf(mirror->age, MIRROR_GROW_TIME), MIRROR_GROW_TIME, true);
+        obs[offset++] = scaleValue(fmaxf(MIRROR_LIFETIME - mirror->age, 0.0f), MIRROR_LIFETIME, true);
+        obs[offset++] = mirrorRelVel.x;
+        obs[offset++] = mirrorRelVel.y;
     }
 }
 
@@ -672,7 +701,7 @@ void computeObs(iwEnv *e) {
 
             computeWeaponObs(&enemyDrone->weapon, continuousObs, continuousObsOffset);
             continuousObsOffset += WEAPON_OBS_SIZE;
-            computeUtilityObs(e, enemyDrone, agentDrone->pos, continuousObs, continuousObsOffset);
+            computeUtilityObs(e, enemyDrone, agentDrone->pos, agentDrone->velocity, continuousObs, continuousObsOffset);
             continuousObsOffset += UTILITY_OBS_SIZE;
 
             const b2Vec2 enemyDroneObsPos = squashVec(enemyDroneRelPos, MAX_OBS_RELATIVE_POS);
@@ -737,7 +766,7 @@ void computeObs(iwEnv *e) {
 
         computeWeaponObs(&agentDrone->weapon, continuousObs, continuousObsOffset);
         continuousObsOffset += WEAPON_OBS_SIZE;
-        computeUtilityObs(e, agentDrone, agentDrone->pos, continuousObs, continuousObsOffset);
+        computeUtilityObs(e, agentDrone, agentDrone->pos, agentDrone->velocity, continuousObs, continuousObsOffset);
         continuousObsOffset += UTILITY_OBS_SIZE;
         continuousObs[continuousObsOffset++] = agentDrone->triggerHeld;
         continuousObs[continuousObsOffset++] = agentDrone->utilityHeld;
@@ -967,6 +996,7 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     create_array(&e->boostSparks, 8);
     create_array(&e->explodingProjectiles, 8);
     create_array(&e->dronePieces, 16);
+    create_array(&e->mirrors, 4);
 
     e->humanInput = false;
     e->humanDroneInput = 0;
@@ -1050,6 +1080,11 @@ void clearEnv(iwEnv *e) {
         destroyDronePiece(e, piece);
     }
 
+    for (size_t i = 0; i < cc_array_size(e->mirrors); i++) {
+        mirrorEntity *mirror = safe_array_get_at(e->mirrors, i);
+        destroyMirror(e, mirror);
+    }
+
     cc_array_remove_all(e->floatingWalls);
     cc_array_remove_all(e->pickups);
     cc_array_remove_all(e->projectiles);
@@ -1058,6 +1093,7 @@ void clearEnv(iwEnv *e) {
     cc_array_remove_all(e->boostSparks);
     cc_array_remove_all(e->drones);
     cc_array_remove_all(e->dronePieces);
+    cc_array_remove_all(e->mirrors);
 
     memset(e->minesCreated, 0x0, sizeof(e->minesCreated));
     memset(e->droneSwapEffects, 0x0, sizeof(e->droneSwapEffects));
@@ -1091,6 +1127,7 @@ void puf_close(iwEnv *e) {
     cc_array_destroy(e->boostSparks);
     cc_array_destroy(e->explodingProjectiles);
     cc_array_destroy(e->dronePieces);
+    cc_array_destroy(e->mirrors);
 
     b2DestroyWorld(e->worldID);
 
@@ -1557,6 +1594,7 @@ bool stepPhysicsFrame(iwEnv *e, const agentActions stepActions[], int8_t *winner
     }
 
     projectilesStep(e);
+    mirrorsStep(e);
 
     bool allAliveOnSameTeam = false;
     bool roundOver = false;
@@ -1638,6 +1676,7 @@ void stepPhysicsFrameMinimal(iwEnv *e) {
     weaponPickupsOverlapStep(e);
 
     projectilesStep(e);
+    mirrorsStep(e);
 
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);

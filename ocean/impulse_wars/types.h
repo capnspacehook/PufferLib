@@ -15,6 +15,8 @@
 
 #define _MAX_PORTALS 2
 
+#define _MAX_MIRRORS 2
+
 // discrete aim is split into a coarse sector and a fine offset within
 // it, giving AIM_COARSE_SECTORS * AIM_FINE_STEPS evenly spaced directions
 // while only needing AIM_COARSE_SECTORS + AIM_FINE_STEPS logits; lives
@@ -39,6 +41,7 @@ enum entityType {
     SHIELD_ENTITY,
     DRONE_PIECE_ENTITY,
     PORTAL_ENTITY,
+    MIRROR_ENTITY,
 };
 
 // the category bit that will be set on each entity's shape; this is
@@ -52,6 +55,7 @@ enum shapeCategory {
     SHIELD_SHAPE = 32,
     DRONE_PIECE_SHAPE = 64,
     PORTAL_SHAPE = 128,
+    MIRROR_SHAPE = 256,
 };
 
 typedef struct entityID {
@@ -68,7 +72,7 @@ typedef struct entity {
     uint16_t lastBurstHit[_MAX_DRONES];
 } entity;
 
-#define _NUM_WEAPONS 12
+#define _NUM_WEAPONS 13
 static const uint8_t NUM_WEAPONS = _NUM_WEAPONS;
 
 enum weaponType {
@@ -84,13 +88,15 @@ enum weaponType {
     GRAPPLE_WEAPON,
     MINE_LAUNCHER_WEAPON,
     PORTAL_WEAPON,
+    MIRROR_WEAPON,
 };
 
 // utilities live in their own slot next to the weapon and survive death;
 // their ammo regenerates over time. Their projectiles are
 // still weapon types (see utilityInformation) so physics, kill credit and
-// per weapon stats treat them like any other projectile
-#define _NUM_UTILITIES 4
+// per weapon stats treat them like any other projectile. The mirror isn't a
+// projectile, but it has a weapon type with no projectiles for its recoil
+#define _NUM_UTILITIES 5
 static const uint8_t NUM_UTILITIES = _NUM_UTILITIES;
 
 enum utilityType {
@@ -98,6 +104,7 @@ enum utilityType {
     GRAPPLE_UTILITY,
     MINE_UTILITY,
     PORTAL_UTILITY,
+    MIRROR_UTILITY,
 };
 
 typedef struct mapBounds {
@@ -357,6 +364,26 @@ struct portalEntity {
     entity *ent;
 };
 
+// a panel that drifts in a straight line, through everything but
+// projectiles, and reverses every projectile that hits it; a kinematic body
+// so nothing can push it
+typedef struct mirrorEntity {
+    uint8_t droneIdx;
+
+    b2BodyId bodyID;
+    b2ShapeId shapeID;
+    b2Vec2 pos;
+    b2Rot rot;
+    b2Vec2 velocity;
+    int16_t mapCellIdx;
+    // seconds since it was placed
+    float age;
+    // half its width along the face, which grows to MIRROR_WIDTH / 2
+    float halfWidth;
+
+    entity *ent;
+} mirrorEntity;
+
 // used to keep track of what happened each step for reward purposes
 typedef struct droneStepInfo {
     bool firedShot;
@@ -474,6 +501,7 @@ enum deflectType {
     BURST_DEFLECT,
     EXPLOSION_DEFLECT,
     PROJECTILE_DEFLECT,
+    MIRROR_DEFLECT,
     NUM_DEFLECT_TYPES,
 };
 
@@ -659,6 +687,10 @@ typedef struct droneAnalysisStats {
     float deflections[NUM_DEFLECT_TYPES][_NUM_WEAPONS];
     float deflectedHits[_NUM_WEAPONS];
     float deflectedKills[_NUM_WEAPONS];
+    // mirrors placed, and projectiles this drone's mirrors reversed by the
+    // reversed weapon, own projectiles included
+    float mirrorsPlaced;
+    float mirrorReflections[_NUM_WEAPONS];
 } droneAnalysisStats;
 
 struct Log {
@@ -994,6 +1026,8 @@ struct Env {
     // TODO: rename to deferred destroyed or something?
     CC_Array *explodingProjectiles;
     CC_Array *dronePieces;
+    // live mirrors, oldest first
+    CC_Array *mirrors;
 
     uint16_t burstSerial;
     uint8_t minesCreated[_MAX_DRONES];

@@ -711,6 +711,71 @@ const portalEntity *wallPortalTouched(const iwEnv *e, const wallEntity *wall, co
     return NULL;
 }
 
+// the mirror's box, thickness along its local x axis, which is the face's
+// normal, and width along its local y axis
+static inline b2Polygon mirrorBox(const float halfWidth) {
+    return b2MakeBox(MIRROR_THICKNESS / 2.0f, halfWidth);
+}
+
+// places a mirror in front of the drone facing along aim, drifting along
+// aim with the drone's velocity added like RA
+void createMirror(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
+    ASSERT_VEC_NORMALIZED(normAim);
+
+    mirrorEntity *mirror = fastCalloc(1, sizeof(mirrorEntity));
+    mirror->droneIdx = drone->idx;
+    mirror->pos = b2MulAdd(drone->pos, MIRROR_SPAWN_DISTANCE, normAim);
+    mirror->rot = b2MakeRotFromUnitVector(normAim);
+    const b2Vec2 reducedVel = b2MulSV(MIRROR_DRONE_VELOCITY_COEF, drone->velocity);
+    mirror->velocity = b2MulAdd(reducedVel, MIRROR_SPEED, normAim);
+    mirror->mapCellIdx = entityPosToCellIdx(e, mirror->pos);
+    mirror->age = 0.0f;
+    // start as a square and grow to full width
+    mirror->halfWidth = MIRROR_THICKNESS / 2.0f;
+
+    entity *ent = createEntity(e, MIRROR_ENTITY, mirror);
+    mirror->ent = ent;
+
+    b2BodyDef bodyDef = b2DefaultBodyDef();
+    bodyDef.type = b2_kinematicBody;
+    bodyDef.position = mirror->pos;
+    bodyDef.rotation = mirror->rot;
+    bodyDef.linearVelocity = mirror->velocity;
+    bodyDef.enableSleep = false;
+    bodyDef.userData = ent;
+    mirror->bodyID = b2CreateBody(e->worldID, &bodyDef);
+
+    b2ShapeDef shapeDef = b2DefaultShapeDef();
+    shapeDef.enableContactEvents = true;
+    shapeDef.enableSensorEvents = false;
+    shapeDef.material.restitution = 1.0f;
+    shapeDef.material.friction = 0.0f;
+    shapeDef.filter.categoryBits = MIRROR_SHAPE;
+    shapeDef.filter.maskBits = PROJECTILE_SHAPE;
+    shapeDef.userData = ent;
+    const b2Polygon box = mirrorBox(mirror->halfWidth);
+    mirror->shapeID = b2CreatePolygonShape(mirror->bodyID, &shapeDef, &box);
+
+    cc_array_add(e->mirrors, mirror);
+    e->analysisStats[drone->idx].mirrorsPlaced++;
+}
+
+void destroyMirror(iwEnv *e, mirrorEntity *mirror) {
+    destroyEntity(e, mirror->ent);
+    b2DestroyBody(mirror->bodyID);
+    fastFree(mirror);
+}
+
+// how many mirrors the drone has out
+uint8_t droneMirrorsActive(const iwEnv *e, const droneEntity *drone) {
+    uint8_t active = 0;
+    for (uint8_t i = 0; i < cc_array_size(e->mirrors); i++) {
+        const mirrorEntity *mirror = safe_array_get_at(e->mirrors, i);
+        active += mirror->droneIdx == drone->idx;
+    }
+    return active;
+}
+
 void destroyWall(iwEnv *e, wallEntity *wall, const bool full) {
     destroyPortalsAttachedTo(e, wall);
     destroyEntity(e, wall->ent);
@@ -2129,7 +2194,7 @@ void createProjectile(iwEnv *e, droneEntity *drone, const weaponInformation *wea
     projectileShapeDef.material.restitution = PROJECTILE_RESTITUTION;
     projectileShapeDef.material.friction = 0.0f;
     projectileShapeDef.filter.categoryBits = PROJECTILE_SHAPE;
-    projectileShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | PROJECTILE_SHAPE | DRONE_SHAPE | SHIELD_SHAPE | PORTAL_SHAPE;
+    projectileShapeDef.filter.maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE | PROJECTILE_SHAPE | DRONE_SHAPE | SHIELD_SHAPE | PORTAL_SHAPE | MIRROR_SHAPE;
     const b2Circle projectileCircle = {.center = b2Vec2_zero, .radius = radius};
 
     b2ShapeId projectileShapeID = b2CreateCircleShape(projectileBodyID, &projectileShapeDef, &projectileCircle);
@@ -2285,6 +2350,177 @@ void checkProjectileDeflection(iwEnv *e, projectileEntity *projectile, const dro
     projectile->droneIdx = deflector->idx;
     projectile->deflected = true;
     e->analysisStats[deflector->idx].deflections[type][weapon]++;
+}
+
+// the projectile's path this step in the mirror's frame: where it started
+// relative to where the mirror was at the start of the step, and where it
+// is now relative to the mirror now
+static inline void mirrorLocalPath(const iwEnv *e, const mirrorEntity *mirror, const projectileEntity *projectile, b2Vec2 *start, b2Vec2 *end) {
+    const b2Vec2 mirrorStart = b2MulSub(mirror->pos, e->deltaTime, mirror->velocity);
+    *start = b2InvRotateVector(mirror->rot, b2Sub(projectile->lastPos, mirrorStart));
+    *end = b2InvRotateVector(mirror->rot, b2Sub(projectile->pos, mirror->pos));
+}
+
+// half extents of the mirror grown by a projectile's radius, which the
+// projectile's center can't enter
+static inline b2Vec2 mirrorProjectileExtent(const mirrorEntity *mirror, const projectileEntity *projectile) {
+    const float radius = projectile->weaponInfo->radius;
+    return (b2Vec2){.x = MIRROR_THICKNESS / 2.0f + radius, .y = mirror->halfWidth + radius};
+}
+
+// reverses a projectile that hit a mirror like RA, whatever the angle,
+// taking over enemy projectiles like a deflection does. vel is the
+// projectile's velocity going into the mirror. Only projectiles that
+// started the step outside the mirror, or were just fired inside it, and
+// are moving into it are reversed: growing the mirror recreates its
+// contacts, beginning them again, and projectiles the mirror grew or moved
+// over are left for box2d to push out. Returns true if the projectile was
+// reversed
+bool mirrorReflectProjectile(iwEnv *e, projectileEntity *projectile, const mirrorEntity *mirror, const b2Vec2 vel) {
+    if (projectile->welded) {
+        return false;
+    }
+
+    b2Vec2 start, end;
+    mirrorLocalPath(e, mirror, projectile, &start, &end);
+    const b2Vec2 extent = mirrorProjectileExtent(mirror, projectile);
+    const float outX = fabsf(start.x) - extent.x;
+    const float outY = fabsf(start.y) - extent.y;
+    // projectiles haven't traveled until the end of the step they were
+    // fired in
+    const bool justFired = projectile->distance == 0.0f;
+    if (!justFired && outX < -MIRROR_INSIDE_TOLERANCE && outY < -MIRROR_INSIDE_TOLERANCE) {
+        return false;
+    }
+    // into the face it started outside of, the wide face or an end
+    b2Vec2 localInto = {.x = start.x > 0.0f ? -1.0f : 1.0f, .y = 0.0f};
+    if (outY > outX) {
+        localInto = (b2Vec2){.x = 0.0f, .y = start.y > 0.0f ? -1.0f : 1.0f};
+    }
+    const b2Vec2 into = b2RotateVector(mirror->rot, localInto);
+    if (b2Dot(b2Sub(vel, mirror->velocity), into) <= 0.0f) {
+        return false;
+    }
+
+    b2Vec2 newVel = b2Neg(vel);
+    // a mirror moving into the projectile faster than the reversed
+    // projectile moves away would hit it again, so reverse it in the
+    // mirror's frame instead
+    if (b2Dot(b2Sub(newVel, mirror->velocity), into) > 0.0f) {
+        newVel = b2Sub(b2MulSV(2.0f, mirror->velocity), vel);
+    }
+    b2Body_SetLinearVelocity(projectile->bodyID, newVel);
+    projectile->velocity = newVel;
+    projectile->speed = b2Length(newVel);
+    projectile->lastSpeed = projectile->speed;
+
+    const enum weaponType weapon = projectile->weaponInfo->type;
+    e->analysisStats[mirror->droneIdx].mirrorReflections[weapon]++;
+
+    // utility projectiles' ownership controls how they work, see
+    // checkProjectileDeflection
+    if (weaponIsUtility(weapon) || projectile->droneIdx == mirror->droneIdx) {
+        return true;
+    }
+    const droneEntity *owner = safe_array_get_at(e->drones, projectile->droneIdx);
+    const droneEntity *mirrorOwner = safe_array_get_at(e->drones, mirror->droneIdx);
+    if (owner->team == mirrorOwner->team) {
+        return true;
+    }
+
+    DEBUG_LOGF("drone %d mirrored weapon %d of drone %d", mirrorOwner->idx, weapon, projectile->droneIdx);
+    projectile->prevDroneIdx = projectile->droneIdx;
+    projectile->droneIdx = mirrorOwner->idx;
+    projectile->deflected = true;
+    e->analysisStats[mirrorOwner->idx].deflections[MIRROR_DEFLECT][weapon]++;
+    return true;
+}
+
+// box2d only finds hits on kinematic bodies before they happen for bullet
+// projectiles, so other projectiles can pass through mirrors in one step,
+// or end the step deep inside one. Bullet projectiles are stopped at the
+// mirror, but their contact only begins next step, by when the mirror may
+// have grown over them. Reverses projectiles whose path this step reached a
+// mirror they weren't reversed by
+static void mirrorSweepProjectiles(iwEnv *e, const mirrorEntity *mirror) {
+    for (size_t i = 0; i < cc_array_size(e->projectiles); i++) {
+        projectileEntity *projectile = safe_array_get_at(e->projectiles, i);
+        if (projectile->needsToBeDestroyed || projectile->welded) {
+            continue;
+        }
+
+        b2Vec2 start, end;
+        mirrorLocalPath(e, mirror, projectile, &start, &end);
+        // stopped just short of the mirror is reaching it
+        const b2Vec2 extent = b2Add(mirrorProjectileExtent(mirror, projectile), (b2Vec2){.x = MIRROR_INSIDE_TOLERANCE, .y = MIRROR_INSIDE_TOLERANCE});
+        // where the path enters the box, as a fraction of the path
+        const b2Vec2 d = b2Sub(end, start);
+        float tEnter = 0.0f;
+        float tExit = 1.0f;
+        bool hit = true;
+        for (uint8_t axis = 0; axis < 2 && hit; axis++) {
+            const float s = axis == 0 ? start.x : start.y;
+            const float dir = axis == 0 ? d.x : d.y;
+            const float ext = axis == 0 ? extent.x : extent.y;
+            if (fabsf(dir) < 1e-6f) {
+                hit = fabsf(s) < ext;
+                continue;
+            }
+            float t0 = (-ext - s) / dir;
+            float t1 = (ext - s) / dir;
+            if (t0 > t1) {
+                const float tmp = t0;
+                t0 = t1;
+                t1 = tmp;
+            }
+            tEnter = fmaxf(tEnter, t0);
+            tExit = fminf(tExit, t1);
+            hit = tEnter < tExit;
+        }
+        // starting inside is left to box2d and mirrorReflectProjectile
+        if (!hit || tEnter <= 0.0f) {
+            continue;
+        }
+
+        if (!mirrorReflectProjectile(e, projectile, mirror, projectile->velocity)) {
+            continue;
+        }
+        // move it back to where it entered, relative to where the mirror
+        // is now
+        const b2Vec2 localEnter = b2MulAdd(start, tEnter, d);
+        const b2Vec2 enterPos = b2Add(mirror->pos, b2RotateVector(mirror->rot, localEnter));
+        b2Body_SetTransform(projectile->bodyID, enterPos, b2Body_GetRotation(projectile->bodyID));
+        projectile->pos = enterPos;
+        projectile->mapCellIdx = entityPosToCellIdx(e, enterPos);
+    }
+}
+
+// reverses projectiles that went through mirrors, grows mirrors and
+// destroys them once they expire or leave the map
+void mirrorsStep(iwEnv *e) {
+    CC_ArrayIter iter;
+    cc_array_iter_init(&iter, e->mirrors);
+    mirrorEntity *mirror;
+    while (cc_array_iter_next(&iter, (void **)&mirror) != CC_ITER_END) {
+        mirrorSweepProjectiles(e, mirror);
+
+        mirror->age += e->deltaTime;
+        if (mirror->age >= MIRROR_LIFETIME || mirror->mapCellIdx == -1) {
+            destroyMirror(e, mirror);
+            // keep mirrors oldest first for the obs
+            enum cc_stat res = cc_array_iter_remove(&iter, NULL);
+            MAYBE_UNUSED(res);
+            ASSERT(res == CC_OK);
+            continue;
+        }
+
+        if (mirror->halfWidth < MIRROR_WIDTH / 2.0f) {
+            const float growth = fminf(mirror->age / MIRROR_GROW_TIME, 1.0f);
+            mirror->halfWidth = MIRROR_THICKNESS / 2.0f + growth * (MIRROR_WIDTH - MIRROR_THICKNESS) / 2.0f;
+            const b2Polygon box = mirrorBox(mirror->halfWidth);
+            b2Shape_SetPolygon(mirror->shapeID, &box);
+        }
+    }
 }
 
 // ensures projectiles don't slow down when an impulse is applied to them
@@ -2477,7 +2713,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     const float relDistance = output.distance / ctx->def->radius;
     const float scale = 1.0f - (SQUARED(relDistance) * relDistance);
 
-    // the parent drone or projecile's velocity affects the direction
+    // the parent drone or projectile's velocity affects the direction
     // and magnitude of the explosion
     b2Vec2 parentVelocity;
     float parentSpeed;
@@ -3305,6 +3541,8 @@ uint8_t droneUtilityActive(const iwEnv *e, const droneEntity *drone) {
         // using a portal utility always fires one no matter how many
         // are active
         return 0;
+    case MIRROR_UTILITY:
+        return droneMirrorsActive(e, drone);
     default:
         return 0;
     }
@@ -3393,7 +3631,16 @@ void droneUtility(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool hel
     stats->utilityAmmoSpent[info->type]++;
     utility->ammo--;
     utility->cooldown = info->projectileInfo->cooldown;
+
     droneFireProjectiles(e, drone, info->projectileInfo, 0, aim);
+
+    if (info->type == MIRROR_UTILITY) {
+        b2Vec2 normAim = drone->lastAim;
+        if (!b2Equal(aim, b2Vec2_zero)) {
+            normAim = b2Normalize(aim);
+        }
+        createMirror(e, drone, normAim);
+    }
 }
 
 // regenerates utility ammo and cools down the utility
@@ -4060,6 +4307,7 @@ void handleBodyMoveEvents(iwEnv *e) {
         droneEntity *drone;
         shieldEntity *shield;
         dronePieceEntity *piece;
+        mirrorEntity *mirror;
         int16_t mapIdx;
 
         // if the new position is out of bounds, destroy the entity unless
@@ -4136,6 +4384,12 @@ void handleBodyMoveEvents(iwEnv *e) {
             piece->pos = newPos;
             piece->rot = event->transform.q;
             break;
+        case MIRROR_ENTITY:
+            mirror = ent->entity;
+            // mirrors that left the map are destroyed in mirrorsStep
+            mirror->mapCellIdx = entityPosToCellIdx(e, newPos);
+            mirror->pos = newPos;
+            break;
         default:
             ERRORF("unknown entity type for move event %d", ent->type);
         }
@@ -4182,6 +4436,12 @@ void createProjectileWeldJoint(const iwEnv *e, projectileEntity *projectile, con
 
     b2CreateWeldJoint(e->worldID, &jointDef);
     projectile->welded = true;
+
+    // a mirror moving over a welded projectile would shove it and what
+    // it's welded to, as nothing can push back on a kinematic body
+    b2Filter filter = b2Shape_GetFilter(projectile->shapeID);
+    filter.maskBits &= ~MIRROR_SHAPE;
+    b2Shape_SetFilter(projectile->shapeID, filter);
 }
 
 // destroy the projectile if it has traveled enough or has bounced enough
@@ -4222,6 +4482,11 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
         }
 
         // always allow all other projectiles to bounce off each other
+        return 0;
+    } else if (ent->type == MIRROR_ENTITY) {
+        // mirrors only reverse projectiles; they aren't bounces and
+        // nothing welds to or opens on them
+        mirrorReflectProjectile(e, projectile, ent->entity, projectile->lastVelocity);
         return 0;
     } else if (entityTypeIsWall(ent->type)) {
         wallEntity *wall = ent->entity;
