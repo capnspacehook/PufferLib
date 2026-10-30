@@ -82,6 +82,29 @@ GPU build is bf16 by default, like training.
   games with other `--threads`, which should give identical games. Use it to
   check the GPU build after changing the net.
 
+### 4 drone builds
+
+The harness plays whatever drone count the env is built with
+(`_MAX_DRONES` and `OBS_SIZE`). With 4 drones it plays 2v2: the policy
+plays a team, team 0 against the bots, and against another policy every
+seed is played from both teams. `--ffa` plays free for all instead: the
+policy plays one drone against three bots, or against three copies of the
+opponent from each of the 4 seats, as in training. `analyze_run.sh` picks
+`--ffa` for runs whose ini has `enable_teams = 0`.
+
+- `p` and `b` are summed over each side's drones, and a side's score is its
+  best drone's, so p and b scores still add up to 1. In free for all the
+  opponent side is three drones, so its totals aren't comparable to the
+  policy's, and a random policy scores about 0.25.
+- Stats between drones (line of sight, separation, aim error, situations)
+  are to each drone's nearest living enemy. Standoffs and peeks are only
+  tracked in 1v1.
+- The other drones' obs groups and features are named by slot: `ally`, then
+  `enemy0`, `enemy1` in 2v2 and `enemy0`..`enemy2` in free for all
+  (`--list-groups`). 1v1 keeps the `enemy` names.
+- `bot_tournament.c` plays 2v2 and `--ffa` the same way.
+- Results only compare to runs with the same drone count and mode.
+
 ### Comparing against earlier results
 
 Keep results under `build/iw_analysis/` (it's gitignored but survives

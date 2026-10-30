@@ -13,6 +13,9 @@
 #                       default 10, 0 to skip
 #   --no-bots, --no-combos   skip the bot ladder or the crate tournament
 #   --threads T         default every core
+#   --ffa               in a build with more than 2 drones, play free for
+#                       all instead of 2v2; the default for runs whose ini
+#                       has enable_teams = 0
 #   --gpu [--fp32]      run the policy forward on the GPU (bf16 like
 #                       training, or fp32); needs nvcc to build. Results of a
 #                       directory must all come from the same inference, as
@@ -24,7 +27,7 @@ set -e
 A="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$A/../../.." && pwd)"
 if [ $# -lt 1 ] || [ "${1#-}" != "$1" ]; then
-    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
 fi
 RUN="$1"
@@ -40,6 +43,7 @@ COMBOS=1
 THREADS="$(nproc)"
 GPU=()
 BUILD_FLAGS=()
+MODE=()
 while [ $# -gt 0 ]; do
     case "$1" in
     --ckpt) CKPT="$2"; shift 2 ;;
@@ -53,6 +57,7 @@ while [ $# -gt 0 ]; do
     --threads) THREADS="$2"; shift 2 ;;
     --gpu) GPU=(--gpu); BUILD_FLAGS+=(--gpu); shift ;;
     --fp32) BUILD_FLAGS+=(--fp32); shift ;;
+    --ffa) MODE=(--ffa); shift ;;
     *) echo "unknown option $1" >&2; exit 1 ;;
     esac
 done
@@ -63,6 +68,22 @@ if [ -z "$CKPT" ]; then
     [ -n "$CKPT" ] || { echo "no checkpoints in $CKPT_DIR" >&2; exit 1; }
 fi
 mkdir -p "$OUT/traj"
+
+# builds with more than 2 drones play 2v2, or free for all for runs
+# trained without teams
+DRONES="$(awk '$1 == "#define" && $2 == "_MAX_DRONES" {print $3}' "$SRC/ocean/impulse_wars/types.h")"
+INI="$REPO/logs/impulse_wars/$RUN.ini"
+[ -f "$INI" ] || INI="$(grep -lx "run_id = $RUN" "$REPO"/logs/impulse_wars/*.ini 2>/dev/null | head -1)"
+if [ "$DRONES" -gt 2 ] && [ -f "$INI" ] && [ ${#MODE[@]} -eq 0 ]; then
+    TEAMS="$(awk -F' *= *' '$0 == "[env]" {in_sec = 1; next} /^\[/ {in_sec = 0} in_sec && $1 == "enable_teams" {print $2}' "$INI")"
+    [ "$TEAMS" = 0 ] && MODE=(--ffa)
+fi
+if [ "$DRONES" -gt 2 ]; then
+    echo "$DRONES drones, playing $([ ${#MODE[@]} -gt 0 ] && echo "free for all" || echo 2v2)" >&2
+elif [ ${#MODE[@]} -gt 0 ]; then
+    echo "--ffa needs a build with more than 2 drones" >&2
+    exit 1
+fi
 
 # results of a directory pair up game by game only if they all come from
 # the same inference
@@ -90,7 +111,7 @@ step() {
     echo "running $(basename "$out")" >&2
     local t
     t=$(date +%s)
-    "$A/run.sh" "$@" --threads "$THREADS" "${GPU[@]}" 2>"$out.log" || { echo "failed, see $out.log" >&2; rm -f "$out"; exit 1; }
+    "$A/run.sh" "$@" --threads "$THREADS" "${GPU[@]}" "${MODE[@]}" 2>"$out.log" || { echo "failed, see $out.log" >&2; rm -f "$out"; exit 1; }
     echo "  done in $(( $(date +%s) - t ))s" >&2
 }
 

@@ -1,14 +1,21 @@
 // Scripted bot tournament: plays variants of the scripted bot against each
-// other with paired seeds. Every seed is played twice with the variants
-// swapping drones, so spawn positions, map and floating walls are identical
-// for both sides. Maps are pinned round robin over the non empty maps.
+// other with paired seeds. Every seed is played from every seat with the
+// variants swapping drones, so spawn positions, map and floating walls are
+// identical for both sides. Maps are pinned round robin over the non empty
+// maps.
 //
-// Build: ./ocean/impulse_wars/build_tournament.sh
+// Builds with 4 drones play 2v2, a variant's team against the other's, or
+// with --ffa free for all: the first variant of a pair plays one drone
+// against three drones of the other, from each of the 4 seats. A side's
+// stats are summed over its drones and its score is its best drone's.
+//
+// Build: ./ocean/impulse_wars/analysis/build_tournament.sh
 // Usage: ./iw_tournament [--episodes N] [--threads T] [--seed S] [--rr] [--eval]
-//                        [--maps 1,2,3] name=featureMask ...
+//                        [--ffa] [--maps 1,2,3] name=featureMask ...
 //   Without --rr the first variant is the reference and every other variant
 //   plays it; with --rr every pair of variants plays.
-//   --episodes is per pair (each seed is 2 episodes).
+//   --episodes is per pair (each seed is an episode per seat: 2 in 1v1 and
+//   2v2, 4 in free for all).
 //   Feature masks are enum botFeature bits: 0x1 (ammo reserve) is the
 //   standard bot, the other bits enable experimental behaviors.
 //   A variant can instead be a personality (see enum botPolicy) with its
@@ -22,8 +29,8 @@
 //   so sudden death starts EVAL_SUDDEN_DEATH_SECONDS before the cap.
 //
 // Learned opponent: --policy checkpoint.bin --hidden H --layers L [--argmax]
-//   plays the policy on drone 0, as in training and the bot ladder, against
-//   every variant on drone 1, one game per seed. Every variant faces the
+//   plays the policy on drone 0 (team 0 in 2v2), as in training and the bot
+//   ladder, against every variant on the other drones, one game per seed. Every variant faces the
 //   policy on identical seeds, so variants are compared by their paired
 //   difference to the first variant. Actions are sampled with a per game
 //   seeded rng so runs are reproducible; --argmax picks the greedy action.
@@ -86,23 +93,26 @@ typedef struct sideStats {
     double bursts;
     double burstsHit;
     double distance;
-    // mean speed while alive, and mean distance between the drones while
-    // both are alive
+    // mean speed while alive, and mean distance to the nearest living
+    // enemy while there is one
     double speed;
     double separation;
     double events[NUM_BOT_EVENTS];
 } sideStats;
 
+// by side: the first variant's, then the other's
 typedef struct gameStats {
     double speed[2];
-    double separation;
+    double separation[2];
 } gameStats;
 
-// result of one seed: two games, variant A on drone 0 then on drone 1
+#define MAX_SEATS _MAX_DRONES
+
+// result of one seed: a game from each seat of the first variant
 typedef struct seedResult {
-    float scoreA[2];
+    float scoreA[MAX_SEATS];
     uint8_t map;
-    float length[2];
+    float length[MAX_SEATS];
     sideStats a;
     sideStats b;
 } seedResult;
@@ -127,6 +137,31 @@ static pthread_mutex_t mapsMu = PTHREAD_MUTEX_INITIALIZER;
 static bool mapsReady = false;
 static bool evalMode = false;
 #define EVAL_SUDDEN_DEATH_SECONDS 25
+// 4 drone builds play 2v2, or free for all with --ffa
+static bool ffa = false;
+
+static inline bool teamsMode(void) {
+    return NUM_DRONES > 2 && !ffa;
+}
+
+// drones of the first variant of a pair, or of the policy: a team in 2v2,
+// else one
+static inline uint8_t sideDrones(void) {
+    return teamsMode() ? NUM_DRONES / 2 : 1;
+}
+
+// seats every seed is played from: every team in 2v2, else every drone
+static inline uint8_t numSeats(void) {
+    return teamsMode() ? 2 : NUM_DRONES;
+}
+
+// whether a drone is on the side playing seat
+static inline bool onSeat(const uint8_t seat, const uint8_t drone) {
+    if (teamsMode()) {
+        return drone / (NUM_DRONES / 2) == seat;
+    }
+    return drone == seat;
+}
 
 // learned opponent
 static Weights *policyWeights = NULL;
@@ -204,13 +239,14 @@ static void addStats(sideStats *s, const droneStats *d) {
     s->distance += d->distanceTraveled;
 }
 
+// p is NULL or sideDrones() runners, playing the first drones
 static void initTournamentEnv(iwEnv *e, policyRunner *p) {
-    initEnv(e, p != NULL ? 1 : 0, -1, 1, false, !evalMode, false, BOT_SCRIPTED, 0.0f, 0.0f);
-    if (p != NULL) {
-        e->agents[0].observations = p->obs;
-        e->agents[0].actions = p->actions;
-        e->agents[0].rewards = &p->reward;
-        e->agents[0].terminals = &p->terminal;
+    initEnv(e, p != NULL ? sideDrones() : 0, -1, 1, teamsMode(), !evalMode, false, BOT_SCRIPTED, 0.0f, 0.0f);
+    for (uint8_t i = 0; p != NULL && i < sideDrones(); i++) {
+        e->agents[i].observations = p[i].obs;
+        e->agents[i].actions = p[i].actions;
+        e->agents[i].rewards = &p[i].reward;
+        e->agents[i].terminals = &p[i].terminal;
     }
     setRewards(e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     e->easyEpProb = 0.0f;
@@ -219,7 +255,9 @@ static void initTournamentEnv(iwEnv *e, policyRunner *p) {
     }
 }
 
-static void playGame(iwEnv *e, policyRunner *p, const uint32_t rngSeed, const uint8_t mapIdx, const variant *v0, const variant *v1, gameStats *gs) {
+// the drones of seat play vSeat, or the policy if it's NULL, and the
+// others vOther
+static void playGame(iwEnv *e, policyRunner *p, const uint32_t rngSeed, const uint8_t mapIdx, const uint8_t seat, const variant *vSeat, const variant *vOther, gameStats *gs) {
     // box2d is only deterministic for identical creation order and id
     // pool state, so every game gets a fresh world
     pthread_mutex_lock(&mapsMu);
@@ -230,44 +268,75 @@ static void playGame(iwEnv *e, policyRunner *p, const uint32_t rngSeed, const ui
 
     e->pinnedMapIdx = mapIdx;
     e->rng = rngSeed;
-    if (v0 != NULL) {
-        e->botPersonality[0] = v0->policy;
-        e->botFeatures[0] = v0->features;
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
+        const variant *v = onSeat(seat, i) ? vSeat : vOther;
+        if (v != NULL) {
+            e->botPersonality[i] = v->policy;
+            e->botFeatures[i] = v->features;
+        }
     }
-    e->botPersonality[1] = v1->policy;
-    e->botFeatures[1] = v1->features;
     memset(&e->log, 0x0, sizeof(e->log));
     memset(e->botEvents, 0x0, sizeof(e->botEvents));
     puf_reset(e);
-    if (p != NULL) {
+    for (uint8_t i = 0; p != NULL && i < sideDrones(); i++) {
         // a fresh recurrent state for every game
-        p->terminal = 1.0f;
-        p->rng = rngSeed;
+        p[i].terminal = 1.0f;
+        p[i].rng = i == 0 ? rngSeed : hashSeed(rngSeed + i);
     }
-    double speedSum[2] = {0}, speedSteps[2] = {0}, sepSum = 0, sepSteps = 0;
+    double speedSum[2] = {0}, speedSteps[2] = {0}, sepSum[2] = {0}, sepSteps[2] = {0};
     while (e->log.n == 0.0f) {
-        if (p != NULL) {
-            policyForward(p);
+        for (uint8_t i = 0; p != NULL && i < sideDrones(); i++) {
+            policyForward(&p[i]);
         }
         puf_step(e);
-        const droneEntity *d0 = safe_array_get_at(e->drones, 0);
-        const droneEntity *d1 = safe_array_get_at(e->drones, 1);
-        const droneEntity *ds[2] = {d0, d1};
-        for (uint8_t i = 0; i < 2; i++) {
-            if (!ds[i]->dead) {
-                speedSum[i] += b2Length(ds[i]->velocity);
-                speedSteps[i]++;
+        const droneEntity *ds[_MAX_DRONES];
+        for (uint8_t i = 0; i < NUM_DRONES; i++) {
+            ds[i] = safe_array_get_at(e->drones, i);
+        }
+        for (uint8_t i = 0; i < NUM_DRONES; i++) {
+            if (ds[i]->dead) {
+                continue;
+            }
+            const uint8_t side = onSeat(seat, i) ? 0 : 1;
+            speedSum[side] += b2Length(ds[i]->velocity);
+            speedSteps[side]++;
+            float sep = -1.0f;
+            for (uint8_t j = 0; j < NUM_DRONES; j++) {
+                if (!ds[j]->dead && ds[j]->team != ds[i]->team) {
+                    const float d = b2Distance(ds[i]->pos, ds[j]->pos);
+                    sep = sep < 0.0f ? d : fminf(sep, d);
+                }
+            }
+            if (sep >= 0.0f) {
+                sepSum[side] += sep;
+                sepSteps[side]++;
             }
         }
-        if (!d0->dead && !d1->dead) {
-            sepSum += b2Distance(d0->pos, d1->pos);
-            sepSteps++;
+    }
+    for (uint8_t side = 0; side < 2; side++) {
+        gs->speed[side] = speedSteps[side] > 0 ? speedSum[side] / speedSteps[side] : 0.0;
+        gs->separation[side] = sepSteps[side] > 0 ? sepSum[side] / sepSteps[side] : 0.0;
+    }
+}
+
+// adds the episode stats of the drones on (or off) seat to a side
+static void addSide(sideStats *s, const iwEnv *e, const uint8_t seat, const bool on, float *score) {
+    *score = 0.0f;
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
+        if (onSeat(seat, i) != on) {
+            continue;
+        }
+        const droneStats *d = &e->log.stats[i];
+        *score = fmaxf(*score, d->score);
+        addStats(s, d);
+        for (uint8_t k = 0; k < NUM_BOT_EVENTS; k++) {
+            s->events[k] += e->botEvents[i][k];
+        }
+        // every death counts the weapon the drone died holding
+        for (uint8_t w = 0; w < _NUM_WEAPONS; w++) {
+            s->deaths += e->lastAnalysisStats[i].diedHoldingActive[w];
         }
     }
-    for (uint8_t i = 0; i < 2; i++) {
-        gs->speed[i] = speedSteps[i] > 0 ? speedSum[i] / speedSteps[i] : 0.0;
-    }
-    gs->separation = sepSteps > 0 ? sepSum / sepSteps : 0.0;
 }
 
 static void *worker(void *arg) {
@@ -275,13 +344,15 @@ static void *worker(void *arg) {
     iwEnv *e = fastCalloc(1, sizeof(iwEnv));
     policyRunner *p = NULL;
     if (policyWeights != NULL) {
-        p = calloc(1, sizeof(policyRunner));
-        // layers point into the shared weight data, only the read index
-        // is per net
-        Weights *w = malloc(sizeof(Weights));
-        *w = *policyWeights;
-        w->idx = 0;
-        p->net = init_impulse_wars_net(w, 1, policyHidden, policyLayers);
+        p = calloc(sideDrones(), sizeof(policyRunner));
+        for (uint8_t i = 0; i < sideDrones(); i++) {
+            // layers point into the shared weight data, only the read index
+            // is per net
+            Weights *w = malloc(sizeof(Weights));
+            *w = *policyWeights;
+            w->idx = 0;
+            p[i].net = init_impulse_wars_net(w, 1, policyHidden, policyLayers);
+        }
     }
     // box2d world creation and destruction touch global state
     pthread_mutex_lock(&mapsMu);
@@ -310,35 +381,28 @@ static void *worker(void *arg) {
         seedResult *res = &results[job];
         memset(res, 0x0, sizeof(*res));
         res->map = mapIdx;
-        // against a policy the variant always plays drone 1, once per seed
-        const uint8_t numSides = p != NULL ? 1 : 2;
-        for (uint8_t side = 0; side < numSides; side++) {
-            uint8_t aIdx = side;
-            uint8_t bIdx = 1 - side;
+        // against a policy the variant plays the drones the policy doesn't,
+        // once per seed
+        const uint8_t seats = p != NULL ? 1 : numSeats();
+        for (uint8_t seat = 0; seat < seats; seat++) {
             gameStats gs = {0};
+            // the side of the first variant
+            bool aOnSeat = true;
             if (p != NULL) {
-                aIdx = 1;
-                bIdx = 0;
-                playGame(e, p, rngSeed, mapIdx, NULL, va, &gs);
-            } else if (side == 0) {
-                playGame(e, p, rngSeed, mapIdx, va, vb, &gs);
+                aOnSeat = false;
+                playGame(e, p, rngSeed, mapIdx, 0, NULL, va, &gs);
             } else {
-                playGame(e, p, rngSeed, mapIdx, vb, va, &gs);
+                playGame(e, p, rngSeed, mapIdx, seat, va, vb, &gs);
             }
-            res->a.speed += gs.speed[aIdx];
-            res->b.speed += gs.speed[bIdx];
-            res->a.separation += gs.separation;
-            res->b.separation += gs.separation;
-            res->scoreA[side] = e->log.stats[aIdx].score;
-            res->length[side] = e->log.length;
-            addStats(&res->a, &e->log.stats[aIdx]);
-            addStats(&res->b, &e->log.stats[bIdx]);
-            for (uint8_t k = 0; k < NUM_BOT_EVENTS; k++) {
-                res->a.events[k] += e->botEvents[aIdx][k];
-                res->b.events[k] += e->botEvents[bIdx][k];
-            }
-            res->a.deaths += e->log.stats[bIdx].kills + e->log.stats[aIdx].selfKills + e->log.stats[bIdx].unknownKills;
-            res->b.deaths += e->log.stats[aIdx].kills + e->log.stats[bIdx].selfKills + e->log.stats[aIdx].unknownKills;
+            const uint8_t aSide = aOnSeat ? 0 : 1;
+            res->a.speed += gs.speed[aSide];
+            res->b.speed += gs.speed[1 - aSide];
+            res->a.separation += gs.separation[aSide];
+            res->b.separation += gs.separation[1 - aSide];
+            float scoreB;
+            addSide(&res->a, e, seat, aOnSeat, &res->scoreA[seat]);
+            addSide(&res->b, e, seat, !aOnSeat, &scoreB);
+            res->length[seat] = e->log.length;
         }
         atomic_fetch_add(&jobsDone, 1);
     }
@@ -372,13 +436,41 @@ static void printSide(const char *name, const sideStats *s, const double games) 
            s->shotsFired > 0 ? s->shotsHit / s->shotsFired : 0.0, s->pickups / games, s->energyEmptied / games,
            s->bursts / games, s->bursts > 0 ? s->burstsHit / s->bursts : 0.0, s->distance / games, s->speed / games,
            s->separation / games);
-    static const char *eventNames[NUM_BOT_EVENTS] = {
-        "threat", "threat_shot", "threat_burst", "sniper_dodge", "sniper_urgent", "burst_start",
-        "boost", "kill_geo", "pickup_skip", "ammo_reserved", "clear_steer",
-        "escape_fire", "long_shot", "spare_ammo_move", "dyn_path", "dyn_path_fail",
-        "flee", "hold_spot", "spot_move", "recoil_boost", "mine_placed", "counter_shot", "sd_avoid",
-        "swap", "swap_cycle", "charge_cancel", "pickup_swap", "mine_detonate", "safe_geo", "kite", "shotgun_boost",
+    static const char *eventNames[] = {
+        [BOT_EVENT_THREAT] = "threat",
+        [BOT_EVENT_THREAT_SHOT] = "threat_shot",
+        [BOT_EVENT_THREAT_BURST] = "threat_burst",
+        [BOT_EVENT_SNIPER_DODGE] = "sniper_dodge",
+        [BOT_EVENT_SNIPER_URGENT] = "sniper_urgent",
+        [BOT_EVENT_BURST_START] = "burst_start",
+        [BOT_EVENT_BOOST_RELEASE] = "boost",
+        [BOT_EVENT_KILL_GEOMETRY] = "kill_geo",
+        [BOT_EVENT_PICKUP_SKIPPED] = "pickup_skip",
+        [BOT_EVENT_AMMO_RESERVED] = "ammo_reserved",
+        [BOT_EVENT_CLEARANCE_STEER] = "clear_steer",
+        [BOT_EVENT_ESCAPE_FIRE] = "escape_fire",
+        [BOT_EVENT_LONG_SHOT] = "long_shot",
+        [BOT_EVENT_SPARE_AMMO_MOVE] = "spare_ammo_move",
+        [BOT_EVENT_DYNAMIC_PATH] = "dyn_path",
+        [BOT_EVENT_DYNAMIC_PATH_FAILED] = "dyn_path_fail",
+        [BOT_EVENT_FLEE] = "flee",
+        [BOT_EVENT_HOLD_SPOT] = "hold_spot",
+        [BOT_EVENT_SPOT_MOVE] = "spot_move",
+        [BOT_EVENT_RECOIL_BOOST] = "recoil_boost",
+        [BOT_EVENT_MINE_PLACED] = "mine_placed",
+        [BOT_EVENT_COUNTER_SHOT] = "counter_shot",
+        [BOT_EVENT_SUDDEN_DEATH_AVOID] = "sd_avoid",
+        [BOT_EVENT_SAFE_GEOMETRY] = "safe_geo",
+        [BOT_EVENT_KITE] = "kite",
+        [BOT_EVENT_SHOTGUN_BOOST] = "shotgun_boost",
+        [BOT_EVENT_GRAPPLE_CLOSE] = "grapple_close",
+        [BOT_EVENT_GRAPPLE_ESCAPE] = "grapple_escape",
+        [BOT_EVENT_GRAPPLE_RELEASE] = "grapple_release",
+        [BOT_EVENT_GRAPPLE_DANGER_RELEASE] = "grapple_danger_release",
+        [BOT_EVENT_MINE_DETONATE] = "mine_detonate",
+        [BOT_EVENT_UTILITY_PICKUP] = "utility_pickup",
     };
+    _Static_assert(sizeof(eventNames) / sizeof(eventNames[0]) == NUM_BOT_EVENTS, "name every bot event");
     printf("    %-24s", "");
     for (uint8_t k = 0; k < NUM_BOT_EVENTS; k++) {
         if (s->events[k] > 0) {
@@ -479,6 +571,12 @@ int main(int argc, char **argv) {
             policyLayers = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--argmax") == 0) {
             policyArgmax = true;
+        } else if (strcmp(argv[i], "--ffa") == 0) {
+            if (NUM_DRONES == 2) {
+                fprintf(stderr, "--ffa needs a build with more than 2 drones\n");
+                return 1;
+            }
+            ffa = true;
         } else {
             char *eq = strchr(argv[i], '=');
             if (eq == NULL || numVariants == MAX_VARIANTS) {
@@ -522,7 +620,7 @@ int main(int argc, char **argv) {
             pairs[numPairs++] = (pairing){b, 0};
         }
     }
-    seedsPerPair = vsPolicy ? episodes : (episodes + 1) / 2;
+    seedsPerPair = vsPolicy ? episodes : (episodes + numSeats() - 1) / numSeats();
     const uint32_t totalJobs = numPairs * seedsPerPair;
     results = calloc(totalJobs, sizeof(seedResult));
 
@@ -543,7 +641,10 @@ int main(int argc, char **argv) {
     }
     clock_gettime(CLOCK_MONOTONIC, &end);
     const double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
-    fprintf(stderr, "\n%u episodes in %.1fs\n", totalJobs * (vsPolicy ? 1 : 2), elapsed);
+    fprintf(stderr, "\n%u episodes in %.1fs\n", totalJobs * (vsPolicy ? 1 : numSeats()), elapsed);
+    if (NUM_DRONES > 2) {
+        printf("mode: %s\n", teamsMode() ? "2v2" : "free for all");
+    }
     if (vsPolicy) {
         reportVsPolicy();
         free(results);
@@ -564,15 +665,19 @@ int main(int argc, char **argv) {
         sideStats sa = {0}, sb = {0};
         for (uint32_t s = 0; s < seedsPerPair; s++) {
             const seedResult *r = &res[s];
-            const double paired = (r->scoreA[0] + r->scoreA[1]) / 2.0;
+            double paired = 0.0;
+            for (uint8_t seat = 0; seat < numSeats(); seat++) {
+                paired += r->scoreA[seat];
+            }
+            paired /= numSeats();
             sum += paired;
             sumSq += paired * paired;
-            for (uint8_t side = 0; side < 2; side++) {
-                wins += r->scoreA[side] == 1.0f;
-                ties += r->scoreA[side] == 0.5f;
-                losses += r->scoreA[side] == 0.0f;
-                length += r->length[side];
-                mapScore[r->map] += r->scoreA[side];
+            for (uint8_t seat = 0; seat < numSeats(); seat++) {
+                wins += r->scoreA[seat] == 1.0f;
+                ties += r->scoreA[seat] == 0.5f;
+                losses += r->scoreA[seat] == 0.0f;
+                length += r->length[seat];
+                mapScore[r->map] += r->scoreA[seat];
                 mapGames[r->map] += 1;
             }
             ADD_SIDE(sa, r->a);
@@ -582,7 +687,7 @@ int main(int argc, char **argv) {
         const double mean = sum / n;
         const double var = fmax(sumSq / n - mean * mean, 0.0);
         const double ci = 1.96 * sqrt(var / n);
-        const double games = n * 2;
+        const double games = n * numSeats();
         printf("%s vs %s: score %.4f +- %.4f  (W %.3f T %.3f L %.3f, len %.0f)\n", va->name, vb->name, mean, ci,
                wins / games, ties / games, losses / games, length / games);
         printf("    per map:");
@@ -596,9 +701,9 @@ int main(int argc, char **argv) {
         printSide(vb->name, &sb, games);
         fflush(stdout);
 
-        variantScore[pairs[p].a] += sum * 2;
+        variantScore[pairs[p].a] += sum * numSeats();
         variantGames[pairs[p].a] += games;
-        variantScore[pairs[p].b] += games - sum * 2;
+        variantScore[pairs[p].b] += games - sum * numSeats();
         variantGames[pairs[p].b] += games;
     }
 

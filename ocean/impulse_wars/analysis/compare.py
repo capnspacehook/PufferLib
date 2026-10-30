@@ -52,21 +52,28 @@ WEAPON_SETS = {
     # from the accelerator's removal on
     'no_accelerator': ['unset', 'standard', 'machinegun', 'sniper', 'shotgun', 'imploder', 'flak', 'blackhole',
                        'nuke', 'grapple', 'mine', 'portal'],
+    # from the mirror utility on, its mirror is the last utility projectile
+    'mirror': ['unset', 'standard', 'machinegun', 'sniper', 'shotgun', 'imploder', 'flak', 'blackhole',
+               'nuke', 'grapple', 'mine', 'portal', 'mirror'],
 }
 # weapons whose projectiles are only fired by a utility, as weaponIsUtility
 # in settings.h
-UTILITY_PROJECTILES = ('grapple', 'mine', 'portal')
+UTILITY_PROJECTILES = ('grapple', 'mine', 'portal', 'mirror')
 WEAPONS = WEAPON_SETS['no_accelerator']
 
 
 def weapon_names(drone):
     """Weapon names in the order a result's per weapon arrays use."""
     if 'utilitiesPickedUp' in drone:
+        # builds with the mirror have as many weapons as the ones with the
+        # accelerator and portals, but have its utility too
+        if len(drone['utilitiesPickedUp']) == len(UTILITIES):
+            return WEAPON_SETS['mirror']
         if len(drone['shotsFired']) == len(WEAPON_SETS['portals']):
             return WEAPON_SETS['portals']
         # builds without the accelerator have as many weapons as the ones
         # before the portal utility, but have its utility too
-        if len(drone['utilitiesPickedUp']) == len(UTILITY_WEAPONS) + 1:
+        if len(drone['utilitiesPickedUp']) == 4:
             return WEAPON_SETS['no_accelerator']
         return WEAPON_SETS['utilities']
     return WEAPON_SETS[len(drone['shotsFired'])]
@@ -85,9 +92,10 @@ SOURCES_NO_SWAP = SOURCES[:-1]
 # from before grapples were their own physics source
 SOURCES_NO_GRAPPLE = ['invalid', 'movement', 'recoil', 'burst', 'projectile', 'explosion', 'drone']
 # utilities by type, and the weapons their projectiles are; results from
-# before the portal utility have the first three
-UTILITIES = ['none', 'grapple', 'mines', 'portals']
-UTILITY_WEAPONS = {1: 'grapple', 2: 'mine', 3: 'portal'}
+# before the portal utility have the first three, and from before the
+# mirror the first four
+UTILITIES = ['none', 'grapple', 'mines', 'portals', 'mirror']
+UTILITY_WEAPONS = {1: 'grapple', 2: 'mine', 3: 'portal', 4: 'mirror'}
 
 
 def utility_names(drone):

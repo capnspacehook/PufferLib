@@ -8,6 +8,17 @@
 // state, for compare.py. "p" is always the analyzed policy and "b" its
 // opponent; "seat" is the drone the policy played.
 //
+// Builds with 4 drones (_MAX_DRONES) play 2v2: the policy plays a team,
+// team 0 against bots, and against a policy every seed is played from both
+// teams; "seat" is the policy's team. With --ffa they play free for all:
+// the policy plays one drone, drone 0 against bots, and against a policy
+// the opponent plays the other three and every seed is played from all 4
+// seats. "p" and "b" are summed over each side's drones, and a side's
+// score is its best drone's. Stats between drones (line of sight,
+// separation, aim error, situations) are to each drone's nearest living
+// enemy; standoffs are only tracked in 1v1. The other drones' obs groups
+// are named by slot: ally (2v2), then enemy0, enemy1, ...
+//
 // Games are paired: game i against every opponent uses the same map and
 // seed, and the seeds only depend on --seed, so runs of different
 // checkpoints or env builds can be compared game by game. The starting
@@ -52,12 +63,12 @@
 // Usage: iw_analyze --policy ckpt.bin --hidden H --layers L [--episodes N]
 //                   [--threads T] [--batch B] [--seed S] [--maps 1,2,3]
 //                   [--out games.jsonl] [opponent ...]
-//        iw_analyze --policy ckpt.bin --hidden H --layers L
+//        iw_analyze --policy ckpt.bin --hidden H --layers L [--ffa]
 //                   --opponent ckpt.bin --opponent-hidden H --opponent-layers L
 //                   [--opponent-name name] [--combos] [--no-pickups | --loadout-pickups | --crates] [options]
 //   --episodes is per opponent (per matchup with --combos); against a
-//   policy it's rounded up to an even number so every seed is played from
-//   both drones. Bot opponents are bot personality names and default to
+//   policy it's rounded up to a multiple of the seats so every seed is
+//   played from every seat. Bot opponents are bot personality names and default to
 //   all of them. --batch games (default 6) run in lockstep per thread so
 //   the network weights are reused across the batch.
 //
@@ -356,10 +367,11 @@ static const char *policyNames[NUM_BOT_POLICIES] = {
     [BOT_FUNDAMENTALS] = "fundamentals",
 };
 
-static const char *analysisWeaponNames[NW] = {
+static const char *analysisWeaponNames[] = {
     "unset", "standard", "machinegun", "sniper", "shotgun", "imploder",
-    "flak", "blackhole", "nuke", "grapple", "mine", "portal",
+    "flak", "blackhole", "nuke", "grapple", "mine", "portal", "mirror",
 };
+_Static_assert(sizeof(analysisWeaponNames) / sizeof(analysisWeaponNames[0]) == NW, "name every weapon");
 
 // per step behavior stats polled from the env, per drone
 // projectile stats: histograms of counts up to PROJ_HIST - 1 (the last bin
@@ -520,7 +532,7 @@ typedef struct shadowStats {
 
 typedef struct gameResult {
     uint8_t opp;
-    // drone the analyzed policy played
+    // drone the analyzed policy played, or its team in 2v2
     uint8_t seat;
     uint8_t map;
     uint32_t seed;
@@ -528,14 +540,15 @@ typedef struct gameResult {
     // the opponent
     uint8_t loadout[2];
     uint8_t utilityLoadout[2];
-    // utilities of the starting utility pickups nearest each drone,
-    // cycled over seeds; 0 without starting utility pickups
-    uint8_t startUtilities[2];
+    // utilities of the starting utility pickups nearest each drone, by
+    // drone, cycled over seeds; 0 without starting utility pickups
+    uint8_t startUtilities[_MAX_DRONES];
     float length;
+    // stats are by side, analyzed policy then opponent, summed over the
+    // side's drones
     droneStats stats[2];
     droneAnalysisStats analysis[2];
     behaviorStats behavior[2];
-    // stats are ordered analyzed policy then opponent
     // policy action histograms while alive
     uint32_t moveHist[9];
     uint32_t aimHist[AIM_DIRS];
@@ -570,23 +583,25 @@ typedef struct slotState {
 typedef struct gameSlot {
     iwEnv *e;
     gameResult *g;
-    droneStats prev[2];
-    slotState prevSlots[2];
-    float prevKills[2][NW];
-    float prevUtilityAmmo[2][_NUM_UTILITIES];
-    float prevUtilityHits[2][_NUM_UTILITIES];
-    int32_t lastFired[2][NW];
-    int32_t lastHit[2][NW];
+    // the drone of each of the game's rows in the policy batch
+    uint8_t rowDrone[_MAX_DRONES];
+    droneStats prev[_MAX_DRONES];
+    slotState prevSlots[_MAX_DRONES];
+    float prevKills[_MAX_DRONES][NW];
+    float prevUtilityAmmo[_MAX_DRONES][_NUM_UTILITIES];
+    float prevUtilityHits[_MAX_DRONES][_NUM_UTILITIES];
+    int32_t lastFired[_MAX_DRONES][NW];
+    int32_t lastHit[_MAX_DRONES][NW];
     uint32_t step;
-    // current run of STANDOFF_CLOSE steps, and the drone that peeked to
-    // end the last standoff and when
+    // 1v1 only: current run of STANDOFF_CLOSE steps, and the drone that
+    // peeked to end the last standoff and when
     uint32_t blockedRun;
     int8_t peeker;
     int32_t peekStep;
     // enemy projectiles that were threats to each drone last step, to count
     // distinct threats
-    const projectileEntity *threats[2][MAX_TRACKED_THREATS];
-    uint8_t numThreats[2];
+    const projectileEntity *threats[_MAX_DRONES][MAX_TRACKED_THREATS];
+    uint8_t numThreats[_MAX_DRONES];
     bool active;
 } gameSlot;
 
@@ -595,91 +610,183 @@ typedef struct gameSlot {
 #define STANDOFF_AFTER 30
 enum { STANDOFF_LOS, STANDOFF_CLOSE, STANDOFF_FAR };
 
-// obs index ranges of the drone blocks
+// 4 drone builds play 2v2, or free for all with --ffa
+static bool ffa = false;
+
+static inline bool teamsMode(void) {
+    return NUM_DRONES > 2 && !ffa;
+}
+
+// drones the analyzed policy plays in a game: its team in 2v2, else one
+static inline uint8_t policyDrones(void) {
+    return teamsMode() ? NUM_DRONES / 2 : 1;
+}
+
+// drones a learned opponent plays
+static inline uint8_t oppDrones(void) {
+    return NUM_DRONES - policyDrones();
+}
+
+// seats every seed is played from against a learned opponent: every team
+// in 2v2, else every drone
+static inline uint8_t numSeats(void) {
+    return teamsMode() ? 2 : NUM_DRONES;
+}
+
+static inline bool isPolicyDrone(const uint8_t seat, const uint8_t drone) {
+    if (teamsMode()) {
+        return drone / (NUM_DRONES / 2) == seat;
+    }
+    return drone == seat;
+}
+
+// the stats side of a drone: 0 for the analyzed policy, 1 for its opponent
+static inline uint8_t droneSide(const gameResult *g, const uint8_t drone) {
+    return isPolicyDrone(g->seat, drone) ? 0 : 1;
+}
+
+// obs index ranges of the agent's drone block and the misc block; the
+// other drones' blocks start at E_OBS + k * IW_ENEMY_DRONE_SIZE
 #define E_OBS IW_ENEMY_DRONE_OFFSET
 #define D_OBS IW_DRONE_OFFSET
 #define M_OBS IW_MISC_OFFSET
-// the utility's state, and the scalar state after it, in each drone block
-#define E_UTIL (E_OBS + IW_DRONE_UTILITY_TYPE)
 #define D_UTIL (D_OBS + IW_DRONE_UTILITY_TYPE)
-#define E_STATE (E_OBS + IW_DRONE_STATE)
 #define D_STATE (D_OBS + IW_DRONE_STATE)
 #define PORTALS_LEN (IW_NUM_PORTALS * IW_PORTAL_SIZE)
 #define MIRRORS_LEN (IW_NUM_MIRRORS * IW_MIRROR_SIZE)
 
 // named obs groups, each up to 2 index ranges {start, len}; the first group
-// covering an index is its group in the weights output
+// covering an index is its group in the weights output. Built at startup
+// with a set of groups per other drone obs slot, named by slotName
 typedef struct obsGroup {
-    const char *name;
+    char name[40];
     uint16_t ranges[2][2];
 } obsGroup;
 
-static const obsGroup obsGroups[] = {
-    {"grid", {{0, IW_MAP_CELLS}}},
-    {"near_walls", {{IW_NEAR_WALL_OFFSET, IW_NUM_NEAR_WALLS * IW_NEAR_WALL_SIZE}}},
-    {"floating_walls", {{IW_FLOATING_WALL_OFFSET, IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE}}},
-    {"pickups", {{IW_PICKUP_OFFSET, IW_NUM_PICKUPS * IW_PICKUP_SIZE}}},
-    {"enemy_weapon", {{E_OBS, IW_WEAPON_SIZE}}},
-    // the utility's type, ammo, regen and active count, and the mine's
-    // state; the grapple's, portals' and mirrors' states are their own
-    // groups
-    {"enemy_utility", {{E_UTIL, IW_UTILITY_GRAPPLE}, {E_UTIL + IW_UTILITY_MINE, IW_MINE_SIZE}}},
-    {"enemy_grapple", {{E_UTIL + IW_UTILITY_GRAPPLE, IW_GRAPPLE_SIZE}}},
-    {"enemy_portals", {{E_UTIL + IW_UTILITY_PORTALS, PORTALS_LEN}}},
-    {"enemy_mirrors", {{E_UTIL + IW_UTILITY_MIRRORS, MIRRORS_LEN}}},
-    {"enemy_pos", {{E_STATE + 0, 3}}},
-    {"enemy_vel", {{E_STATE + 3, 2}}},
-    {"enemy_dir", {{E_STATE + 5, 2}}},
-    {"enemy_aim", {{E_STATE + 7, 2}}},
-    {"enemy_shield", {{E_STATE + 9, 2}}},
-    {"enemy_energy", {{E_STATE + 11, 7}}},
-    {"hit_flags", {{E_STATE + 18, 2}, {D_STATE + 19, 3}}},
-    {"enemy_lives", {{E_STATE + 20, 3}}},
-    {"aim_to_enemy", {{E_STATE + 23, 2}}},
-    {"enemy_ray", {{E_OBS + IW_ENEMY_RAY_IDX, IW_RAY_SIZE}}},
-    {"own_weapon", {{D_OBS, IW_WEAPON_SIZE}}},
-    {"own_utility", {{D_UTIL, IW_UTILITY_GRAPPLE}, {D_UTIL + IW_UTILITY_MINE, IW_MINE_SIZE}}},
-    {"own_grapple", {{D_UTIL + IW_UTILITY_GRAPPLE, IW_GRAPPLE_SIZE}}},
-    {"own_portals", {{D_UTIL + IW_UTILITY_PORTALS, PORTALS_LEN}}},
-    {"own_mirrors", {{D_UTIL + IW_UTILITY_MIRRORS, MIRRORS_LEN}}},
-    {"own_buttons", {{D_STATE + 0, 2}}},
-    {"own_pos", {{D_STATE + 2, 2}}},
-    {"own_vel", {{D_STATE + 4, 2}}},
-    {"own_aim", {{D_STATE + 6, 2}}},
-    {"aim_vel", {{D_STATE + 8, 2}}},
-    {"own_shield", {{D_STATE + 10, 2}}},
-    {"own_energy", {{D_STATE + 12, 7}}},
-    {"own_lives", {{D_STATE + 22, 3}}},
-    {"own_aim_ray", {{D_OBS + IW_DRONE_RAY_IDX, IW_RAY_SIZE}}},
-    {"own_vel_ray", {{D_OBS + IW_DRONE_RAY_IDX + IW_RAY_SIZE, IW_RAY_SIZE}}},
-    {"own_drift_ray", {{D_OBS + IW_DRONE_RAY_IDX + 2 * IW_RAY_SIZE, IW_RAY_SIZE}}},
-    {"misc", {{M_OBS, IW_MISC_SIZE}}},
-    // finer groups, not used for the weights output
-    {"own_weapon_type", {{D_OBS + IW_DRONE_WEAPON_TYPE, 1}}},
-    {"own_weapon_state", {{D_OBS + 1, IW_WEAPON_SIZE - 1}}},
-    {"own_charge", {{D_OBS + 3, 2}}},
-    {"own_utility_type", {{D_UTIL, 1}}},
-    {"own_utility_state", {{D_UTIL + 1, IW_UTILITY_SIZE - 1}}},
-    {"own_mine", {{D_UTIL + IW_UTILITY_MINE, IW_MINE_SIZE}}},
-    {"own_mine_pos", {{D_UTIL + IW_UTILITY_MINE + 2, 2}}},
-    {"own_portal_pos", {{D_UTIL + IW_UTILITY_PORTALS + 1, 2}, {D_UTIL + IW_UTILITY_PORTALS + IW_PORTAL_SIZE + 1, 2}}},
-    {"enemy_weapon_type", {{E_OBS + IW_DRONE_WEAPON_TYPE, 1}}},
-    {"enemy_weapon_state", {{E_OBS + 1, IW_WEAPON_SIZE - 1}}},
-    {"enemy_charge", {{E_OBS + 3, 2}}},
-    {"enemy_utility_type", {{E_UTIL, 1}}},
-    {"enemy_utility_state", {{E_UTIL + 1, IW_UTILITY_SIZE - 1}}},
-    {"enemy_mine", {{E_UTIL + IW_UTILITY_MINE, IW_MINE_SIZE}}},
-    {"enemy_mine_pos", {{E_UTIL + IW_UTILITY_MINE + 2, 2}}},
-    {"enemy_portal_pos", {{E_UTIL + IW_UTILITY_PORTALS + 1, 2}, {E_UTIL + IW_UTILITY_PORTALS + IW_PORTAL_SIZE + 1, 2}}},
-    {"enemy_loadout", {{E_OBS, IW_WEAPON_SIZE + IW_UTILITY_SIZE}}},
-    {"own_loadout", {{D_OBS, IW_WEAPON_SIZE + IW_UTILITY_SIZE + 2}}},
-    {"combo_ep", {{M_OBS + 1, 1}}},
-    {"steps_left", {{M_OBS + 2, 1}}},
-    {"sudden_death", {{M_OBS + 3, 1}}},
-};
-#define NUM_OBS_GROUPS (sizeof(obsGroups) / sizeof(obsGroups[0]))
+#define MAX_OBS_GROUPS 192
+static obsGroup obsGroups[MAX_OBS_GROUPS];
+static int numObsGroups = 0;
 // groups before this one partition the obs for the weights output
-#define NUM_PRIMARY_GROUPS 36
+static int numPrimaryGroups = 0;
+
+static void addGroup(const char *name, const int start0, const int len0, const int start1, const int len1) {
+    assert(numObsGroups < MAX_OBS_GROUPS);
+    obsGroup *g = &obsGroups[numObsGroups++];
+    snprintf(g->name, sizeof(g->name), "%s", name);
+    g->ranges[0][0] = (uint16_t)start0;
+    g->ranges[0][1] = (uint16_t)len0;
+    g->ranges[1][0] = (uint16_t)start1;
+    g->ranges[1][1] = (uint16_t)len1;
+}
+
+// adds the group prefix_suffix
+static void addSlotGroup(const char *prefix, const char *suffix, const int start0, const int len0, const int start1, const int len1) {
+    char name[40];
+    snprintf(name, sizeof(name), "%s_%s", prefix, suffix);
+    addGroup(name, start0, len0, start1, len1);
+}
+
+// prefix of other drone obs slot k's groups and obs names: enemy in 1v1;
+// ally then enemy0, enemy1 in 2v2, as teammates come first; enemy0 on in
+// free for all
+static void slotName(const int k, char *out, const size_t n) {
+    if (IW_NUM_ENEMIES == 1) {
+        snprintf(out, n, "enemy");
+    } else if (teamsMode() && k < policyDrones() - 1) {
+        snprintf(out, n, policyDrones() > 2 ? "ally%d" : "ally", k);
+    } else {
+        snprintf(out, n, "enemy%d", teamsMode() ? k - (policyDrones() - 1) : k);
+    }
+}
+
+static void buildObsGroups(void) {
+    char pre[24];
+    addGroup("grid", 0, IW_MAP_CELLS, 0, 0);
+    addGroup("near_walls", IW_NEAR_WALL_OFFSET, IW_NUM_NEAR_WALLS * IW_NEAR_WALL_SIZE, 0, 0);
+    addGroup("floating_walls", IW_FLOATING_WALL_OFFSET, IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE, 0, 0);
+    addGroup("pickups", IW_PICKUP_OFFSET, IW_NUM_PICKUPS * IW_PICKUP_SIZE, 0, 0);
+    for (int k = 0; k < IW_NUM_ENEMIES; k++) {
+        slotName(k, pre, sizeof(pre));
+        const int e = E_OBS + k * IW_ENEMY_DRONE_SIZE;
+        const int u = e + IW_DRONE_UTILITY_TYPE;
+        const int st = e + IW_DRONE_STATE;
+        addSlotGroup(pre, "weapon", e, IW_WEAPON_SIZE, 0, 0);
+        // the utility's type, ammo, regen and active count, and the mine's
+        // state; the grapple's, portals' and mirrors' states are their own
+        // groups
+        addSlotGroup(pre, "utility", u, IW_UTILITY_GRAPPLE, u + IW_UTILITY_MINE, IW_MINE_SIZE);
+        addSlotGroup(pre, "grapple", u + IW_UTILITY_GRAPPLE, IW_GRAPPLE_SIZE, 0, 0);
+        addSlotGroup(pre, "portals", u + IW_UTILITY_PORTALS, PORTALS_LEN, 0, 0);
+        addSlotGroup(pre, "mirrors", u + IW_UTILITY_MIRRORS, MIRRORS_LEN, 0, 0);
+        addSlotGroup(pre, "pos", st + 0, 3, 0, 0);
+        addSlotGroup(pre, "vel", st + 3, 2, 0, 0);
+        addSlotGroup(pre, "dir", st + 5, 2, 0, 0);
+        addSlotGroup(pre, "aim", st + 7, 2, 0, 0);
+        addSlotGroup(pre, "shield", st + 9, 2, 0, 0);
+        addSlotGroup(pre, "energy", st + 11, 7, 0, 0);
+        // in 1v1 the enemy's and own hit flags are one group
+        if (IW_NUM_ENEMIES == 1) {
+            addGroup("hit_flags", st + 18, 2, D_STATE + 19, 3);
+        } else {
+            addSlotGroup(pre, "hit_flags", st + 18, 2, 0, 0);
+        }
+        addSlotGroup(pre, "lives", st + 20, 3, 0, 0);
+        addSlotGroup("aim_to", pre, st + 23, 2, 0, 0);
+        addSlotGroup(pre, "ray", e + IW_ENEMY_RAY_IDX, IW_RAY_SIZE, 0, 0);
+    }
+    addGroup("own_weapon", D_OBS, IW_WEAPON_SIZE, 0, 0);
+    addGroup("own_utility", D_UTIL, IW_UTILITY_GRAPPLE, D_UTIL + IW_UTILITY_MINE, IW_MINE_SIZE);
+    addGroup("own_grapple", D_UTIL + IW_UTILITY_GRAPPLE, IW_GRAPPLE_SIZE, 0, 0);
+    addGroup("own_portals", D_UTIL + IW_UTILITY_PORTALS, PORTALS_LEN, 0, 0);
+    addGroup("own_mirrors", D_UTIL + IW_UTILITY_MIRRORS, MIRRORS_LEN, 0, 0);
+    addGroup("own_buttons", D_STATE + 0, 2, 0, 0);
+    addGroup("own_pos", D_STATE + 2, 2, 0, 0);
+    addGroup("own_vel", D_STATE + 4, 2, 0, 0);
+    addGroup("own_aim", D_STATE + 6, 2, 0, 0);
+    addGroup("aim_vel", D_STATE + 8, 2, 0, 0);
+    addGroup("own_shield", D_STATE + 10, 2, 0, 0);
+    addGroup("own_energy", D_STATE + 12, 7, 0, 0);
+    if (IW_NUM_ENEMIES > 1) {
+        addGroup("own_hit_flags", D_STATE + 19, 3, 0, 0);
+    }
+    addGroup("own_lives", D_STATE + 22, 3, 0, 0);
+    addGroup("own_aim_ray", D_OBS + IW_DRONE_RAY_IDX, IW_RAY_SIZE, 0, 0);
+    addGroup("own_vel_ray", D_OBS + IW_DRONE_RAY_IDX + IW_RAY_SIZE, IW_RAY_SIZE, 0, 0);
+    addGroup("own_drift_ray", D_OBS + IW_DRONE_RAY_IDX + 2 * IW_RAY_SIZE, IW_RAY_SIZE, 0, 0);
+    addGroup("misc", M_OBS, IW_MISC_SIZE, 0, 0);
+    numPrimaryGroups = numObsGroups;
+
+    // finer groups, not used for the weights output
+    addGroup("own_weapon_type", D_OBS + IW_DRONE_WEAPON_TYPE, 1, 0, 0);
+    addGroup("own_weapon_state", D_OBS + 1, IW_WEAPON_SIZE - 1, 0, 0);
+    addGroup("own_charge", D_OBS + 3, 2, 0, 0);
+    addGroup("own_utility_type", D_UTIL, 1, 0, 0);
+    addGroup("own_utility_state", D_UTIL + 1, IW_UTILITY_SIZE - 1, 0, 0);
+    addGroup("own_mine", D_UTIL + IW_UTILITY_MINE, IW_MINE_SIZE, 0, 0);
+    addGroup("own_mine_pos", D_UTIL + IW_UTILITY_MINE + 2, 2, 0, 0);
+    addGroup("own_portal_pos", D_UTIL + IW_UTILITY_PORTALS + 1, 2, D_UTIL + IW_UTILITY_PORTALS + IW_PORTAL_SIZE + 1, 2);
+    for (int k = 0; k < IW_NUM_ENEMIES; k++) {
+        slotName(k, pre, sizeof(pre));
+        const int e = E_OBS + k * IW_ENEMY_DRONE_SIZE;
+        const int u = e + IW_DRONE_UTILITY_TYPE;
+        addSlotGroup(pre, "weapon_type", e + IW_DRONE_WEAPON_TYPE, 1, 0, 0);
+        addSlotGroup(pre, "weapon_state", e + 1, IW_WEAPON_SIZE - 1, 0, 0);
+        addSlotGroup(pre, "charge", e + 3, 2, 0, 0);
+        addSlotGroup(pre, "utility_type", u, 1, 0, 0);
+        addSlotGroup(pre, "utility_state", u + 1, IW_UTILITY_SIZE - 1, 0, 0);
+        addSlotGroup(pre, "mine", u + IW_UTILITY_MINE, IW_MINE_SIZE, 0, 0);
+        addSlotGroup(pre, "mine_pos", u + IW_UTILITY_MINE + 2, 2, 0, 0);
+        addSlotGroup(pre, "portal_pos", u + IW_UTILITY_PORTALS + 1, 2, u + IW_UTILITY_PORTALS + IW_PORTAL_SIZE + 1, 2);
+    }
+    for (int k = 0; k < IW_NUM_ENEMIES; k++) {
+        slotName(k, pre, sizeof(pre));
+        addSlotGroup(pre, "loadout", E_OBS + k * IW_ENEMY_DRONE_SIZE, IW_WEAPON_SIZE + IW_UTILITY_SIZE, 0, 0);
+    }
+    addGroup("own_loadout", D_OBS, IW_WEAPON_SIZE + IW_UTILITY_SIZE + 2, 0, 0);
+    addGroup("combo_ep", M_OBS + 1, 1, 0, 0);
+    addGroup("steps_left", M_OBS + 2, 1, 0, 0);
+    addGroup("sudden_death", M_OBS + 3, 1, 0, 0);
+}
 
 typedef struct obsMask {
     char name[96];
@@ -754,7 +861,9 @@ static uint32_t hashSeed(uint64_t x) {
     return r == 0 ? 1 : r;
 }
 
+
 static void buildObsNames(void) {
+    buildObsGroups();
     static const char *weaponFields[IW_WEAPON_SIZE] = {"type", "ammo", "cooldown", "charge", "hold"};
     static const char *utilityFields[4] = {"type", "ammo", "regen", "active"};
     static const char *mineFields[IW_MINE_SIZE] = {"in_flight", "welded", "x", "y"};
@@ -765,7 +874,8 @@ static void buildObsNames(void) {
     static const char *enemyFields[] = {"rel_x", "rel_y", "dist", "vel_x", "vel_y", "dir_x", "dir_y", "aim_x", "aim_y",
                                         "shield_hp", "shield_dur", "energy", "depleted", "refill_wait", "braking", "burst_cd",
                                         "charging_burst", "burst_charge"};
-    static const char *enemyTail[] = {"took_shot", "hit_shot", "lives", "alive", "respawn", "aim_to_enemy_sin", "aim_to_enemy_cos"};
+    // then the sin and cos of the aim to it
+    static const char *enemyTail[] = {"took_shot", "hit_shot", "lives", "alive", "respawn"};
     static const char *ownFields[] = {"trigger_held", "utility_held", "pos_x", "pos_y", "vel_x", "vel_y", "aim_x", "aim_y",
                                       "aim_vel_sin", "aim_vel_cos", "shield_hp", "shield_dur", "energy", "depleted", "refill_wait",
                                       "braking", "burst_cd", "charging_burst", "burst_charge"};
@@ -798,37 +908,43 @@ static void buildObsNames(void) {
         }
     }
     int i = E_OBS;
-    for (int k = 0; k < IW_WEAPON_SIZE; k++) {
-        snprintf(obsNames[i++], 48, "enemy_weapon_%s", weaponFields[k]);
-    }
-    for (int k = 0; k < 4; k++) {
-        snprintf(obsNames[i++], 48, "enemy_utility_%s", utilityFields[k]);
-    }
-    for (int k = 0; k < IW_GRAPPLE_SIZE; k++) {
-        snprintf(obsNames[i++], 48, "enemy_grapple_%s", grappleFields[k]);
-    }
-    for (int k = 0; k < IW_MINE_SIZE; k++) {
-        snprintf(obsNames[i++], 48, "enemy_mine_%s", mineFields[k]);
-    }
-    for (int p = 0; p < IW_NUM_PORTALS; p++) {
-        for (int k = 0; k < IW_PORTAL_SIZE; k++) {
-            snprintf(obsNames[i++], 48, "enemy_portal%d_%s", p, portalFields[k]);
+    char pre[24];
+    for (int slot = 0; slot < IW_NUM_ENEMIES; slot++) {
+        slotName(slot, pre, sizeof(pre));
+        for (int k = 0; k < IW_WEAPON_SIZE; k++) {
+            snprintf(obsNames[i++], 48, "%s_weapon_%s", pre, weaponFields[k]);
         }
-    }
-    for (int m = 0; m < IW_NUM_MIRRORS; m++) {
-        for (int k = 0; k < IW_MIRROR_SIZE; k++) {
-            snprintf(obsNames[i++], 48, "enemy_mirror%d_%s", m, mirrorFields[k]);
+        for (int k = 0; k < 4; k++) {
+            snprintf(obsNames[i++], 48, "%s_utility_%s", pre, utilityFields[k]);
         }
-    }
-    for (size_t k = 0; k < sizeof(enemyFields) / sizeof(enemyFields[0]); k++) {
-        snprintf(obsNames[i++], 48, "enemy_%s", enemyFields[k]);
-    }
-    for (size_t k = 0; k < sizeof(enemyTail) / sizeof(enemyTail[0]); k++) {
-        snprintf(obsNames[i++], 48, "enemy_%s", enemyTail[k]);
-    }
-    assert(i == E_OBS + IW_ENEMY_RAY_IDX);
-    for (int k = 0; k < 2; k++) {
-        snprintf(obsNames[i++], 48, "enemy_ray_%s", rayFields[k]);
+        for (int k = 0; k < IW_GRAPPLE_SIZE; k++) {
+            snprintf(obsNames[i++], 48, "%s_grapple_%s", pre, grappleFields[k]);
+        }
+        for (int k = 0; k < IW_MINE_SIZE; k++) {
+            snprintf(obsNames[i++], 48, "%s_mine_%s", pre, mineFields[k]);
+        }
+        for (int p = 0; p < IW_NUM_PORTALS; p++) {
+            for (int k = 0; k < IW_PORTAL_SIZE; k++) {
+                snprintf(obsNames[i++], 48, "%s_portal%d_%s", pre, p, portalFields[k]);
+            }
+        }
+        for (int m = 0; m < IW_NUM_MIRRORS; m++) {
+            for (int k = 0; k < IW_MIRROR_SIZE; k++) {
+                snprintf(obsNames[i++], 48, "%s_mirror%d_%s", pre, m, mirrorFields[k]);
+            }
+        }
+        for (size_t k = 0; k < sizeof(enemyFields) / sizeof(enemyFields[0]); k++) {
+            snprintf(obsNames[i++], 48, "%s_%s", pre, enemyFields[k]);
+        }
+        for (size_t k = 0; k < sizeof(enemyTail) / sizeof(enemyTail[0]); k++) {
+            snprintf(obsNames[i++], 48, "%s_%s", pre, enemyTail[k]);
+        }
+        snprintf(obsNames[i++], 48, "%s_aim_to_%s_sin", pre, pre);
+        snprintf(obsNames[i++], 48, "%s_aim_to_%s_cos", pre, pre);
+        assert(i == E_OBS + slot * IW_ENEMY_DRONE_SIZE + IW_ENEMY_RAY_IDX);
+        for (int k = 0; k < 2; k++) {
+            snprintf(obsNames[i++], 48, "%s_ray_%s", pre, rayFields[k]);
+        }
     }
     assert(i == D_OBS);
     for (int k = 0; k < IW_WEAPON_SIZE; k++) {
@@ -871,7 +987,7 @@ static void buildObsNames(void) {
     assert(i == OBS_SIZE);
 
     memset(obsGroupOf, -1, sizeof(obsGroupOf));
-    for (int gi = NUM_PRIMARY_GROUPS - 1; gi >= 0; gi--) {
+    for (int gi = numPrimaryGroups - 1; gi >= 0; gi--) {
         for (int r = 0; r < 2; r++) {
             for (int k = 0; k < obsGroups[gi].ranges[r][1]; k++) {
                 obsGroupOf[obsGroups[gi].ranges[r][0] + k] = (int8_t)gi;
@@ -902,7 +1018,7 @@ static bool parseMask(const char *spec, obsMask *mask) {
             continue;
         }
         bool found = false;
-        for (size_t gi = 0; gi < NUM_OBS_GROUPS; gi++) {
+        for (int gi = 0; gi < numObsGroups; gi++) {
             if (strcmp(obsGroups[gi].name, tok) != 0) {
                 continue;
             }
@@ -921,8 +1037,8 @@ static bool parseMask(const char *spec, obsMask *mask) {
     return true;
 }
 
-// ablates the masked obs of every game in the batch; swap copies them from
-// the game half a batch away, src holds the unablated obs
+// ablates the masked obs of every row in the batch; swap copies them from
+// the row half a batch away, src holds the unablated obs
 static void applyMask(float *obs, const float *src, const int B, const obsMask *mask, const enum ablateMode mode) {
     for (int b = 0; b < B; b++) {
         const float *other = src + ((b + B / 2) % B) * OBS_SIZE;
@@ -1043,12 +1159,21 @@ static void bindAgent(iwEnv *e, const uint8_t agent, policyBatch *p, const int b
     e->agents[agent].terminals = p->terminals + b;
 }
 
-// the policy plays drone seat; the opponent policy, if any, plays the other
+// the policy plays the drones of seat; the opponent policy, if any, plays
+// the others, else bots do. Game b's drones are rows b * policyDrones() on
+// of the policy batch and b * oppDrones() on of the opponent's, in drone
+// order. Bots play the drones after the agents, so against bots seat is 0
 static void initAnalyzeEnv(iwEnv *e, policyBatch *p, policyBatch *opp, const int b, const uint8_t seat) {
-    initEnv(e, opp != NULL ? 2 : 1, -1, 1, false, true, false, BOT_SCRIPTED, 0.0f, 0.0f);
-    bindAgent(e, seat, p, b);
-    if (opp != NULL) {
-        bindAgent(e, 1 - seat, opp, b);
+    assert(opp != NULL || seat == 0);
+    initEnv(e, opp != NULL ? NUM_DRONES : policyDrones(), -1, 1, teamsMode(), true, false, BOT_SCRIPTED, 0.0f, 0.0f);
+    uint8_t pRow = 0;
+    uint8_t oRow = 0;
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
+        if (isPolicyDrone(seat, i)) {
+            bindAgent(e, i, p, b * policyDrones() + pRow++);
+        } else if (opp != NULL) {
+            bindAgent(e, i, opp, b * oppDrones() + oRow++);
+        }
     }
     setRewards(e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     e->easyEpProb = 0.0f;
@@ -1095,7 +1220,7 @@ static slotState readSlots(const droneEntity *d) {
 static void snapshot(gameSlot *slot, const droneAnalysisStats *analysis) {
     iwEnv *e = slot->e;
     memcpy(slot->prev, e->stats, sizeof(slot->prev));
-    for (uint8_t i = 0; i < 2; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         slot->prevSlots[i] = readSlots(safe_array_get_at(e->drones, i));
         memcpy(slot->prevKills[i], analysis[i].killsByWeapon, sizeof(slot->prevKills[i]));
         memcpy(slot->prevUtilityAmmo[i], analysis[i].utilityAmmoSpent, sizeof(slot->prevUtilityAmmo[i]));
@@ -1129,14 +1254,21 @@ static void startGame(gameSlot *slot, policyBatch *p, policyBatch *opp, const in
 
     e->pinnedMapIdx = g->map;
     e->rng = g->seed;
-    e->botPersonality[1] = opps[g->opp];
-    e->botFeatures[1] = botPresets[opps[g->opp]].feats;
+    for (uint8_t i = e->numAgents; i < NUM_DRONES; i++) {
+        e->botPersonality[i] = opps[g->opp];
+        e->botFeatures[i] = botPresets[opps[g->opp]].feats;
+    }
     memset(&e->log, 0x0, sizeof(e->log));
     puf_reset(e);
     setStartUtilities(e, g->startUtilities);
     if (combos) {
-        for (uint8_t i = 0; i < 2; i++) {
-            droneSetLoadout(safe_array_get_at(e->drones, i == 0 ? g->seat : 1 - g->seat), g->loadout[i], g->utilityLoadout[i]);
+        // policy drones first, then the opponent's
+        for (uint8_t side = 0; side < 2; side++) {
+            for (uint8_t i = 0; i < NUM_DRONES; i++) {
+                if (droneSide(g, i) == side) {
+                    droneSetLoadout(safe_array_get_at(e->drones, i), g->loadout[side], g->utilityLoadout[side]);
+                }
+            }
         }
     }
     if (noPickups) {
@@ -1150,34 +1282,49 @@ static void startGame(gameSlot *slot, policyBatch *p, policyBatch *opp, const in
         }
     }
     computeObs(e);
-    // a fresh recurrent state for every game
-    p->terminals[b] = 1.0f;
-    p->rng[b] = g->seed;
+    // a fresh recurrent state for every game, and an rng per drone
+    for (uint8_t k = 0; k < policyDrones(); k++) {
+        const int row = b * policyDrones() + k;
+        p->terminals[row] = 1.0f;
+        p->rng[row] = k == 0 ? g->seed : hashSeed(g->seed + k);
+    }
     if (opp != NULL) {
-        opp->terminals[b] = 1.0f;
-        opp->rng[b] = hashSeed(g->seed);
+        const uint32_t oppSeed = hashSeed(g->seed);
+        for (uint8_t k = 0; k < oppDrones(); k++) {
+            const int row = b * oppDrones() + k;
+            opp->terminals[row] = 1.0f;
+            opp->rng[row] = k == 0 ? oppSeed : hashSeed(oppSeed + k);
+        }
     }
 
     slot->g = g;
+    uint8_t row = 0;
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
+        if (isPolicyDrone(g->seat, i)) {
+            slot->rowDrone[row++] = i;
+        }
+    }
     slot->step = 0;
     slot->blockedRun = 0;
     slot->peeker = -1;
-    slot->numThreats[0] = slot->numThreats[1] = 0;
+    memset(slot->numThreats, 0x0, sizeof(slot->numThreats));
     slot->peekStep = -1000;
     slot->active = true;
     snapshot(slot, e->analysisStats);
-    for (uint8_t i = 0; i < 2; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         for (uint8_t w = 0; w < NW; w++) {
             slot->lastFired[i][w] = -1000;
             slot->lastHit[i][w] = -1000;
         }
-        g->behavior[i].firstLosStep = -1;
-        g->behavior[i].firstPickupStep = -1;
+    }
+    for (uint8_t side = 0; side < 2; side++) {
+        g->behavior[side].firstLosStep = -1;
+        g->behavior[side].firstPickupStep = -1;
     }
 }
 
 static inline behaviorStats *droneBehavior(gameSlot *slot, const uint8_t drone) {
-    return &slot->g->behavior[drone == slot->g->seat ? 0 : 1];
+    return &slot->g->behavior[droneSide(slot->g, drone)];
 }
 
 // records the weapons each drone fired this step; returns shots fired
@@ -1210,7 +1357,7 @@ static void recordHits(gameSlot *slot, const uint8_t i, const droneStats *cur, c
 // weapon their projectiles are, for combo and setup kills; utility
 // projectiles aren't counted as shots
 static void recordUtilityUse(gameSlot *slot, const droneAnalysisStats *analysis) {
-    for (uint8_t i = 0; i < 2; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         for (uint8_t u = UNSET_UTILITY + 1; u < _NUM_UTILITIES; u++) {
             const enum weaponType w = utilityInfos[u]->projectileInfo->type;
             if (analysis[i].utilityAmmoSpent[u] > slot->prevUtilityAmmo[i][u]) {
@@ -1225,7 +1372,7 @@ static void recordUtilityUse(gameSlot *slot, const droneAnalysisStats *analysis)
 
 // attributes this step's weapon kills to combos and setups
 static void recordKills(gameSlot *slot, const droneAnalysisStats *analysis) {
-    for (uint8_t i = 0; i < 2; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         behaviorStats *s = droneBehavior(slot, i);
         for (uint8_t w = 0; w < NW; w++) {
             const float kills = analysis[i].killsByWeapon[w] - slot->prevKills[i][w];
@@ -1316,7 +1463,7 @@ static void observeSlots(gameSlot *slot, const uint8_t i, const droneEntity *d) 
 // only comes from pickups, with its loadout weapon at full ammo; returns
 // true if the weapon was replaced
 static bool enforceLoadout(gameSlot *slot, const uint8_t i, droneEntity *d) {
-    const uint8_t side = i == slot->g->seat ? 0 : 1;
+    const uint8_t side = droneSide(slot->g, i);
     const uint8_t loadout = slot->g->loadout[side];
     const uint8_t utilityLoadout = slot->g->utilityLoadout[side];
     bool replaced = false;
@@ -1335,14 +1482,59 @@ static bool enforceLoadout(gameSlot *slot, const uint8_t i, droneEntity *d) {
     return replaced;
 }
 
-// speed of drone i towards the other drone
-static float approachSpeed(droneEntity *const drones[2], const uint8_t i) {
-    const b2Vec2 dir = b2Normalize(b2Sub(drones[1 - i]->pos, drones[i]->pos));
-    return b2Dot(drones[i]->velocity, dir);
+// speed of drone d towards drone o
+static float approachSpeed(const droneEntity *d, const droneEntity *o) {
+    const b2Vec2 dir = b2Normalize(b2Sub(o->pos, d->pos));
+    return b2Dot(d->velocity, dir);
 }
 
-// per drone situation stats, and standoffs: long stretches close to each
-// other with a wall between, who breaks them and what happens after
+// the nearest living enemy of each living drone, -1 if it has none, and
+// the line of sight and separation to it
+typedef struct enemyView {
+    int8_t enemy[_MAX_DRONES];
+    bool los[_MAX_DRONES];
+    float sep[_MAX_DRONES];
+} enemyView;
+
+static enemyView viewEnemies(iwEnv *e, droneEntity *const drones[]) {
+    enemyView v;
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
+        v.enemy[i] = -1;
+        v.los[i] = false;
+        v.sep[i] = 0.0f;
+        if (drones[i]->dead) {
+            continue;
+        }
+        for (uint8_t j = 0; j < NUM_DRONES; j++) {
+            if (drones[j]->dead || drones[j]->team == drones[i]->team) {
+                continue;
+            }
+            const float sep = b2Distance(drones[i]->pos, drones[j]->pos);
+            if (v.enemy[i] < 0 || sep < v.sep[i]) {
+                v.enemy[i] = (int8_t)j;
+                v.sep[i] = sep;
+            }
+        }
+        if (v.enemy[i] >= 0) {
+            // cast from the lower drone so both drones of a pair agree
+            const uint8_t j = (uint8_t)v.enemy[i];
+            v.los[i] = lineOfSight(e, drones[min(i, j)], drones[max(i, j)]);
+        }
+    }
+    return v;
+}
+
+// lives left of a drone's team
+static int teamLives(droneEntity *const drones[], const uint8_t team) {
+    int lives = 0;
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
+        lives += drones[i]->team == team ? drones[i]->livesLeft : 0;
+    }
+    return lives;
+}
+
+// standoffs, 1v1 only: long stretches close to each other with a wall
+// between, who breaks them and what happens after
 static void observeStandoff(gameSlot *slot, droneEntity *const drones[2], const bool bothAlive, const bool los, const float sep) {
     gameResult *g = slot->g;
     iwEnv *e = slot->e;
@@ -1353,8 +1545,8 @@ static void observeStandoff(gameSlot *slot, droneEntity *const drones[2], const 
     if (slot->peeker >= 0 && (int32_t)slot->step - slot->peekStep <= STANDOFF_AFTER) {
         for (uint8_t i = 0; i < 2; i++) {
             if (e->stats[i].kills > slot->prev[i].kills) {
-                behaviorStats *peeker = &g->behavior[slot->peeker == g->seat ? 0 : 1];
-                behaviorStats *peeked = &g->behavior[slot->peeker == g->seat ? 1 : 0];
+                behaviorStats *peeker = &g->behavior[droneSide(g, slot->peeker)];
+                behaviorStats *peeked = &g->behavior[1 - droneSide(g, slot->peeker)];
                 if (i == slot->peeker) {
                     peeker->peekKills++;
                     peeked->peekedDeaths++;
@@ -1372,30 +1564,38 @@ static void observeStandoff(gameSlot *slot, droneEntity *const drones[2], const 
     } else {
         if (slot->blockedRun >= STANDOFF_MIN_STEPS) {
             for (uint8_t i = 0; i < 2; i++) {
-                behaviorStats *s = &g->behavior[i == g->seat ? 0 : 1];
+                behaviorStats *s = &g->behavior[droneSide(g, i)];
                 s->standoffs++;
                 s->standoffSteps += slot->blockedRun;
             }
             if (bothAlive && los) {
-                const uint8_t p = approachSpeed(drones, 0) >= approachSpeed(drones, 1) ? 0 : 1;
-                g->behavior[p == g->seat ? 0 : 1].peeks++;
+                const uint8_t p = approachSpeed(drones[0], drones[1]) >= approachSpeed(drones[1], drones[0]) ? 0 : 1;
+                g->behavior[droneSide(g, p)].peeks++;
                 slot->peeker = p;
                 slot->peekStep = slot->step;
             }
         }
         slot->blockedRun = 0;
     }
+}
 
-    if (!bothAlive) {
-        return;
-    }
-    const uint8_t sit = los ? STANDOFF_LOS : (close ? STANDOFF_CLOSE : STANDOFF_FAR);
-    for (uint8_t i = 0; i < 2; i++) {
-        behaviorStats *s = &g->behavior[i == g->seat ? 0 : 1];
-        const int lead = (int)drones[i]->livesLeft - (int)drones[1 - i]->livesLeft;
+// per drone situation stats against its nearest enemy: line of sight, or
+// how close without it, by its team's lives minus the enemy team's
+static void observeSituations(gameSlot *slot, droneEntity *const drones[], const enemyView *v) {
+    gameResult *g = slot->g;
+    iwEnv *e = slot->e;
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
+        if (v->enemy[i] < 0) {
+            continue;
+        }
+        const droneEntity *enemy = drones[v->enemy[i]];
+        const bool close = !v->los[i] && v->sep[i] < STANDOFF_DIST;
+        const uint8_t sit = v->los[i] ? STANDOFF_LOS : (close ? STANDOFF_CLOSE : STANDOFF_FAR);
+        behaviorStats *s = &g->behavior[droneSide(g, i)];
+        const int lead = teamLives(drones, drones[i]->team) - teamLives(drones, enemy->team);
         const uint8_t k = sit * 3 + (lead < 0 ? 0 : (lead == 0 ? 1 : 2));
         s->sitSteps[k]++;
-        s->sitApproach[k] += approachSpeed(drones, i);
+        s->sitApproach[k] += approachSpeed(drones[i], enemy);
         s->sitSpeed[k] += b2Length(drones[i]->velocity);
         s->sitTrigger[k] += e->cachedActions[i].trigger;
     }
@@ -1406,10 +1606,18 @@ static inline uint8_t histBin(const float v, const float width, const uint8_t bi
     return (uint8_t)(bin < 0 ? 0 : (bin >= bins ? bins - 1 : bin));
 }
 
+// whether a projectile is an enemy's of drone d: teammates' projectiles
+// are neither its own nor an enemy's
+static inline bool enemyProjectile(iwEnv *e, const projectileEntity *p, const droneEntity *d) {
+    const droneEntity *owner = safe_array_get_at(e->drones, p->droneIdx);
+    return owner->team != d->team;
+}
+
 // projectile counts by owner, enemy projectiles by distance and speed, and
 // threats: whether they'd be in the obs under different slot schemes, and
-// whether they're new this step
-static void observeProjectiles(gameSlot *slot, const uint8_t i, const droneEntity *d) {
+// whether they're new this step; enemyDrone is the enemy whose weapon the
+// by weapon stats are of
+static void observeProjectiles(gameSlot *slot, const uint8_t i, const droneEntity *d, const droneEntity *enemyDrone) {
     iwEnv *e = slot->e;
     behaviorStats *s = droneBehavior(slot, i);
     const size_t n = cc_array_size(e->projectiles);
@@ -1424,7 +1632,7 @@ static void observeProjectiles(gameSlot *slot, const uint8_t i, const droneEntit
             if (p->weaponInfo->type == MINE_LAUNCHER_WEAPON) {
                 s->ownMines++;
             }
-        } else {
+        } else if (enemyProjectile(e, p, d)) {
             enemy++;
             enemyNear += dist[k] < PROJ_NEAR;
         }
@@ -1433,7 +1641,6 @@ static void observeProjectiles(gameSlot *slot, const uint8_t i, const droneEntit
     s->projEnemyHist[min(enemy, PROJ_HIST - 1)]++;
     s->projOwnNearHist[min(ownNear, PROJ_HIST - 1)]++;
     s->projEnemyNearHist[min(enemyNear, PROJ_HIST - 1)]++;
-    const droneEntity *enemyDrone = safe_array_get_at(e->drones, 1 - i);
     const uint8_t ew = enemyDrone->weapon.weaponInfo->type;
     s->projEnemyHistW[ew * PROJ_HIST + min(enemy, PROJ_HIST - 1)]++;
     s->projEnemyNearHistW[ew * PROJ_HIST + min(enemyNear, PROJ_HIST - 1)]++;
@@ -1452,6 +1659,9 @@ static void observeProjectiles(gameSlot *slot, const uint8_t i, const droneEntit
         }
         if (p->droneIdx == i) {
             blast += blastRadius > 0.0f && dist[k] < blastRadius + DRONE_RADIUS;
+            continue;
+        }
+        if (!enemyProjectile(e, p, d)) {
             continue;
         }
         const b2Vec2 rel = b2Sub(p->pos, d->pos);
@@ -1483,7 +1693,7 @@ static void observeProjectiles(gameSlot *slot, const uint8_t i, const droneEntit
             }
             rankAll++;
             const projectileEntity *q = safe_array_get_at(e->projectiles, j);
-            rankEnemy += q->droneIdx != i;
+            rankEnemy += enemyProjectile(e, q, d);
         }
         for (uint8_t kk = 0; kk < PROJ_NUM_K; kk++) {
             s->threatOutAll[kk] += rankAll >= PROJ_K[kk];
@@ -1513,16 +1723,32 @@ static void observeProjectiles(gameSlot *slot, const uint8_t i, const droneEntit
 static void observeStep(gameSlot *slot) {
     iwEnv *e = slot->e;
     gameResult *g = slot->g;
-    droneEntity *drones[2] = {safe_array_get_at(e->drones, 0), safe_array_get_at(e->drones, 1)};
-    const bool bothAlive = !drones[0]->dead && !drones[1]->dead;
-    const bool los = bothAlive && lineOfSight(e, drones[0], drones[1]);
-    const float sep = bothAlive ? b2Distance(drones[0]->pos, drones[1]->pos) : 0.0f;
-    observeStandoff(slot, drones, bothAlive, los, sep);
+    droneEntity *drones[_MAX_DRONES];
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
+        drones[i] = safe_array_get_at(e->drones, i);
+    }
+    const enemyView view = viewEnemies(e, drones);
+    if (NUM_DRONES == 2) {
+        observeStandoff(slot, drones, view.enemy[0] >= 0, view.los[0], view.sep[0]);
+    }
+    observeSituations(slot, drones, &view);
 
-    for (uint8_t i = 0; i < 2; i++) {
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
         const droneEntity *d = drones[i];
-        const droneEntity *enemy = drones[1 - i];
-        behaviorStats *s = &g->behavior[i == g->seat ? 0 : 1];
+        // with no living enemy, the first enemy's weapon for the by weapon
+        // projectile stats
+        const droneEntity *enemy = NULL;
+        if (view.enemy[i] >= 0) {
+            enemy = drones[view.enemy[i]];
+        } else {
+            for (uint8_t j = 0; j < NUM_DRONES && enemy == NULL; j++) {
+                enemy = drones[j]->team != d->team ? drones[j] : NULL;
+            }
+        }
+        const bool bothAlive = view.enemy[i] >= 0;
+        const bool los = view.los[i];
+        const float sep = view.sep[i];
+        behaviorStats *s = &g->behavior[droneSide(g, i)];
         const droneStats *cur = &e->stats[i];
         const droneStats *prev = &slot->prev[i];
 
@@ -1537,7 +1763,7 @@ static void observeStep(gameSlot *slot) {
         if (d->dead) {
             continue;
         }
-        observeProjectiles(slot, i, d);
+        observeProjectiles(slot, i, d, enemy);
 
         const agentActions *a = &e->cachedActions[i];
         const float speed = b2Length(d->velocity);
@@ -1604,7 +1830,7 @@ static void observeStep(gameSlot *slot) {
     recordKills(slot, e->analysisStats);
     if (loadoutPickups) {
         bool replaced = false;
-        for (uint8_t i = 0; i < 2; i++) {
+        for (uint8_t i = 0; i < NUM_DRONES; i++) {
             if (!drones[i]->dead) {
                 replaced |= enforceLoadout(slot, i, drones[i]);
             }
@@ -1616,12 +1842,38 @@ static void observeStep(gameSlot *slot) {
     snapshot(slot, e->analysisStats);
 }
 
+// adds the drone's episode stats to its side's; the stats structs are
+// all floats. A side's score is its best drone's: a team's drones share
+// theirs, and a free for all opponent side wins if any of its drones does
+static void addSideStats(gameResult *g, const uint8_t side, const bool first, const droneStats *s, const droneAnalysisStats *a) {
+    if (first) {
+        g->stats[side] = *s;
+        g->analysis[side] = *a;
+        return;
+    }
+    const float score = fmaxf(g->stats[side].score, s->score);
+    float *dst = (float *)&g->stats[side];
+    const float *src = (const float *)s;
+    for (size_t k = 0; k < sizeof(droneStats) / sizeof(float); k++) {
+        dst[k] += src[k];
+    }
+    g->stats[side].score = score;
+    dst = (float *)&g->analysis[side];
+    src = (const float *)a;
+    for (size_t k = 0; k < sizeof(droneAnalysisStats) / sizeof(float); k++) {
+        dst[k] += src[k];
+    }
+}
+
 // one agent step of a game; returns true when the game ended
 static bool stepGame(gameSlot *slot, policyBatch *p, const int b) {
     iwEnv *e = slot->e;
     gameResult *g = slot->g;
-    const float *act = p->actions + b * NUM_ATNS;
-    if (!((droneEntity *)safe_array_get_at(e->drones, g->seat))->dead) {
+    for (uint8_t k = 0; k < policyDrones(); k++) {
+        if (((droneEntity *)safe_array_get_at(e->drones, slot->rowDrone[k]))->dead) {
+            continue;
+        }
+        const float *act = p->actions + (b * policyDrones() + k) * NUM_ATNS;
         const uint16_t aimDir = (uint16_t)act[1] * AIM_FINE_STEPS + (uint16_t)act[2];
         g->moveHist[(uint8_t)act[0]]++;
         g->aimHist[aimDir]++;
@@ -1634,17 +1886,18 @@ static bool stepGame(gameSlot *slot, policyBatch *p, const int b) {
     if (e->log.n != 0.0f) {
         // the env was reset, the final step's shots and kills are in the
         // episode log and the last analysis stats
-        for (uint8_t i = 0; i < 2; i++) {
+        for (uint8_t i = 0; i < NUM_DRONES; i++) {
             recordFired(slot, i, &e->log.stats[i]);
             recordHits(slot, i, &e->log.stats[i], NULL);
         }
         recordUtilityUse(slot, e->lastAnalysisStats);
         recordKills(slot, e->lastAnalysisStats);
         g->length = e->log.length;
-        for (uint8_t i = 0; i < 2; i++) {
-            const uint8_t drone = i == 0 ? g->seat : 1 - g->seat;
-            g->stats[i] = e->log.stats[drone];
-            g->analysis[i] = e->lastAnalysisStats[drone];
+        bool first[2] = {true, true};
+        for (uint8_t i = 0; i < NUM_DRONES; i++) {
+            const uint8_t side = droneSide(g, i);
+            addSideStats(g, side, first[side], &e->log.stats[i], &e->lastAnalysisStats[i]);
+            first[side] = false;
         }
         return true;
     }
@@ -1660,10 +1913,10 @@ static bool nextGame(gameResult **out) {
     uint32_t gameIdx = job % gamesPerOpp;
     gameResult *g = &results[job];
     memset(g, 0x0, sizeof(*g));
-    // against a policy every seed is played from both drones
+    // against a policy every seed is played from every seat
     if (oppWeights != NULL) {
-        g->seat = gameIdx % 2;
-        gameIdx /= 2;
+        g->seat = gameIdx % numSeats();
+        gameIdx /= numSeats();
     }
     if (combos) {
         const uint32_t m = job / gamesPerOpp;
@@ -1679,13 +1932,20 @@ static bool nextGame(gameResult **out) {
         g->map = tourMaps[gameIdx % numMaps];
         g->seed = hashSeed(baseSeed * 1000003ull + gameIdx);
     }
-    // cycle the starting utility pickups over every pair of utilities,
-    // shifted every round of maps so each map gets every pair too; drone
-    // order, so a policy playing both drones of a seed plays both sides
+    // cycle the starting utility pickups over every combination of
+    // utilities for the drones, shifted every round of maps so each map
+    // gets every combination too; drone order, so a policy playing every
+    // seat of a seed plays every side
     const uint32_t numUtilities = _NUM_UTILITIES - 1;
-    const uint32_t pair = (gameIdx + gameIdx / numMaps) % (numUtilities * numUtilities);
-    g->startUtilities[0] = UNSET_UTILITY + 1 + pair / numUtilities;
-    g->startUtilities[1] = UNSET_UTILITY + 1 + pair % numUtilities;
+    uint32_t cycle = 1;
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
+        cycle *= numUtilities;
+    }
+    uint32_t c = (gameIdx + gameIdx / numMaps) % cycle;
+    for (int i = NUM_DRONES - 1; i >= 0; i--) {
+        g->startUtilities[i] = UNSET_UTILITY + 1 + c % numUtilities;
+        c /= numUtilities;
+    }
     *out = g;
     return true;
 }
@@ -1877,22 +2137,43 @@ static void addScaleSlots(const char *group, const char *fmt, int count, enum sc
     }
 }
 
+// adds feature what of every other drone obs slot, named and read by the
+// slot's prefix: the obs names are prefix + x, y and gate suffixes
+static void addSlotScaleFeature(const char *what, enum scaleKind kind, float scale, const char *x, const char *y, const char *gate0, const char *gate1) {
+    char pre[24], name[48], xs[64], ys[64], g0[64], g1[64];
+    for (int k = 0; k < IW_NUM_ENEMIES; k++) {
+        slotName(k, pre, sizeof(pre));
+        snprintf(name, sizeof(name), "%s_%s", pre, what);
+        snprintf(xs, sizeof(xs), "%s_%s", pre, x);
+        snprintf(ys, sizeof(ys), "%s_%s", pre, y ? y : "");
+        snprintf(g0, sizeof(g0), "%s_%s", pre, gate0);
+        snprintf(g1, sizeof(g1), "%s_%s", pre, gate1 ? gate1 : "");
+        addScaleFeature(name, kind, scale, xs, y ? ys : NULL, g0, gate1 ? g1 : NULL);
+    }
+}
+
 static void buildScaleFeatures(void) {
     // the scaling of the current obs; older checkpoints need a harness
     // built from their commit, whose obs were scaled differently
-    addScaleFeature("enemy_dist", SCALE_TANH, MAX_OBS_DRONE_DISTANCE, "enemy_dist", NULL, "enemy_alive", NULL);
-    addScaleFeature("enemy_ray_dist", SCALE_TANH, MAX_OBS_RAY_DISTANCE, "enemy_ray_dist", NULL, "enemy_ray_type", NULL);
+    addSlotScaleFeature("dist", SCALE_TANH, MAX_OBS_DRONE_DISTANCE, "dist", NULL, "alive", NULL);
+    addSlotScaleFeature("ray_dist", SCALE_TANH, MAX_OBS_RAY_DISTANCE, "ray_dist", NULL, "ray_type", NULL);
     addScaleFeature("own_aim_ray_dist", SCALE_TANH, MAX_OBS_RAY_DISTANCE, "own_aim_ray_dist", NULL, "own_aim_ray_type", NULL);
     addScaleFeature("own_vel_ray_time", SCALE_TANH, OBS_RAY_TIME_KNEE, "own_vel_ray_dist", NULL, "own_vel_ray_type", NULL);
     addScaleFeature("own_drift_ray_time", SCALE_TANH, OBS_RAY_TIME_KNEE, "own_drift_ray_dist", NULL, "own_drift_ray_type", NULL);
-    addScaleFeature("enemy_rel_pos", SCALE_TANH, MAX_OBS_RELATIVE_POS, "enemy_rel_x", "enemy_rel_y", "enemy_alive", NULL);
+    addSlotScaleFeature("rel_pos", SCALE_TANH, MAX_OBS_RELATIVE_POS, "rel_x", "rel_y", "alive", NULL);
     addScaleFeature("own_vel", SCALE_TANH, MAX_OBS_AGENT_SPEED, "own_vel_x", "own_vel_y", "own_alive", NULL);
-    addScaleFeature("enemy_rel_vel", SCALE_TANH, MAX_OBS_ENTITY_SPEED, "enemy_vel_x", "enemy_vel_y", "enemy_alive", NULL);
+    addSlotScaleFeature("rel_vel", SCALE_TANH, MAX_OBS_ENTITY_SPEED, "vel_x", "vel_y", "alive", NULL);
     addScaleFeature("own_mine_pos", SCALE_TANH, MAX_OBS_RELATIVE_POS, "own_mine_x", "own_mine_y", "own_mine_in_flight", "own_mine_welded");
-    addScaleFeature("enemy_mine_pos", SCALE_TANH, MAX_OBS_RELATIVE_POS, "enemy_mine_x", "enemy_mine_y", "enemy_mine_in_flight", "enemy_mine_welded");
+    addSlotScaleFeature("mine_pos", SCALE_TANH, MAX_OBS_RELATIVE_POS, "mine_x", "mine_y", "mine_in_flight", "mine_welded");
     addScaleFeature("own_grapple_pos", SCALE_TANH, MAX_OBS_RELATIVE_POS, "own_grapple_x", "own_grapple_y", "own_grapple_on", NULL);
     addScaleSlots("own_portal_pos", "own_portal%d", IW_NUM_PORTALS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_open");
-    addScaleSlots("enemy_portal_pos", "enemy_portal%d", IW_NUM_PORTALS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_open");
+    char pre[24], group[48], fmt[48];
+    for (int k = 0; k < IW_NUM_ENEMIES; k++) {
+        slotName(k, pre, sizeof(pre));
+        snprintf(group, sizeof(group), "%s_portal_pos", pre);
+        snprintf(fmt, sizeof(fmt), "%s_portal%%d", pre);
+        addScaleSlots(group, fmt, IW_NUM_PORTALS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_open");
+    }
     addScaleSlots("near_wall", "near_wall%d", IW_NUM_NEAR_WALLS, SCALE_TANH, MAX_OBS_WALL_POS, "_x", "_y", "_type");
     addScaleSlots("pickup", "pickup%d", IW_NUM_PICKUPS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_type");
     addScaleSlots("fw_pos", "fw%d", IW_NUM_FLOATING_WALLS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_type");
@@ -1984,23 +2265,25 @@ static bool writeScales(const char *path) {
 
 static void *worker(void *arg) {
     MAYBE_UNUSED(arg);
+    // B games, each with policyDrones() rows of the policy batch
     const int B = batchSize;
+    const int R = B * policyDrones();
     void *pGpu = NULL;
     void *oGpu = NULL;
 #ifdef IW_GPU
     pGpu = policyGpu;
     oGpu = oppGpu;
 #endif
-    policyBatch *p = createPolicyBatch(policyWeights, pGpu, B, policyHidden, policyLayers, weightsOut != NULL);
+    policyBatch *p = createPolicyBatch(policyWeights, pGpu, R, policyHidden, policyLayers, weightsOut != NULL);
     policyBatch *opp = NULL;
     if (oppWeights != NULL) {
-        opp = createPolicyBatch(oppWeights, oGpu, B, oppHidden, oppLayers, false);
+        opp = createPolicyBatch(oppWeights, oGpu, B * oppDrones(), oppHidden, oppLayers, false);
     }
     policyBatch *shadows[MAX_SHADOWS];
     for (int k = 0; k < numShadows; k++) {
-        shadows[k] = createPolicyBatch(policyWeights, pGpu, B, policyHidden, policyLayers, false);
+        shadows[k] = createPolicyBatch(policyWeights, pGpu, R, policyHidden, policyLayers, false);
     }
-    float *cleanObs = calloc(B * OBS_SIZE, sizeof(float));
+    float *cleanObs = calloc(R * OBS_SIZE, sizeof(float));
     inputStats *inputs = weightsOut != NULL ? calloc(1, sizeof(inputStats)) : NULL;
     scaleStats *scales = scalesOut != NULL ? calloc(1, sizeof(scaleStats)) : NULL;
 
@@ -2025,15 +2308,15 @@ static void *worker(void *arg) {
         }
     }
     while (active > 0) {
-        memcpy(cleanObs, p->obs, B * OBS_SIZE * sizeof(float));
+        memcpy(cleanObs, p->obs, R * OBS_SIZE * sizeof(float));
         for (int k = 0; k < numShadows; k++) {
-            memcpy(shadows[k]->obs, cleanObs, B * OBS_SIZE * sizeof(float));
-            memcpy(shadows[k]->terminals, p->terminals, B * sizeof(float));
-            applyMask(shadows[k]->obs, cleanObs, B, &shadowMasks[k], ablateMode);
+            memcpy(shadows[k]->obs, cleanObs, R * OBS_SIZE * sizeof(float));
+            memcpy(shadows[k]->terminals, p->terminals, R * sizeof(float));
+            applyMask(shadows[k]->obs, cleanObs, R, &shadowMasks[k], ablateMode);
             netForward(shadows[k]);
         }
         if (ablating) {
-            applyMask(p->obs, cleanObs, B, &ablateMask, ablateMode);
+            applyMask(p->obs, cleanObs, R, &ablateMask, ablateMode);
         }
         netForward(p);
         if (opp != NULL) {
@@ -2045,19 +2328,19 @@ static void *worker(void *arg) {
             sampleActions(opp);
         }
         const encoderInputs in = inputs != NULL ? readInputs(p) : (encoderInputs){0};
-        for (int b = 0; b < B; b++) {
-            gameSlot *slot = &slots[b];
-            if (!slot->active || ((droneEntity *)safe_array_get_at(slot->e->drones, slot->g->seat))->dead) {
+        for (int r = 0; r < R; r++) {
+            gameSlot *slot = &slots[r / policyDrones()];
+            if (!slot->active || ((droneEntity *)safe_array_get_at(slot->e->drones, slot->rowDrone[r % policyDrones()]))->dead) {
                 continue;
             }
             for (int k = 0; k < numShadows; k++) {
-                shadowCompare(p, shadows[k], b, &slot->g->shadow[k]);
+                shadowCompare(p, shadows[k], r, &slot->g->shadow[k]);
             }
             if (inputs != NULL) {
-                accumulateInputs(inputs, &in, b);
+                accumulateInputs(inputs, &in, r);
             }
             if (scales != NULL) {
-                accumulateScales(scales, cleanObs + b * OBS_SIZE);
+                accumulateScales(scales, cleanObs + r * OBS_SIZE);
             }
         }
         for (int b = 0; b < B; b++) {
@@ -2133,7 +2416,6 @@ static void writeDrone(FILE *f, const gameResult *g, const uint8_t i) {
     const droneStats *s = &g->stats[i];
     const droneAnalysisStats *a = &g->analysis[i];
     const behaviorStats *b = &g->behavior[i];
-    const droneStats *o = &g->stats[1 - i];
     fprintf(f, "{");
     WRITE_F(score);
     WRITE_F(kills);
@@ -2147,7 +2429,15 @@ static void writeDrone(FILE *f, const gameResult *g, const uint8_t i) {
     fprintf(f, "\"assists\":%g,", assists);
     WRITE_F(cratesPickedUp);
     WRITE_F(cratesRefilled);
-    fprintf(f, "\"deaths\":%g,", (double)(o->kills + s->selfKills + s->unknownKills));
+    if (teamsMode()) {
+        WRITE_F(teammateKills);
+    }
+    // every death counts the weapon the drone died holding
+    float deaths = 0.0f;
+    for (int w = 0; w < NW; w++) {
+        deaths += a->diedHoldingActive[w];
+    }
+    fprintf(f, "\"deaths\":%g,", (double)deaths);
     WRITE_F(totalBursts);
     WRITE_F(burstsHit);
     WRITE_F(energyEmptied);
@@ -2286,7 +2576,8 @@ static const char *className(const int obsIdx, const int vocab, const int cls) {
     static const char *rays[] = {"none", "wall", "bouncy", "death", "fw", "fw_bouncy", "fw_death", "drone"};
     static const char *utilities[] = {"none", "grapple", "mines", "portals", "mirror"};
     _Static_assert(sizeof(utilities) / sizeof(utilities[0]) == IW_UTILITY_VOCAB, "name every utility");
-    if (obsIdx == E_OBS + IW_DRONE_UTILITY_TYPE || obsIdx == D_OBS + IW_DRONE_UTILITY_TYPE) {
+    const bool otherDrone = obsIdx >= E_OBS && obsIdx < D_OBS && (obsIdx - E_OBS) % IW_ENEMY_DRONE_SIZE == IW_DRONE_UTILITY_TYPE;
+    if (otherDrone || obsIdx == D_OBS + IW_DRONE_UTILITY_TYPE) {
         return utilities[cls];
     }
     if (vocab == IW_PICKUP_VOCAB || vocab == IW_WEAPON_VOCAB) {
@@ -2395,6 +2686,14 @@ int main(int argc, char **argv) {
     bool episodesSet = false;
     bool batchSet = false;
     int gpuDevice = 0;
+    // the mode names the other drones' obs groups, so it's read first
+    for (int i = 1; i < argc; i++) {
+        ffa |= strcmp(argv[i], "--ffa") == 0;
+    }
+    if (ffa && NUM_DRONES == 2) {
+        fprintf(stderr, "--ffa needs a build with more than 2 drones\n");
+        return 1;
+    }
     buildObsNames();
     buildScaleFeatures();
     scaleTotals = calloc(1, sizeof(scaleStats));
@@ -2445,6 +2744,8 @@ int main(int argc, char **argv) {
             oppLayers = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--opponent-name") == 0 && hasValue) {
             snprintf(oppName, sizeof(oppName), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--ffa") == 0) {
+            // read before the loop
         } else if (strcmp(argv[i], "--combos") == 0) {
             combos = true;
         } else if (strcmp(argv[i], "--no-pickups") == 0) {
@@ -2481,7 +2782,7 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--scales-out") == 0 && hasValue) {
             scalesOut = argv[++i];
         } else if (strcmp(argv[i], "--list-groups") == 0) {
-            for (size_t gi = 0; gi < NUM_OBS_GROUPS; gi++) {
+            for (int gi = 0; gi < numObsGroups; gi++) {
                 printf("%-22s", obsGroups[gi].name);
                 for (int r = 0; r < 2 && obsGroups[gi].ranges[r][1] != 0; r++) {
                     const int lo = obsGroups[gi].ranges[r][0];
@@ -2532,7 +2833,7 @@ int main(int argc, char **argv) {
         if (combos && !episodesSet) {
             gamesPerOpp = 16;
         }
-        gamesPerOpp += gamesPerOpp % 2;
+        gamesPerOpp += (numSeats() - gamesPerOpp % numSeats()) % numSeats();
     }
     if (numOpps == 0) {
         for (uint8_t p = BOT_SCRIPTED; p < NUM_BOT_POLICIES; p++) {
@@ -2614,8 +2915,20 @@ int main(int argc, char **argv) {
         const gameResult *g = &results[j];
         const char *opp = oppWeights != NULL ? oppName : policyNames[opps[g->opp]];
         fprintf(f, "{\"opp\":\"%s\",\"seat\":%u,\"map\":%u,\"seed\":%u,\"length\":%g,", opp, g->seat, g->map, g->seed, g->length);
+        if (NUM_DRONES > 2) {
+            fprintf(f, "\"mode\":\"%s\",", teamsMode() ? "2v2" : "ffa");
+        }
         // starting utility pickups by drone, the policy's first
-        fprintf(f, "\"startUtilities\":[%u,%u],", g->startUtilities[g->seat], g->startUtilities[1 - g->seat]);
+        fprintf(f, "\"startUtilities\":[");
+        uint8_t n = 0;
+        for (uint8_t side = 0; side < 2; side++) {
+            for (uint8_t i = 0; i < NUM_DRONES; i++) {
+                if (droneSide(g, i) == side) {
+                    fprintf(f, "%s%u", n++ ? "," : "", g->startUtilities[i]);
+                }
+            }
+        }
+        fprintf(f, "],");
         if (ablating) {
             fprintf(f, "\"ablate\":\"%s\",\"ablateMode\":\"%s\",", ablateMask.name, ablateMode == ABLATE_SWAP ? "swap" : "zero");
         }
