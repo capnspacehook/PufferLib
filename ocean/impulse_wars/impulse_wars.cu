@@ -1,15 +1,15 @@
-// Impulse Wars CUDA encoder: map grid CNN, own projectile, enemy projectile
-// and floating wall branches, one-hot type slots, concat with the continuous
-// obs and the enemy projectile count, projection.
+// Impulse Wars CUDA encoder: map grid CNN, floating wall branch, one-hot
+// type slots, concat with the continuous obs, projection.
 // The map grid's packed cell codes are unpacked into one-hot channels by
 // conv1's im2col and run through 3 convs with ReLU, then concatenated and
 // projected through a GELU. Conv activations stay NHWC, as the matmul rows,
-// and are kept before ReLU: each consumer applies it when reading. Own and
-// enemy projectile and floating wall slots are records for a shared Linear -> GELU -> Linear
-// per branch that is max pooled over the non-empty records and added to the
-// projection, like the OSRS entity encoder; the second Linears of all three
-// branches are fused with their pools and the projection's GELU in one
-// kernel, so the (records, hidden) outputs are never stored. Wall, weapon
+// and are kept before ReLU: each consumer applies it when reading. Floating
+// wall slots are records for a shared Linear -> GELU -> Linear that is max
+// pooled over the non-empty records and added to the projection, like the
+// OSRS entity encoder; the record kernels take any number of such branches.
+// The second Linears of the branches are fused with their pools and the
+// projection's GELU in one kernel, so the (records, hidden) outputs are
+// never stored. Wall, weapon
 // and ray hit type slots are one-hot encoded into the concat. Included by
 // src/ocean.cu.
 
@@ -252,36 +252,10 @@ __global__ void iw_concat_kernel(
         v = from_float(iw_onehot_value(to_float(o[col.obsIdx]), col));
     } else if (c < IW_SCALAR_COLS_END) {
         v = o[IW_SCALAR_IDX.idx[c - IW_CONV_FLAT - IW_ONEHOT_COLS]];
-    } else if (c < IW_CONCAT_USED) {
-        int n = 0;
-        for (int r = 0; r < IW_NUM_ENEMY_PROJECTILES; r++) {
-            n += iw_proj_active(to_float(o[iw_proj_slot_idx(IW_NUM_OWN_PROJECTILES + r)]));
-        }
-        v = from_float((float)n / IW_NUM_ENEMY_PROJECTILES);
     } else {
         v = from_float(0.0f);
     }
     concat[idx] = v;
-}
-
-// projectile records from the R projectile slots starting at slot FIRST:
-// (B * R, IW_PROJ_FEATURES), and whether each record is a projectile
-template <int R, int FIRST>
-__global__ void iw_proj_gather(
-    precision_t *__restrict__ rec, int *__restrict__ active, const precision_t *__restrict__ obs, int B, int obs_size
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * R * IW_PROJ_FEATURES) {
-        return;
-    }
-    int f = idx % IW_PROJ_FEATURES;
-    int row = idx / IW_PROJ_FEATURES;
-    int b = row / R;
-    const precision_t *slot = obs + (int64_t)b * obs_size + iw_proj_slot_idx(FIRST + row % R);
-    rec[idx] = from_float(iw_proj_feature(to_float(slot[iw_proj_field(f)]), f));
-    if (f == 0) {
-        active[row] = iw_proj_active(to_float(slot[0]));
-    }
 }
 
 // floating wall records from the obs: (B * IW_NUM_FLOATING_WALLS,
@@ -312,23 +286,23 @@ __global__ void iw_gelu_kernel(precision_t *__restrict__ out, const precision_t 
 }
 
 // the record branches, in the order their pools add to the encoder output
-// and their argmaxes are packed: own projectile, enemy projectile, floating
-// wall. Their records are numbered across the branches in this order
-#define IW_NUM_REC_BRANCHES 3
-#define IW_REC_HIDDEN IW_PROJ_HIDDEN
-#define IW_NUM_RECORDS (IW_NUM_PROJECTILES + IW_NUM_FLOATING_WALLS)
+// and their argmaxes are packed: floating walls. Their records are numbered
+// across the branches in this order
+#define IW_NUM_REC_BRANCHES 1
+#define IW_REC_HIDDEN IW_FW_HIDDEN
+#define IW_NUM_RECORDS IW_NUM_FLOATING_WALLS
 
-__host__ __device__ constexpr int iw_rec_count(int br) {
-    return br == 0 ? IW_NUM_OWN_PROJECTILES : br == 1 ? IW_NUM_ENEMY_PROJECTILES : IW_NUM_FLOATING_WALLS;
+__host__ __device__ constexpr int iw_rec_count(int) {
+    return IW_NUM_FLOATING_WALLS;
 }
 
 // number of branch br's first record across the branches
-__host__ __device__ constexpr int iw_rec_first(int br) {
-    return br == 0 ? 0 : br == 1 ? IW_NUM_OWN_PROJECTILES : IW_NUM_PROJECTILES;
+__host__ __device__ constexpr int iw_rec_first(int) {
+    return 0;
 }
 
-__host__ __device__ constexpr int iw_rec_branch(int t) {
-    return t < IW_NUM_OWN_PROJECTILES ? 0 : t < IW_NUM_PROJECTILES ? 1 : 2;
+__host__ __device__ constexpr int iw_rec_branch(int) {
+    return 0;
 }
 
 // branch br's pooled record in a packed argmax, -1 if none
@@ -346,12 +320,13 @@ struct IwRecPtrs {
     precision_t *w2_grad[IW_NUM_REC_BRANCHES];
 };
 
-// element br of a per branch array of a kernel parameter, by selects:
-// indexing a parameter's array at run time makes nvcc copy the parameter to
-// local memory
+// element br of a per branch array of a kernel parameter. With more than
+// one branch this must select rather than index: indexing a parameter's
+// array at run time makes nvcc copy the parameter to local memory
 template <typename T>
 __device__ inline T iw_rec_sel(T const (&a)[IW_NUM_REC_BRANCHES], int br) {
-    return br == 0 ? a[0] : br == 1 ? a[1] : a[2];
+    static_assert(IW_NUM_REC_BRANCHES == 1, "impulse_wars iw_rec_sel needs a select per branch");
+    return a[0];
 }
 
 // h1 of record t (across the branches) of sample b at unit k
@@ -442,9 +417,7 @@ __global__ void iw_rec_pool(
 }
 
 // most records of a branch
-#define IW_REC_MAX_COUNT \
-    (IW_NUM_OWN_PROJECTILES > IW_NUM_ENEMY_PROJECTILES ? (IW_NUM_OWN_PROJECTILES > IW_NUM_FLOATING_WALLS ? IW_NUM_OWN_PROJECTILES : IW_NUM_FLOATING_WALLS) \
-        : (IW_NUM_ENEMY_PROJECTILES > IW_NUM_FLOATING_WALLS ? IW_NUM_ENEMY_PROJECTILES : IW_NUM_FLOATING_WALLS))
+#define IW_REC_MAX_COUNT IW_NUM_FLOATING_WALLS
 
 // row length of the record pool backward's staged sample: a group's hidden
 // units, padded to whole vectors plus 4 so groups 8 apart share banks
@@ -460,8 +433,8 @@ __host__ __device__ constexpr int iw_rec_bwd_mask_words(int H) {
 
 // routes the encoder output gradient (B, H) through one branch's pool
 // (blockIdx.y) and second layer to its first layer pre-GELU outputs z1,
-// overwriting z1 with the gradient at it; the own projectile branch's blocks
-// also overwrite proj_z with the gradient at it through the projection's
+// overwriting z1 with the gradient at it; the first branch's blocks also
+// overwrite proj_z with the gradient at it through the projection's
 // GELU. A block of IW_REC_BWD_GROUPS * HR threads takes IW_REC_BWD_SAMPLES
 // samples: thread (g, k) sums every IW_REC_BWD_GROUPS-th hidden unit from g
 // into per record partials, which are then summed over g.
@@ -516,8 +489,8 @@ __global__ void __launch_bounds__(IW_REC_BWD_GROUPS * IW_REC_HIDDEN) iw_rec_pool
         }
     }
 
-    // the next sample's pooled records, gradient, proj_z (own projectile
-    // branch) and, for the threads that sum a slot, z1
+    // the next sample's pooled records, gradient, proj_z (first branch)
+    // and, for the threads that sum a slot, z1
     int nr[NS];
     float ng[NS], nz[NS], nz1 = 0.0f;
     auto load = [&](int b) {
@@ -740,7 +713,7 @@ struct IwRecLayer1Ptrs {
 // active flag as the gathers do, then z1 and h1 from the record rounded to
 // precision_t as the matmul reads it, summing the features in order. w is
 // the branch's first layer weights as (features, HR)
-template <int F, int NF, bool PROJ>
+template <int F, int NF>
 __device__ void iw_rec_layer1_one(
     const IwRecLayer1Ptrs &q, const float *w, const precision_t *slot, int br, int64_t row, int k
 ) {
@@ -753,21 +726,19 @@ __device__ void iw_rec_layer1_one(
     float v = 0.0f;
 #pragma unroll
     for (int i = 0; i < F; i++) {
-        precision_t x = PROJ ? from_float(iw_proj_feature(fields[iw_proj_field(i)], i)) : from_float(iw_fw_feature(fields[iw_fw_field(i)], i));
+        precision_t x = from_float(iw_fw_feature(fields[iw_fw_field(i)], i));
         if (i % HR == k) {
             iw_rec_sel(q.rec, br)[row * F + i] = x;
         }
         v += to_float(x) * w[i * HR + k];
     }
     if (k == 0) {
-        iw_rec_sel(q.active, br)[row] = PROJ ? iw_proj_active(fields[0]) : iw_fw_active(fields[0]);
+        iw_rec_sel(q.active, br)[row] = iw_fw_active(fields[0]);
     }
     precision_t zv = from_float(v);
     iw_rec_sel(q.z1, br)[row * HR + k] = zv;
     iw_rec_sel(q.h1, br)[row * HR + k] = from_float(iw_gelu(to_float(zv)));
 }
-
-static_assert(IW_FW_FEATURES <= IW_PROJ_FEATURES, "impulse_wars rollout record layer stages the weights at the projectile width");
 
 // rollout record branches up to their first layers' GELU straight from the
 // obs, without the gathers' and first layers' kernels: a thread per unit of
@@ -775,13 +746,11 @@ static_assert(IW_FW_FEATURES <= IW_PROJ_FEATURES, "impulse_wars rollout record l
 __global__ void iw_rec_layer1_direct(IwRecLayer1Ptrs q, const precision_t *__restrict__ obs, int B, int obs_size) {
     constexpr int HR = IW_REC_HIDDEN;
     // (features, HR) per branch so a warp's units read adjacent banks
-    __shared__ float sw[IW_NUM_REC_BRANCHES][IW_PROJ_FEATURES * HR];
-    for (int i = threadIdx.x; i < IW_NUM_REC_BRANCHES * IW_PROJ_FEATURES * HR; i += blockDim.x) {
-        int br = i / (IW_PROJ_FEATURES * HR);
-        int j = i % (IW_PROJ_FEATURES * HR);
-        int f = j / HR;
-        int nf = br < 2 ? IW_PROJ_FEATURES : IW_FW_FEATURES;
-        sw[br][j] = f < nf ? to_float(iw_rec_sel(q.l1_w, br)[(j % HR) * nf + f]) : 0.0f;
+    __shared__ float sw[IW_NUM_REC_BRANCHES][IW_FW_FEATURES * HR];
+    for (int i = threadIdx.x; i < IW_NUM_REC_BRANCHES * IW_FW_FEATURES * HR; i += blockDim.x) {
+        int br = i / (IW_FW_FEATURES * HR);
+        int j = i % (IW_FW_FEATURES * HR);
+        sw[br][j] = to_float(iw_rec_sel(q.l1_w, br)[(j % HR) * IW_FW_FEATURES + j / HR]);
     }
     __syncthreads();
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -794,16 +763,11 @@ __global__ void iw_rec_layer1_direct(IwRecLayer1Ptrs q, const precision_t *__res
     int br = iw_rec_branch(t);
     int64_t row = (int64_t)b * iw_rec_count(br) + t - iw_rec_first(br);
     const precision_t *o = obs + (int64_t)b * obs_size;
-    // own then enemy projectile records are the projectile slots in order
-    if (br < 2) {
-        iw_rec_layer1_one<IW_PROJ_FEATURES, IW_PROJECTILE_SIZE, true>(q, sw[br], o + iw_proj_slot_idx(t), br, row, k);
-    } else {
-        iw_rec_layer1_one<IW_FW_FEATURES, IW_FLOATING_WALL_SIZE, false>(q, sw[br], o + iw_fw_slot_idx(t - iw_rec_first(br)), br, row, k);
-    }
+    iw_rec_layer1_one<IW_FW_FEATURES, IW_FLOATING_WALL_SIZE>(q, sw[br], o + iw_fw_slot_idx(t - iw_rec_first(br)), br, row, k);
 }
 
 struct IwEncoderWeights {
-    Prec conv1_w, conv2_w, conv3_w, proj_w, own_proj_l1_w, own_proj_l2_w, enemy_proj_l1_w, enemy_proj_l2_w, fw_l1_w, fw_l2_w;
+    Prec conv1_w, conv2_w, conv3_w, proj_w, fw_l1_w, fw_l2_w;
     int obs_size, hidden;
 };
 
@@ -816,14 +780,8 @@ struct IwEncoderActivations {
     Prec col1, conv1_z, conv1_grad;
     Prec col2, conv2_z, conv2_grad;
     Prec col3, conv3_z, conv3_grad;
-    // own projectile branch: records, first layer pre and post GELU;
-    // backward reuses own_z1 for its gradient
-    Prec own_rec, own_z1, own_h1;
-    Int own_active;
-    // enemy projectile and floating wall branches, as the own projectile
-    // branch
-    Prec enemy_rec, enemy_z1, enemy_h1;
-    Int enemy_active;
+    // floating wall branch: records, first layer pre and post GELU;
+    // backward reuses fw_z1 for its gradient
     Prec fw_rec, fw_z1, fw_h1;
     Int fw_active;
     // every branch's pooled record per (sample, hidden unit), packed as
@@ -831,12 +789,10 @@ struct IwEncoderActivations {
     Int rec_argmax;
     // second layer weight gradient partials of every branch
     Float rec_wgrad_partials;
-    Prec conv1_wgrad, conv2_wgrad, conv3_wgrad, proj_wgrad, own_proj_l1_wgrad, own_proj_l2_wgrad, enemy_proj_l1_wgrad,
-        enemy_proj_l2_wgrad, fw_l1_wgrad, fw_l2_wgrad;
+    Prec conv1_wgrad, conv2_wgrad, conv3_wgrad, proj_wgrad, fw_l1_wgrad, fw_l2_wgrad;
 };
 
-static_assert(IW_PROJ_HIDDEN == IW_FW_HIDDEN, "impulse_wars record branches share their pool and weight gradient kernels");
-static_assert(IW_NUM_OWN_PROJECTILES < 255 && IW_NUM_ENEMY_PROJECTILES < 255 && IW_NUM_FLOATING_WALLS < 255,
+static_assert(IW_NUM_FLOATING_WALLS < 255,
     "impulse_wars pooled records must fit a byte of the packed argmax");
 static_assert(IW_REC_HIDDEN % IW_VEC == 0, "impulse_wars record pool loads whole vectors of second layer weights");
 static_assert(IW_REC_HIDDEN % IW_REC_WGRAD_K == 0, "impulse_wars record weight gradient threads take whole groups of units");
@@ -846,11 +802,11 @@ static_assert(IW_REC_HIDDEN % IW_REC_WGRAD_K == 0, "impulse_wars record weight g
 // gradients are null for rollout
 static IwRecPtrs iw_rec_ptrs(IwEncoderWeights *ew, IwEncoderActivations *a) {
     IwRecPtrs p = {
-        .z1 = {a->own_z1.data, a->enemy_z1.data, a->fw_z1.data},
-        .h1 = {a->own_h1.data, a->enemy_h1.data, a->fw_h1.data},
-        .active = {a->own_active.data, a->enemy_active.data, a->fw_active.data},
-        .w2 = {ew->own_proj_l2_w.data, ew->enemy_proj_l2_w.data, ew->fw_l2_w.data},
-        .w2_grad = {a->own_proj_l2_wgrad.data, a->enemy_proj_l2_wgrad.data, a->fw_l2_wgrad.data},
+        .z1 = {a->fw_z1.data},
+        .h1 = {a->fw_h1.data},
+        .active = {a->fw_active.data},
+        .w2 = {ew->fw_l2_w.data},
+        .w2_grad = {a->fw_l2_wgrad.data},
     };
     return p;
 }
@@ -882,26 +838,16 @@ static void iw_rec_layer1(Prec *rec, Prec *l1_w, Prec *z1, Prec *h1, int B, cuda
     iw_gelu_kernel<<<grid_size(n1), BLOCK_SIZE, 0, stream>>>(h1->data, z1->data, n1);
 }
 
-// own projectile, enemy projectile and floating wall branches to their
-// first layers' GELU for training: gathers, matmuls and GELUs
+// record branches to their first layers' GELU for training: gathers,
+// matmuls and GELUs
 static void iw_branches_layer1(IwEncoderWeights *ew, IwEncoderActivations *a, Prec input, int B, cudaStream_t stream) {
-    iw_proj_gather<IW_NUM_OWN_PROJECTILES, 0><<<grid_size(B * IW_NUM_OWN_PROJECTILES * IW_PROJ_FEATURES), BLOCK_SIZE, 0, stream>>>(
-        a->own_rec.data, a->own_active.data, input.data, B, ew->obs_size
-    );
-    iw_rec_layer1<IW_NUM_OWN_PROJECTILES, IW_PROJ_HIDDEN>(&a->own_rec, &ew->own_proj_l1_w, &a->own_z1, &a->own_h1, B, stream);
-    iw_proj_gather<IW_NUM_ENEMY_PROJECTILES, IW_NUM_OWN_PROJECTILES>
-        <<<grid_size(B * IW_NUM_ENEMY_PROJECTILES * IW_PROJ_FEATURES), BLOCK_SIZE, 0, stream>>>(
-            a->enemy_rec.data, a->enemy_active.data, input.data, B, ew->obs_size
-        );
-    iw_rec_layer1<IW_NUM_ENEMY_PROJECTILES, IW_PROJ_HIDDEN>(&a->enemy_rec, &ew->enemy_proj_l1_w, &a->enemy_z1, &a->enemy_h1, B, stream);
     iw_fw_gather<<<grid_size(B * IW_NUM_FLOATING_WALLS * IW_FW_FEATURES), BLOCK_SIZE, 0, stream>>>(
         a->fw_rec.data, a->fw_active.data, input.data, B, ew->obs_size
     );
     iw_rec_layer1<IW_NUM_FLOATING_WALLS, IW_FW_HIDDEN>(&a->fw_rec, &ew->fw_l1_w, &a->fw_z1, &a->fw_h1, B, stream);
 }
 
-// own projectile, enemy projectile and floating wall branches forward to
-// their first layers' GELU, as for training or in one kernel for rollout,
+// record branches forward to their first layers' GELU, as for training or in one kernel for rollout,
 // then the projection's GELU and the branches' pools into a->out; the
 // argmax isn't allocated for rollout, so stays null
 static void iw_branches_forward(IwEncoderWeights *ew, IwEncoderActivations *a, Prec input, int B, cudaStream_t stream) {
@@ -909,11 +855,11 @@ static void iw_branches_forward(IwEncoderWeights *ew, IwEncoderActivations *a, P
         iw_branches_layer1(ew, a, input, B, stream);
     } else {
         IwRecLayer1Ptrs q = {
-            .rec = {a->own_rec.data, a->enemy_rec.data, a->fw_rec.data},
-            .z1 = {a->own_z1.data, a->enemy_z1.data, a->fw_z1.data},
-            .h1 = {a->own_h1.data, a->enemy_h1.data, a->fw_h1.data},
-            .active = {a->own_active.data, a->enemy_active.data, a->fw_active.data},
-            .l1_w = {ew->own_proj_l1_w.data, ew->enemy_proj_l1_w.data, ew->fw_l1_w.data},
+            .rec = {a->fw_rec.data},
+            .z1 = {a->fw_z1.data},
+            .h1 = {a->fw_h1.data},
+            .active = {a->fw_active.data},
+            .l1_w = {ew->fw_l1_w.data},
         };
         iw_rec_layer1_direct<<<grid_size(B * IW_NUM_RECORDS * IW_REC_HIDDEN), BLOCK_SIZE, 0, stream>>>(q, input.data, B, ew->obs_size);
     }
@@ -965,8 +911,6 @@ static void iw_branches_backward(IwEncoderWeights *ew, IwEncoderActivations *a, 
         assert(H <= IW_REC_BWD_MAX_H && H % IW_REC_BWD_GROUPS == 0 && "impulse_wars record pool backward: unsupported hidden size");
         iw_rec_pool_backward<0><<<bwdGrid, bwdThreads, smem, stream>>>(proj_z, grad.data, argmax, p, B, H);
     }
-    puf_mm_tn(&a->own_z1, &a->own_rec, &a->own_proj_l1_wgrad, stream);
-    puf_mm_tn(&a->enemy_z1, &a->enemy_rec, &a->enemy_proj_l1_wgrad, stream);
     puf_mm_tn(&a->fw_z1, &a->fw_rec, &a->fw_l1_wgrad, stream);
 }
 
@@ -1049,10 +993,6 @@ static void iw_encoder_init_weights(void *w, ulong *seed, cudaStream_t stream) {
     Prec pw = {.data = ew->proj_w.data, .shape = {ew->hidden, IW_CONCAT}};
     puf_kaiming_init(&pw, sqrtf((float)IW_CONCAT / IW_CONCAT_USED), (*seed)++, stream);
     // as asteroids' entity encoder: gain sqrt(2) into the nonlinearity
-    puf_kaiming_init(&ew->own_proj_l1_w, sqrtf(2.0f * IW_PROJ_FEATURES / IW_PROJ_USED_FEATURES), (*seed)++, stream);
-    puf_kaiming_init(&ew->own_proj_l2_w, 1.0f, (*seed)++, stream);
-    puf_kaiming_init(&ew->enemy_proj_l1_w, sqrtf(2.0f * IW_PROJ_FEATURES / IW_PROJ_USED_FEATURES), (*seed)++, stream);
-    puf_kaiming_init(&ew->enemy_proj_l2_w, 1.0f, (*seed)++, stream);
     puf_kaiming_init(&ew->fw_l1_w, sqrtf(2.0f * IW_FW_FEATURES / IW_FW_USED_FEATURES), (*seed)++, stream);
     puf_kaiming_init(&ew->fw_l2_w, 1.0f, (*seed)++, stream);
 }
@@ -1064,10 +1004,6 @@ static void iw_encoder_reg_params(void *w, Allocator *alloc) {
     ew->conv2_w = {.shape = {IW_C2_OC, IW_C2_COL_W}};
     ew->conv3_w = {.shape = {IW_C3_OC, IW_C3_COL_W}};
     ew->proj_w = {.shape = {ew->hidden, IW_CONCAT}};
-    ew->own_proj_l1_w = {.shape = {IW_PROJ_HIDDEN, IW_PROJ_FEATURES}};
-    ew->own_proj_l2_w = {.shape = {ew->hidden, IW_PROJ_HIDDEN}};
-    ew->enemy_proj_l1_w = {.shape = {IW_PROJ_HIDDEN, IW_PROJ_FEATURES}};
-    ew->enemy_proj_l2_w = {.shape = {ew->hidden, IW_PROJ_HIDDEN}};
     ew->fw_l1_w = {.shape = {IW_FW_HIDDEN, IW_FW_FEATURES}};
     ew->fw_l2_w = {.shape = {ew->hidden, IW_FW_HIDDEN}};
     // the CPU net (impulse_wars_net.h) loads weights in this order
@@ -1075,35 +1011,12 @@ static void iw_encoder_reg_params(void *w, Allocator *alloc) {
     alloc_register(alloc, &ew->conv2_w);
     alloc_register(alloc, &ew->conv3_w);
     alloc_register(alloc, &ew->proj_w);
-    alloc_register(alloc, &ew->own_proj_l1_w);
-    alloc_register(alloc, &ew->own_proj_l2_w);
-    alloc_register(alloc, &ew->enemy_proj_l1_w);
-    alloc_register(alloc, &ew->enemy_proj_l2_w);
     alloc_register(alloc, &ew->fw_l1_w);
     alloc_register(alloc, &ew->fw_l2_w);
 }
 
-// own projectile, enemy projectile and floating wall branch forward buffers,
-// used by both training and rollout
+// floating wall branch forward buffers, used by both training and rollout
 static void iw_reg_branch_acts(IwEncoderActivations *a, Allocator *alloc, int B) {
-    int ownRows = B * IW_NUM_OWN_PROJECTILES;
-    a->own_rec = {.shape = {ownRows, IW_PROJ_FEATURES}};
-    a->own_z1 = {.shape = {ownRows, IW_PROJ_HIDDEN}};
-    a->own_h1 = {.shape = {ownRows, IW_PROJ_HIDDEN}};
-    a->own_active = {.shape = {ownRows}};
-    alloc_register(alloc, &a->own_rec);
-    alloc_register(alloc, &a->own_z1);
-    alloc_register(alloc, &a->own_h1);
-    alloc_register(alloc, &a->own_active);
-    int enemyRows = B * IW_NUM_ENEMY_PROJECTILES;
-    a->enemy_rec = {.shape = {enemyRows, IW_PROJ_FEATURES}};
-    a->enemy_z1 = {.shape = {enemyRows, IW_PROJ_HIDDEN}};
-    a->enemy_h1 = {.shape = {enemyRows, IW_PROJ_HIDDEN}};
-    a->enemy_active = {.shape = {enemyRows}};
-    alloc_register(alloc, &a->enemy_rec);
-    alloc_register(alloc, &a->enemy_z1);
-    alloc_register(alloc, &a->enemy_h1);
-    alloc_register(alloc, &a->enemy_active);
     int fwRows = B * IW_NUM_FLOATING_WALLS;
     a->fw_rec = {.shape = {fwRows, IW_FW_FEATURES}};
     a->fw_z1 = {.shape = {fwRows, IW_FW_HIDDEN}};
@@ -1162,10 +1075,6 @@ static void iw_encoder_reg_train(
     a->conv2_wgrad = {.shape = {IW_C2_OC, IW_C2_COL_W}};
     a->conv3_wgrad = {.shape = {IW_C3_OC, IW_C3_COL_W}};
     a->proj_wgrad = {.shape = {ew->hidden, IW_CONCAT}};
-    a->own_proj_l1_wgrad = {.shape = {IW_PROJ_HIDDEN, IW_PROJ_FEATURES}};
-    a->own_proj_l2_wgrad = {.shape = {ew->hidden, IW_PROJ_HIDDEN}};
-    a->enemy_proj_l1_wgrad = {.shape = {IW_PROJ_HIDDEN, IW_PROJ_FEATURES}};
-    a->enemy_proj_l2_wgrad = {.shape = {ew->hidden, IW_PROJ_HIDDEN}};
     a->fw_l1_wgrad = {.shape = {IW_FW_HIDDEN, IW_FW_FEATURES}};
     a->fw_l2_wgrad = {.shape = {ew->hidden, IW_FW_HIDDEN}};
     // same order as the params in iw_encoder_reg_params
@@ -1173,10 +1082,6 @@ static void iw_encoder_reg_train(
     alloc_register(grads, &a->conv2_wgrad);
     alloc_register(grads, &a->conv3_wgrad);
     alloc_register(grads, &a->proj_wgrad);
-    alloc_register(grads, &a->own_proj_l1_wgrad);
-    alloc_register(grads, &a->own_proj_l2_wgrad);
-    alloc_register(grads, &a->enemy_proj_l1_wgrad);
-    alloc_register(grads, &a->enemy_proj_l2_wgrad);
     alloc_register(grads, &a->fw_l1_wgrad);
     alloc_register(grads, &a->fw_l2_wgrad);
 }

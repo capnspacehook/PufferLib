@@ -1,17 +1,12 @@
-// CPU Impulse Wars encoder: map grid CNN, one-hot wall/weapon/ray types,
-// scalars and the enemy projectile count + projection plus the max pooled
-// own projectile, enemy projectile and floating wall branches, then MinGRU +
-// decoder.
+// CPU Impulse Wars encoder: map grid CNN, one-hot wall/weapon/ray types and
+// scalars + projection plus the max pooled floating wall branch, then MinGRU
+// + decoder.
 // Weight order matches CUDA create_impulse_wars_encoder + algo
 // decoder/mingru:
 //   conv1 (32 x 90), conv2 (64 x 288), conv3 (64 x 576), each (OC, K, K, IC)
 //   as the CUDA encoder keeps conv activations NHWC; init reorders them
 //   to the (OC, IC, K, K) the CPU conv wants,
 //   proj (hidden x IW_CONCAT),
-//   own projectile l1 (IW_PROJ_HIDDEN x IW_PROJ_FEATURES),
-//   own projectile l2 (hidden x IW_PROJ_HIDDEN),
-//   enemy projectile l1 (IW_PROJ_HIDDEN x IW_PROJ_FEATURES),
-//   enemy projectile l2 (hidden x IW_PROJ_HIDDEN),
 //   floating wall l1 (IW_FW_HIDDEN x IW_FW_FEATURES),
 //   floating wall l2 (hidden x IW_FW_HIDDEN),
 //   decoder ((atn_sum+1) x hidden), decoder logstd (NUM_ATNS) if continuous,
@@ -32,26 +27,10 @@ typedef struct ImpulseWarsNet {
     int scalar_idx[IW_NUM_SCALARS];
     float *concat;
     Linear *proj;
-    // own projectile records, (num_agents * IW_NUM_OWN_PROJECTILES,
-    // IW_PROJ_FEATURES)
-    float *own_rec;
-    int *own_rec_active;
-    // the active records packed together, and the sample each is from
-    float *own_rec_packed;
-    int *own_rec_sample;
-    Linear *own_proj_l1;
-    Linear *own_proj_l2;
-    // enemy projectile records, (num_agents * IW_NUM_ENEMY_PROJECTILES,
-    // IW_PROJ_FEATURES)
-    float *enemy_rec;
-    int *enemy_rec_active;
-    float *enemy_rec_packed;
-    int *enemy_rec_sample;
-    Linear *enemy_proj_l1;
-    Linear *enemy_proj_l2;
     // floating wall records, (num_agents * IW_NUM_FLOATING_WALLS, IW_FW_FEATURES)
     float *fw_rec;
     int *fw_rec_active;
+    // the active records packed together, and the sample each is from
     float *fw_rec_packed;
     int *fw_rec_sample;
     Linear *fw_l1;
@@ -81,10 +60,6 @@ static inline int impulse_wars_weight_count(int hidden, int layers) {
     n = puf_iw_align8(n + IW_C2_W_N);
     n = puf_iw_align8(n + IW_C3_W_N);
     n = puf_iw_align8(n + hidden * IW_CONCAT);
-    for (int side = 0; side < 2; side++) {
-        n = puf_iw_align8(n + IW_PROJ_L1_N);
-        n = puf_iw_align8(n + hidden * IW_PROJ_HIDDEN);
-    }
     n = puf_iw_align8(n + IW_FW_L1_N);
     n = puf_iw_align8(n + hidden * IW_FW_HIDDEN);
     n = puf_iw_align8(n + (impulse_wars_atn_sum() + 1) * hidden);
@@ -127,10 +102,6 @@ static inline ImpulseWarsNet *init_impulse_wars_net(Weights *weights, int num_ag
     assert(IW_FLOATING_WALL_SIZE == FLOATING_WALL_INFO_OBS_SIZE);
     assert(IW_FLOATING_WALL_OFFSET == DISCRETE_OBS_SIZE + FLOATING_WALL_INFO_OBS_OFFSET);
     assert(IW_PICKUP_OFFSET == DISCRETE_OBS_SIZE + WEAPON_PICKUP_INFO_OBS_OFFSET);
-    assert(IW_PROJECTILE_OFFSET == DISCRETE_OBS_SIZE + PROJECTILE_INFO_OBS_OFFSET);
-    assert(IW_ENEMY_PROJECTILE_OFFSET == DISCRETE_OBS_SIZE + ENEMY_PROJECTILE_INFO_OBS_OFFSET);
-    assert(IW_NUM_OWN_PROJECTILES == NUM_OWN_PROJECTILE_OBS && IW_NUM_ENEMY_PROJECTILES == NUM_ENEMY_PROJECTILE_OBS);
-    assert(IW_PROJECTILE_SIZE == PROJECTILE_INFO_OBS_SIZE);
     assert(IW_ENEMY_DRONE_OFFSET == DISCRETE_OBS_SIZE + ENEMY_DRONE_OBS_OFFSET);
     assert(IW_ENEMY_DRONE_SIZE == ENEMY_DRONE_OBS_SIZE);
     assert(IW_ENEMY_RAY_IDX == ENEMY_DRONE_RAY_OBS_IDX);
@@ -157,20 +128,6 @@ static inline ImpulseWarsNet *init_impulse_wars_net(Weights *weights, int num_ag
     net->conv3->weights = iw_conv_weights_to_nchw(net->conv3->weights, IW_C3_OC, IW_C3_IC, IW_C3_K);
     net->concat = (float *)calloc((size_t)num_agents * IW_CONCAT, sizeof(float));
     net->proj = make_linear(weights, num_agents, IW_CONCAT, hidden);
-    const int ownRecs = num_agents * IW_NUM_OWN_PROJECTILES;
-    net->own_rec = (float *)calloc((size_t)ownRecs * IW_PROJ_FEATURES, sizeof(float));
-    net->own_rec_active = (int *)calloc((size_t)ownRecs, sizeof(int));
-    net->own_rec_packed = (float *)calloc((size_t)ownRecs * IW_PROJ_FEATURES, sizeof(float));
-    net->own_rec_sample = (int *)calloc((size_t)ownRecs, sizeof(int));
-    net->own_proj_l1 = make_linear(weights, ownRecs, IW_PROJ_FEATURES, IW_PROJ_HIDDEN);
-    net->own_proj_l2 = make_linear(weights, ownRecs, IW_PROJ_HIDDEN, hidden);
-    const int enemyRecs = num_agents * IW_NUM_ENEMY_PROJECTILES;
-    net->enemy_rec = (float *)calloc((size_t)enemyRecs * IW_PROJ_FEATURES, sizeof(float));
-    net->enemy_rec_active = (int *)calloc((size_t)enemyRecs, sizeof(int));
-    net->enemy_rec_packed = (float *)calloc((size_t)enemyRecs * IW_PROJ_FEATURES, sizeof(float));
-    net->enemy_rec_sample = (int *)calloc((size_t)enemyRecs, sizeof(int));
-    net->enemy_proj_l1 = make_linear(weights, enemyRecs, IW_PROJ_FEATURES, IW_PROJ_HIDDEN);
-    net->enemy_proj_l2 = make_linear(weights, enemyRecs, IW_PROJ_HIDDEN, hidden);
     const int fwRecs = num_agents * IW_NUM_FLOATING_WALLS;
     net->fw_rec = (float *)calloc((size_t)fwRecs * IW_FW_FEATURES, sizeof(float));
     net->fw_rec_active = (int *)calloc((size_t)fwRecs, sizeof(int));
@@ -282,26 +239,6 @@ static inline void impulse_wars_rec_branch(
     }
 }
 
-// gathers the records of the R projectile slots starting at slot first
-static inline void impulse_wars_proj_gather(const float *observations, float *rec, int *active, int B, int R, int first) {
-    for (int row = 0; row < B * R; row++) {
-        const float *slot = observations + (row / R) * OBS_SIZE + iw_proj_slot_idx(first + row % R);
-        for (int f = 0; f < IW_PROJ_FEATURES; f++) {
-            rec[row * IW_PROJ_FEATURES + f] = iw_proj_feature(slot[iw_proj_field(f)], f);
-        }
-        active[row] = iw_proj_active(slot[0]);
-    }
-}
-
-// own and enemy projectile branches, added to proj->output
-static inline void impulse_wars_proj_branches(ImpulseWarsNet *net, const float *observations) {
-    const int B = net->num_agents;
-    impulse_wars_proj_gather(observations, net->own_rec, net->own_rec_active, B, IW_NUM_OWN_PROJECTILES, 0);
-    impulse_wars_rec_branch(net->own_proj_l1, net->own_proj_l2, net->own_rec, net->own_rec_active, net->own_rec_packed, net->own_rec_sample, net->proj->output, B, IW_NUM_OWN_PROJECTILES);
-    impulse_wars_proj_gather(observations, net->enemy_rec, net->enemy_rec_active, B, IW_NUM_ENEMY_PROJECTILES, IW_NUM_OWN_PROJECTILES);
-    impulse_wars_rec_branch(net->enemy_proj_l1, net->enemy_proj_l2, net->enemy_rec, net->enemy_rec_active, net->enemy_rec_packed, net->enemy_rec_sample, net->proj->output, B, IW_NUM_ENEMY_PROJECTILES);
-}
-
 // floating wall branch, added to proj->output
 static inline void impulse_wars_fw_branch(ImpulseWarsNet *net, const float *observations) {
     const int recs = net->num_agents * IW_NUM_FLOATING_WALLS;
@@ -333,22 +270,15 @@ static inline void impulse_wars_encode(ImpulseWarsNet *net, const float *observa
             concat[c] = iw_onehot_value(obs[col.obsIdx], col);
         }
         concat += IW_ONEHOT_COLS;
+        // the padding after the scalars stays 0 from calloc
         for (int j = 0; j < IW_NUM_SCALARS; j++) {
             concat[j] = obs[net->scalar_idx[j]];
         }
-        // the enemy projectile count; the padding after it stays 0 from
-        // calloc
-        int enemyProjectiles = 0;
-        for (int r = 0; r < IW_NUM_ENEMY_PROJECTILES; r++) {
-            enemyProjectiles += iw_proj_active(obs[iw_proj_slot_idx(IW_NUM_OWN_PROJECTILES + r)]);
-        }
-        concat[IW_NUM_SCALARS] = (float)enemyProjectiles / IW_NUM_ENEMY_PROJECTILES;
     }
     linear(net->proj, net->concat);
     for (int i = 0; i < net->num_agents * net->proj->output_dim; i++) {
         net->proj->output[i] = iw_gelu(net->proj->output[i]);
     }
-    impulse_wars_proj_branches(net, observations);
     impulse_wars_fw_branch(net, observations);
 }
 

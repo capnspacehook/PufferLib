@@ -24,10 +24,6 @@ typedef struct iwGpuNet iwGpuNet;
 // the CPU net's (ImpulseWarsNet) concat and record buffers
 typedef struct iwGpuInputs {
     const float *concat;
-    const float *ownRec;
-    const int *ownActive;
-    const float *enemyRec;
-    const int *enemyActive;
     const float *fwRec;
     const int *fwActive;
 } iwGpuInputs;

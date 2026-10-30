@@ -158,17 +158,16 @@ Three more sections:
 
 ## Projectiles
 
-The `projectiles` section of `compare.py` shows what the projectile obs has
-to cover: live projectiles per step of each drone (all and within 30
+The `projectiles` section of `compare.py` shows what a projectile obs would
+have to cover (the policy has none; projectiles show only through their
+effects): live projectiles per step of each drone (all and within 30
 units), threats (enemy projectiles whose closest approach at the current
 relative velocity comes within hitting or blast range within 2 s), their
 distance, relative speed and time to closest approach, how many threats
 would be left out of the obs with K slots sorted by distance, threats and
 hits taken by weapon (shotgun pellets and sniper shots often hit the step
 they spawn, before they could be seen), the same counts by the weapon the
-enemy holds, and steps within blast range of an own explosive. The obs
-groups `own_projectiles` and `enemy_projectiles` ablate the two slot
-blocks, `projectiles` both.
+enemy holds, and steps within blast range of an own explosive.
 
 ## Transitivity
 

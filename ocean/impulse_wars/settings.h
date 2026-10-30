@@ -82,22 +82,6 @@ static const uint8_t WEAPON_PICKUP_INFO_OBS_SIZE = 3;
 static const uint8_t WEAPON_PICKUP_OBS_SIZE = NUM_WEAPON_PICKUP_OBS * WEAPON_PICKUP_INFO_OBS_SIZE;
 static const uint16_t WEAPON_PICKUP_INFO_OBS_OFFSET = FLOATING_WALL_INFO_OBS_OFFSET + FLOATING_WALL_OBS_SIZE;
 
-// the agent's own projectiles, then other drones' projectiles, each sorted
-// threats first: ones whose closest approach to the agent at the current
-// relative velocity is within hitting or blast range within
-// PROJECTILE_THREAT_TIME, soonest first, then the rest by distance
-#define _NUM_OWN_PROJECTILE_OBS 6
-static const uint8_t NUM_OWN_PROJECTILE_OBS = _NUM_OWN_PROJECTILE_OBS;
-#define _NUM_ENEMY_PROJECTILE_OBS 10
-static const uint8_t NUM_ENEMY_PROJECTILE_OBS = _NUM_ENEMY_PROJECTILE_OBS;
-static const uint8_t NUM_PROJECTILE_OBS = NUM_OWN_PROJECTILE_OBS + NUM_ENEMY_PROJECTILE_OBS;
-// type, relative position, relative velocity, distance
-static const uint8_t PROJECTILE_INFO_OBS_SIZE = 6;
-static const uint8_t PROJECTILE_OBS_SIZE = NUM_PROJECTILE_OBS * PROJECTILE_INFO_OBS_SIZE;
-static const uint16_t PROJECTILE_INFO_OBS_OFFSET = WEAPON_PICKUP_INFO_OBS_OFFSET + WEAPON_PICKUP_OBS_SIZE;
-static const uint16_t ENEMY_PROJECTILE_INFO_OBS_OFFSET = PROJECTILE_INFO_OBS_OFFSET + (NUM_OWN_PROJECTILE_OBS * PROJECTILE_INFO_OBS_SIZE);
-static const float PROJECTILE_THREAT_TIME = 2.0f;
-
 // ray cast observations are a hit type followed by a scaled distance or
 // time; hit types are RAY_HIT_NONE, wall type + RAY_HIT_WALL,
 // floating wall type + RAY_HIT_FLOATING_WALL or RAY_HIT_DRONE
@@ -127,7 +111,7 @@ static const uint8_t PORTAL_OBS_SIZE = NUM_PORTAL_OBS * PORTAL_INFO_OBS_SIZE;
 // portal state
 static const uint8_t UTILITY_OBS_SIZE = 4 + GRAPPLE_OBS_SIZE + MINE_OBS_SIZE + PORTAL_OBS_SIZE;
 
-static const uint16_t ENEMY_DRONE_OBS_OFFSET = PROJECTILE_INFO_OBS_OFFSET + PROJECTILE_OBS_SIZE;
+static const uint16_t ENEMY_DRONE_OBS_OFFSET = WEAPON_PICKUP_INFO_OBS_OFFSET + WEAPON_PICKUP_OBS_SIZE;
 // the ray to the enemy is last
 static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 60;
 static const uint8_t ENEMY_DRONE_OBS_SIZE = ENEMY_DRONE_RAY_OBS_IDX + RAY_OBS_SIZE;
@@ -141,7 +125,7 @@ static const uint8_t DRONE_OBS_SIZE = DRONE_RAY_OBS_IDX + (NUM_DRONE_RAY_OBS * R
 static const uint8_t MISC_OBS_SIZE = 4;
 
 static const uint16_t DISCRETE_OBS_SIZE = MAP_OBS_SIZE;
-static const uint16_t _CONTINUOUS_OBS_SIZE = NEAR_WALL_OBS_SIZE + FLOATING_WALL_OBS_SIZE + WEAPON_PICKUP_OBS_SIZE + PROJECTILE_OBS_SIZE + DRONE_OBS_SIZE + MISC_OBS_SIZE;
+static const uint16_t _CONTINUOUS_OBS_SIZE = NEAR_WALL_OBS_SIZE + FLOATING_WALL_OBS_SIZE + WEAPON_PICKUP_OBS_SIZE + DRONE_OBS_SIZE + MISC_OBS_SIZE;
 
 static uint16_t continuousObsSize(uint8_t numDrones) {
     return _CONTINUOUS_OBS_SIZE + ((numDrones - 1) * ENEMY_DRONE_OBS_SIZE);
@@ -162,7 +146,6 @@ static const float MAX_OBS_RAY_DISTANCE = 30.0f;
 static const float MAX_OBS_WALL_POS = 15.0f;
 static const float MAX_OBS_WALL_SPEED = 25.0f;
 static const float MAX_OBS_ENTITY_SPEED = 40.0f;
-static const float MAX_OBS_PROJECTILE_SPEED = 150.0f;
 static const float OBS_RAY_TIME_KNEE = 0.5f;
 
 // action constants

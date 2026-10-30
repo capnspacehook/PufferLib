@@ -45,9 +45,9 @@ struct iwGpuNet {
     float *obsHost, *termHost, *logitsHost;
     float *obsDev, *termDev, *logitsDev;
     // encoder inputs, with inputs
-    float *concatHost, *ownRecHost, *enemyRecHost, *fwRecHost;
-    int *ownActiveHost, *enemyActiveHost, *fwActiveHost;
-    float *concatDev, *ownRecDev, *enemyRecDev, *fwRecDev;
+    float *concatHost, *fwRecHost;
+    int *fwActiveHost;
+    float *concatDev, *fwRecDev;
     cudaGraphExec_t graph;
 };
 
@@ -122,11 +122,7 @@ static void iw_gpu_forward(iwGpuNet *n, cudaStream_t stream) {
     if (n->inputs) {
         IwEncoderActivations *ea = (IwEncoderActivations *)n->a.encoder;
         iw_gpu_copy_out(n->concatHost, n->concatDev, ea->concat.data, (long)B * IW_CONCAT, stream);
-        iw_gpu_copy_out(n->ownRecHost, n->ownRecDev, ea->own_rec.data, (long)B * IW_NUM_OWN_PROJECTILES * IW_PROJ_FEATURES, stream);
-        iw_gpu_copy_out(n->enemyRecHost, n->enemyRecDev, ea->enemy_rec.data, (long)B * IW_NUM_ENEMY_PROJECTILES * IW_PROJ_FEATURES, stream);
         iw_gpu_copy_out(n->fwRecHost, n->fwRecDev, ea->fw_rec.data, (long)B * IW_NUM_FLOATING_WALLS * IW_FW_FEATURES, stream);
-        IW_GPU_CHECK(cudaMemcpyAsync(n->ownActiveHost, ea->own_active.data, (long)B * IW_NUM_OWN_PROJECTILES * sizeof(int), cudaMemcpyDeviceToHost, stream));
-        IW_GPU_CHECK(cudaMemcpyAsync(n->enemyActiveHost, ea->enemy_active.data, (long)B * IW_NUM_ENEMY_PROJECTILES * sizeof(int), cudaMemcpyDeviceToHost, stream));
         IW_GPU_CHECK(cudaMemcpyAsync(n->fwActiveHost, ea->fw_active.data, (long)B * IW_NUM_FLOATING_WALLS * sizeof(int), cudaMemcpyDeviceToHost, stream));
     }
 }
@@ -225,19 +221,11 @@ iwGpuNet *iw_gpu_net(iwGpuModel *model, int batch, bool inputs) {
         n->obs = {.data = (precision_t *)n->obsDev, .shape = {B, OBS_SIZE}};
     }
     if (inputs) {
-        long ownN = (long)B * IW_NUM_OWN_PROJECTILES;
-        long enemyN = (long)B * IW_NUM_ENEMY_PROJECTILES;
         long fwN = (long)B * IW_NUM_FLOATING_WALLS;
         n->concatHost = iw_gpu_host<float>((long)B * IW_CONCAT);
-        n->ownRecHost = iw_gpu_host<float>(ownN * IW_PROJ_FEATURES);
-        n->enemyRecHost = iw_gpu_host<float>(enemyN * IW_PROJ_FEATURES);
         n->fwRecHost = iw_gpu_host<float>(fwN * IW_FW_FEATURES);
-        n->ownActiveHost = iw_gpu_host<int>(ownN);
-        n->enemyActiveHost = iw_gpu_host<int>(enemyN);
         n->fwActiveHost = iw_gpu_host<int>(fwN);
         n->concatDev = iw_gpu_dev((long)B * IW_CONCAT);
-        n->ownRecDev = iw_gpu_dev(ownN * IW_PROJ_FEATURES);
-        n->enemyRecDev = iw_gpu_dev(enemyN * IW_PROJ_FEATURES);
         n->fwRecDev = iw_gpu_dev(fwN * IW_FW_FEATURES);
     }
 
@@ -280,10 +268,6 @@ iwGpuInputs iw_gpu_inputs(iwGpuNet *net) {
     assert(net->inputs && "iw_gpu: net wasn't created with inputs");
     iwGpuInputs in = {};
     in.concat = net->concatHost;
-    in.ownRec = net->ownRecHost;
-    in.ownActive = net->ownActiveHost;
-    in.enemyRec = net->enemyRecHost;
-    in.enemyActive = net->enemyActiveHost;
     in.fwRec = net->fwRecHost;
     in.fwActive = net->fwActiveHost;
     return in;
@@ -294,14 +278,13 @@ void iw_gpu_free_net(iwGpuNet *net) {
     IW_GPU_CHECK(cudaGraphExecDestroy(net->graph));
     IW_GPU_CHECK(cudaFree(net->acts.mem));
     free(net->acts.regs);
-    float *dev[] = {net->obsDev, net->termDev, net->logitsDev, net->concatDev, net->ownRecDev, net->enemyRecDev, net->fwRecDev};
+    float *dev[] = {net->obsDev, net->termDev, net->logitsDev, net->concatDev, net->fwRecDev};
     for (size_t i = 0; i < sizeof(dev) / sizeof(dev[0]); i++) {
         if (dev[i] != NULL) {
             IW_GPU_CHECK(cudaFree(dev[i]));
         }
     }
-    void *host[] = {net->obsHost, net->termHost, net->logitsHost, net->concatHost, net->ownRecHost, net->enemyRecHost,
-                    net->fwRecHost, net->ownActiveHost, net->enemyActiveHost, net->fwActiveHost};
+    void *host[] = {net->obsHost, net->termHost, net->logitsHost, net->concatHost, net->fwRecHost, net->fwActiveHost};
     for (size_t i = 0; i < sizeof(host) / sizeof(host[0]); i++) {
         if (host[i] != NULL) {
             IW_GPU_CHECK(cudaFreeHost(host[i]));
