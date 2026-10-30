@@ -1034,6 +1034,7 @@ struct Env {
 
     uint16_t totalSteps;
     uint16_t totalSuddenDeathSteps;
+    uint16_t maxSteps;
     // steps left until sudden death
     uint16_t stepsLeft;
     // steps left until the next set of sudden death walls are spawned

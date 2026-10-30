@@ -969,8 +969,9 @@ void setEnvFrameRate(iwEnv *e) {
     e->frameRate = frameRate;
     e->deltaTime = 1.0f / (float)frameRate;
 
-    e->totalSteps = ROUND_STEPS * frameRate;
-    e->totalSuddenDeathSteps = SUDDEN_DEATH_STEPS * frameRate;
+    e->totalSteps = ROUND_SECONDS * frameRate;
+    e->totalSuddenDeathSteps = SUDDEN_DEATH_SECONDS * frameRate;
+    e->maxSteps = TRAINING_MAX_SECONDS * frameRate;
 }
 
 iwEnv *initEnv(iwEnv *e, uint8_t numAgents, int8_t mapIdx, uint64_t seed, bool enableTeams, bool isTraining, bool continuousActions, uint8_t botPolicy, float botCLNoise, float botCLDecay) {
@@ -1956,7 +1957,7 @@ void puf_step(iwEnv *e) {
         roundOver = stepPhysicsFrame(e, e->cachedActions, &lastAlive, &lastAliveTeam);
         e->tick_frames_left--;
 
-        if (e->client == NULL && e->episodeLength == TRAINING_MAX_STEPS && !roundOver) {
+        if (e->client == NULL && e->episodeLength == e->maxSteps && !roundOver) {
             roundOver = true;
             lastAlive = -1;
             lastAliveTeam = -1;

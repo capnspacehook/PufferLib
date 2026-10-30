@@ -12,7 +12,6 @@ static const uint8_t TWO_BIT_MASK = 0x3;
 static const uint8_t TRAINING_ACTIONS_PER_SECOND = 10;
 static const uint8_t TRAINING_FRAME_RATE = 30;
 static const uint8_t TRAINING_BOX2D_SUBSTEPS = 2;
-static const uint16_t TRAINING_MAX_STEPS = 4500;
 
 #define _EVAL_FRAME_RATE 120
 static const uint8_t EVAL_FRAME_RATE = _EVAL_FRAME_RATE;
@@ -33,8 +32,15 @@ static const uint8_t EASY_EP_MIN_SHOTS = 10;
 
 static const uint8_t DRONE_LIVES = 3;
 static const float DRONE_RESPAWN_WAIT = 2.0f;
-static const uint8_t ROUND_STEPS = 90;
-static const uint8_t SUDDEN_DEATH_STEPS = 5;
+static const uint8_t SUDDEN_DEATH_SECONDS = 5;
+
+#if _MAX_DRONES == 2
+static const uint8_t ROUND_SECONDS = 90;
+static const uint16_t TRAINING_MAX_SECONDS = 150;
+#else
+static const uint8_t ROUND_SECONDS = 150;
+static const uint8_t TRAINING_MAX_SECONDS = 250;
+#endif
 
 static const uint8_t NUM_DRONES = _MAX_DRONES;
 

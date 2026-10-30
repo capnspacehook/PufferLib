@@ -1349,7 +1349,7 @@ void renderUI(const iwEnv *e, const bool starting) {
     if (starting) {
         renderTimer(e, "READY", PUFF_WHITE);
         return;
-    } else if (e->stepsLeft > (ROUND_STEPS - 1) * e->frameRate) {
+    } else if (e->stepsLeft > (ROUND_SECONDS - 1) * e->frameRate) {
         renderTimer(e, "GO!", PUFF_WHITE);
         return;
     } else if (e->stepsLeft == 0) {

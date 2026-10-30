@@ -22,6 +22,8 @@
 #ifndef IMPULSE_WARS_OBS_H
 #define IMPULSE_WARS_OBS_H
 
+#include <math.h>
+
 #ifdef __CUDACC__
 #define IW_FN __host__ __device__ constexpr inline
 // for helpers that call math functions, which aren't constexpr
