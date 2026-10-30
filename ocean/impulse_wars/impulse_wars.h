@@ -20,7 +20,18 @@ typedef float obs_t;
 #define ACT_SIZES {9, AIM_COARSE_SECTORS, AIM_FINE_STEPS, 2, 2, 2, 2}
 #define CONTINUOUS_ACTIONS 0
 
-#define OBS_SIZE 366 // for 2 drones (players)
+// drones per game, set with IW_DRONES=4 ./build.sh; 4 plays 2v2 or free for all
+// depending on enable_teams
+#ifndef IW_NUM_DRONES
+#define IW_NUM_DRONES 2
+#endif
+#if IW_NUM_DRONES != 2 && IW_NUM_DRONES != 4
+#error "IW_NUM_DRONES must be 2 or 4"
+#endif
+
+// the base obs and an obs block per other drone, see impulse_wars_obs.h
+#define OBS_SIZE (IW_BASE_OBS_SIZE + (IW_NUM_DRONES - 1) * IW_ENEMY_DRONE_SIZE)
+#include "impulse_wars_obs.h"
 
 #ifdef __cplusplus
 // Game/Box2D/collections-c are C (void* implicit conv); pufferl.cu is C++17.

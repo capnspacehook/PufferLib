@@ -11,7 +11,8 @@
 
 #include "include/cc_array.h"
 
-#define _MAX_DRONES 2
+// set by IW_NUM_DRONES in impulse_wars.h
+#define _MAX_DRONES IW_NUM_DRONES
 
 #define _MAX_PORTALS 2
 

@@ -13,9 +13,9 @@
 #                       default 10, 0 to skip
 #   --no-bots, --no-combos   skip the bot ladder or the crate tournament
 #   --threads T         default every core
-#   --ffa               in a build with more than 2 drones, play free for
-#                       all instead of 2v2; the default for runs whose ini
-#                       has enable_teams = 0
+#   --ffa               with 4 drones, play free for all instead of 2v2;
+#                       the default for runs whose ini has enable_teams = 0
+#   Set IW_DRONES=4 for runs trained with 4 drones, as for build.sh
 #   --gpu [--fp32]      run the policy forward on the GPU (bf16 like
 #                       training, or fp32); needs nvcc to build. Results of a
 #                       directory must all come from the same inference, as
@@ -27,7 +27,7 @@ set -e
 A="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$A/../../.." && pwd)"
 if [ $# -lt 1 ] || [ "${1#-}" != "$1" ]; then
-    sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
 fi
 RUN="$1"
@@ -44,6 +44,7 @@ THREADS="$(nproc)"
 GPU=()
 BUILD_FLAGS=()
 MODE=()
+DRONES="${IW_DRONES:-2}"
 while [ $# -gt 0 ]; do
     case "$1" in
     --ckpt) CKPT="$2"; shift 2 ;;
@@ -71,7 +72,6 @@ mkdir -p "$OUT/traj"
 
 # builds with more than 2 drones play 2v2, or free for all for runs
 # trained without teams
-DRONES="$(awk '$1 == "#define" && $2 == "_MAX_DRONES" {print $3}' "$SRC/ocean/impulse_wars/types.h")"
 INI="$REPO/logs/impulse_wars/$RUN.ini"
 [ -f "$INI" ] || INI="$(grep -lx "run_id = $RUN" "$REPO"/logs/impulse_wars/*.ini 2>/dev/null | head -1)"
 if [ "$DRONES" -gt 2 ] && [ -f "$INI" ] && [ ${#MODE[@]} -eq 0 ]; then

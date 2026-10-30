@@ -22,6 +22,9 @@ set -e
 #   ./build.sh constellation         # Sweep dashboard -> ./seethestars
 #   ./build.sh cache_data            # Sweep log cache -> ./cache_data
 #   ./build.sh trailer               # 5.0 trailer -> ./resources/trailer/trailer (also exports diagrams)
+#   IW_DRONES=4 ./build.sh impulse_wars  # Impulse Wars with 4 drones (2v2 or free for all,
+#                                    # by env.enable_teams); 2 by default. Sets the obs size,
+#                                    # so checkpoints only load in builds with their count
 #
 # Env is compiled in. Run: ./puffer train|eval|match|sweep [--section.key=value ...]
 
@@ -183,6 +186,12 @@ elif [ "$ENV" = "impulse_wars" ]; then
     # C++ trainer only: game is C (void*/compound literals), not C++17.
     if [ -z "${MODE:-}" ] || [ "$MODE" = "native" ] || [ "$MODE" = "profile" ]; then
         EXTRA_SRC="ocean/impulse_wars/impulse_wars_api.c"
+    fi
+    if [ -n "${IW_DRONES:-}" ]; then
+        if [ "$IW_DRONES" != 2 ] && [ "$IW_DRONES" != 4 ]; then
+            echo "Error: IW_DRONES must be 2 or 4" && exit 1
+        fi
+        EXTRA_CFLAGS+=(-DIW_NUM_DRONES="$IW_DRONES")
     fi
 elif [ "$ENV" = "nethack" ]; then
     SRC_DIR="ocean/$ENV"

@@ -84,8 +84,11 @@ GPU build is bf16 by default, like training.
 
 ### 4 drone builds
 
-The harness plays whatever drone count the env is built with
-(`_MAX_DRONES` and `OBS_SIZE`). With 4 drones it plays 2v2: the policy
+The harness plays the drone count it's built with: 2 by default, or 4 with
+`IW_DRONES=4`, as for the trainer's `build.sh` (`IW_DRONES=4
+ocean/impulse_wars/analysis/build.sh`, `IW_DRONES=4 analyze_run.sh <run>`,
+and `build_tournament.sh out -DIW_NUM_DRONES=4`). With 4 drones it plays
+2v2: the policy
 plays a team, team 0 against the bots, and against another policy every
 seed is played from both teams. `--ffa` plays free for all instead: the
 policy plays one drone against three bots, or against three copies of the

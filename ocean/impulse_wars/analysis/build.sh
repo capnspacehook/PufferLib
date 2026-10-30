@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the policy analysis harness.
-# Usage: build.sh [src_root] [out] [--gpu] [--fp32]
+# Usage: [IW_DRONES=4] build.sh [src_root] [out] [--gpu] [--fp32]
 #   src_root: checkout to take the env (ocean/impulse_wars) and src/puffercpu.c
 #             from, e.g. a git worktree of a balance change; defaults to this
 #             repo. The harness itself, vendored code and the box2d and raylib
@@ -13,11 +13,19 @@
 #          forward is bf16 like training, or fp32 with --fp32; bf16 was 1.5x
 #          faster with bot scores within noise of fp32 and the CPU. Set
 #          NVCC_ARCH to build for another GPU than this machine's.
+#   IW_DRONES: drones per game, 2 (default) or 4, as for the trainer's
+#              build.sh; checkpoints only load in a harness built with their
+#              count
 set -e
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 POS=()
 GPU=0
 FP32=0
+DRONES="${IW_DRONES:-2}"
+if [ "$DRONES" != 2 ] && [ "$DRONES" != 4 ]; then
+    echo "IW_DRONES must be 2 or 4" >&2
+    exit 1
+fi
 for arg in "$@"; do
     case "$arg" in
     --gpu) GPU=1 ;;
@@ -47,13 +55,13 @@ LIBS=("$REPO/box2d-linux-amd64/libbox2d.a" "$REPO/raylib-5.5_linux_amd64/lib/lib
 CFLAGS=(
     -O3 -march=native -fno-math-errno -fno-trapping-math
     -fassociative-math -fno-signed-zeros -freciprocal-math
-    "${INCLUDES[@]}" -DPLATFORM_DESKTOP -DPUFFER_IMPULSE_WARS
+    "${INCLUDES[@]}" -DPLATFORM_DESKTOP -DPUFFER_IMPULSE_WARS -DIW_NUM_DRONES="$DRONES"
     -Wno-gnu-folding-constant -Wno-incompatible-pointer-types-discards-qualifiers
 )
 
 if [ $GPU = 0 ]; then
     ${CC:-clang} "${CFLAGS[@]}" "$A/iw_analyze.c" -o "$OUT" "${LIBS[@]}"
-    echo "built $OUT from $SRC"
+    echo "built $OUT from $SRC, $DRONES drones"
     exit 0
 fi
 
@@ -76,7 +84,7 @@ sed -n '1,/^#include "algo.cu"/p' "$PUFFERL" | grep -v '^#include <\(nccl\|nvml\
 # in the env headers
 "$NVCC" -O3 --threads 0 -arch="${NVCC_ARCH:-native}" -std=c++17 "${PRECISION[@]}" \
     -I"$OBJ" "${INCLUDES[@]}" -I"$A" -I"$CUDA_HOME/include" \
-    -DPUFFER_IMPULSE_WARS -DENV_HEADER='"impulse_wars.h"' -DPUFFER_ENV_NAME='"impulse_wars"' \
+    -DPUFFER_IMPULSE_WARS -DIW_NUM_DRONES="$DRONES" -DENV_HEADER='"impulse_wars.h"' -DPUFFER_ENV_NAME='"impulse_wars"' \
     -Xcompiler=-DPLATFORM_DESKTOP -Xcompiler=-Wno-narrowing -Xcompiler=-Wno-unreachable-code \
     --diag-suppress=2361 --diag-suppress=111 --diag-suppress=128 \
     -c "$A/iw_gpu.cu" -o "$OBJ/iw_gpu.o"
