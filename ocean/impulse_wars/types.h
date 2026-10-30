@@ -989,7 +989,6 @@ struct Env {
     float shieldBreakReward;
     float hitRewardCoef;
 
-    uint16_t obsSize;
     bool continuousActions;
 
     uint8_t frameRate;

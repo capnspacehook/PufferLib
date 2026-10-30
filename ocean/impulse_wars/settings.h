@@ -2,6 +2,7 @@
 #define IMPULSE_WARS_SETTINGS_H
 
 #include "helpers.h"
+#include "impulse_wars_obs.h"
 #include "types.h"
 
 #define INFINITE -1
@@ -45,100 +46,19 @@ static const float SHOT_HIT_IMPULSE_SCALE = 1.0f + PROJECTILE_RESTITUTION + 1.0f
 
 static const float HIT_DV_REF = 75.0f;
 
-// observation constants
+// observation constants; the layout is in impulse_wars_obs.h
 
-// map layout observations
-static const uint8_t MAP_OBS_ROWS = 11;
-static const uint8_t MAP_OBS_COLUMNS = 11;
-static const uint16_t MAP_OBS_SIZE = MAP_OBS_ROWS * MAP_OBS_COLUMNS;
+_Static_assert(IW_NUM_PORTALS == _MAX_PORTALS, "portal obs slots don't match _MAX_PORTALS");
+_Static_assert(IW_NUM_MIRRORS == _MAX_MIRRORS, "mirror obs slots don't match _MAX_MIRRORS");
+_Static_assert(IW_WEAPON_VOCAB == _NUM_WEAPONS, "weapon obs vocab doesn't match _NUM_WEAPONS");
+_Static_assert(IW_UTILITY_VOCAB == _NUM_UTILITIES, "utility obs vocab doesn't match _NUM_UTILITIES");
 
-// each map grid cell is a packed code: bits 0-2 hold the static wall id
-// (0 for empty, wall type + 1, or GRID_OUT_OF_BOUNDS), bits 3-4 hold the
-// overlapping floating wall type + 1, bit 5 is set if an available weapon
-// pickup is in the cell and bit 6 if an enemy drone overlaps it; codes
-// stay below 256 so they're exact in bf16
-#define GRID_OUT_OF_BOUNDS 4
-#define GRID_FLOATING_WALL_SHIFT 3
-#define GRID_PICKUP_BIT (1 << 5)
-#define GRID_ENEMY_BIT (1 << 6)
-// cells only touching an entity on their border aren't marked
+// map grid cells only touching an entity on their border aren't marked
 static const float GRID_OVERLAP_MARGIN = 0.05f;
 
-#define _NUM_NEAR_WALL_OBS 4
-static const uint8_t NUM_NEAR_WALL_OBS = _NUM_NEAR_WALL_OBS;
-static const uint8_t NEAR_WALL_INFO_OBS_SIZE = 3;
-static const uint8_t NEAR_WALL_OBS_SIZE = NUM_NEAR_WALL_OBS * NEAR_WALL_INFO_OBS_SIZE;
-static const uint16_t NEAR_WALL_INFO_OBS_OFFSET = 0;
-
-#define _NUM_FLOATING_WALL_OBS 8
-static const uint8_t NUM_FLOATING_WALL_OBS = _NUM_FLOATING_WALL_OBS;
-static const uint8_t FLOATING_WALL_INFO_OBS_SIZE = 7;
-static const uint8_t FLOATING_WALL_OBS_SIZE = NUM_FLOATING_WALL_OBS * FLOATING_WALL_INFO_OBS_SIZE;
-static const uint16_t FLOATING_WALL_INFO_OBS_OFFSET = NEAR_WALL_INFO_OBS_OFFSET + NEAR_WALL_OBS_SIZE;
-
-#define _NUM_WEAPON_PICKUP_OBS 3
-static const uint8_t NUM_WEAPON_PICKUP_OBS = _NUM_WEAPON_PICKUP_OBS;
-static const uint8_t WEAPON_PICKUP_INFO_OBS_SIZE = 3;
-static const uint8_t WEAPON_PICKUP_OBS_SIZE = NUM_WEAPON_PICKUP_OBS * WEAPON_PICKUP_INFO_OBS_SIZE;
-static const uint16_t WEAPON_PICKUP_INFO_OBS_OFFSET = FLOATING_WALL_INFO_OBS_OFFSET + FLOATING_WALL_OBS_SIZE;
-
-// ray cast observations are a hit type followed by a scaled distance or
-// time; hit types are RAY_HIT_NONE, wall type + RAY_HIT_WALL,
-// floating wall type + RAY_HIT_FLOATING_WALL or RAY_HIT_DRONE
-#define RAY_HIT_NONE 0
-#define RAY_HIT_WALL 1
-#define RAY_HIT_FLOATING_WALL 4
-#define RAY_HIT_DRONE 7
-#define NUM_RAY_HIT_TYPES 8
-static const uint8_t RAY_OBS_SIZE = 2;
-// aim, velocity and post recoil velocity
-static const uint8_t NUM_DRONE_RAY_OBS = 3;
 // velocity casts follow the damped path the drone would travel in this
 // many seconds
 static const float RAY_TIME_HORIZON = 2.0f;
-
-// type, ammo, cooldown, charge and full charge hold time
-static const uint8_t WEAPON_OBS_SIZE = 5;
-static const uint8_t GRAPPLE_OBS_SIZE = 10;
-// own mine in flight, own mine welded and its relative position
-static const uint8_t MINE_OBS_SIZE = 4;
-// open flag, relative position, the wall face's normal and how directly
-// the drone faces it, per open portal
-static const uint8_t PORTAL_INFO_OBS_SIZE = 6;
-static const uint8_t NUM_PORTAL_OBS = _MAX_PORTALS;
-static const uint8_t PORTAL_OBS_SIZE = NUM_PORTAL_OBS * PORTAL_INFO_OBS_SIZE;
-// live flag, relative position, the face's normal pointing towards the
-// observer, growth, time left and relative velocity, per live mirror
-static const uint8_t MIRROR_INFO_OBS_SIZE = 9;
-static const uint8_t NUM_MIRROR_OBS = _MAX_MIRRORS;
-static const uint8_t MIRROR_OBS_SIZE = NUM_MIRROR_OBS * MIRROR_INFO_OBS_SIZE;
-// type, ammo, regen progress and active count, then the grapple, mine,
-// portal and mirror state
-static const uint8_t UTILITY_OBS_SIZE = 4 + GRAPPLE_OBS_SIZE + MINE_OBS_SIZE + PORTAL_OBS_SIZE + MIRROR_OBS_SIZE;
-
-static const uint16_t ENEMY_DRONE_OBS_OFFSET = WEAPON_PICKUP_INFO_OBS_OFFSET + WEAPON_PICKUP_OBS_SIZE;
-// the ray to the enemy is last
-static const uint8_t ENEMY_DRONE_RAY_OBS_IDX = 78;
-static const uint8_t ENEMY_DRONE_OBS_SIZE = ENEMY_DRONE_RAY_OBS_IDX + RAY_OBS_SIZE;
-
-// the rays are last
-static const uint8_t DRONE_RAY_OBS_IDX = 78;
-static const uint8_t DRONE_OBS_SIZE = DRONE_RAY_OBS_IDX + (NUM_DRONE_RAY_OBS * RAY_OBS_SIZE);
-
-// easy episode flag, combo episode flag, steps left and sudden death steps
-// left
-static const uint8_t MISC_OBS_SIZE = 4;
-
-static const uint16_t DISCRETE_OBS_SIZE = MAP_OBS_SIZE;
-static const uint16_t _CONTINUOUS_OBS_SIZE = NEAR_WALL_OBS_SIZE + FLOATING_WALL_OBS_SIZE + WEAPON_PICKUP_OBS_SIZE + DRONE_OBS_SIZE + MISC_OBS_SIZE;
-
-static uint16_t continuousObsSize(uint8_t numDrones) {
-    return _CONTINUOUS_OBS_SIZE + ((numDrones - 1) * ENEMY_DRONE_OBS_SIZE);
-}
-
-static uint16_t obsSize(uint8_t numDrones) {
-    return DISCRETE_OBS_SIZE + continuousObsSize(numDrones);
-}
 
 static const float MAX_DISTANCE = 200.0f;
 static const float MAX_SPEED = 500.0f;
@@ -208,6 +128,7 @@ static const float UTILITY_PICKUP_MAX_DRONE_DISTANCE_SQUARED = SQUARED(30.0f);
 // of a utility pickup, the utility type past the crate
 #define AMMO_CRATE_OBS_TYPE _NUM_WEAPONS
 #define UTILITY_PICKUP_OBS_TYPE(utility) (AMMO_CRATE_OBS_TYPE + (utility))
+_Static_assert(IW_PICKUP_VOCAB == UTILITY_PICKUP_OBS_TYPE(_NUM_UTILITIES - 1) + 1, "pickup obs vocab doesn't match the pickup obs types");
 
 // drone settings
 static const float DRONE_WALL_SPAWN_DISTANCE = 2.0f;

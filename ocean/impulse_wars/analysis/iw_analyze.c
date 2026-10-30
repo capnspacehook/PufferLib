@@ -598,9 +598,14 @@ enum { STANDOFF_LOS, STANDOFF_CLOSE, STANDOFF_FAR };
 // obs index ranges of the drone blocks
 #define E_OBS IW_ENEMY_DRONE_OFFSET
 #define D_OBS IW_DRONE_OFFSET
-#define M_OBS (IW_DRONE_OFFSET + IW_DRONE_SIZE)
-// the portals' state, after the mine's in each drone block's utility
-#define P_OBS PORTAL_OBS_SIZE
+#define M_OBS IW_MISC_OFFSET
+// the utility's state, and the scalar state after it, in each drone block
+#define E_UTIL (E_OBS + IW_DRONE_UTILITY_TYPE)
+#define D_UTIL (D_OBS + IW_DRONE_UTILITY_TYPE)
+#define E_STATE (E_OBS + IW_DRONE_STATE)
+#define D_STATE (D_OBS + IW_DRONE_STATE)
+#define PORTALS_LEN (IW_NUM_PORTALS * IW_PORTAL_SIZE)
+#define MIRRORS_LEN (IW_NUM_MIRRORS * IW_MIRROR_SIZE)
 
 // named obs groups, each up to 2 index ranges {start, len}; the first group
 // covering an index is its group in the weights output
@@ -614,65 +619,67 @@ static const obsGroup obsGroups[] = {
     {"near_walls", {{IW_NEAR_WALL_OFFSET, IW_NUM_NEAR_WALLS * IW_NEAR_WALL_SIZE}}},
     {"floating_walls", {{IW_FLOATING_WALL_OFFSET, IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE}}},
     {"pickups", {{IW_PICKUP_OFFSET, IW_NUM_PICKUPS * IW_PICKUP_SIZE}}},
-    {"enemy_weapon", {{E_OBS + 0, 5}}},
+    {"enemy_weapon", {{E_OBS, IW_WEAPON_SIZE}}},
     // the utility's type, ammo, regen and active count, and the mine's
-    // state; the grapple's and portals' states after them are their own
+    // state; the grapple's, portals' and mirrors' states are their own
     // groups
-    {"enemy_utility", {{E_OBS + 5, 4}, {E_OBS + 19, 4}}},
-    {"enemy_grapple", {{E_OBS + 9, 10}}},
-    {"enemy_portals", {{E_OBS + 23, P_OBS}}},
-    {"enemy_pos", {{E_OBS + P_OBS + 23, 3}}},
-    {"enemy_vel", {{E_OBS + P_OBS + 26, 2}}},
-    {"enemy_dir", {{E_OBS + P_OBS + 28, 2}}},
-    {"enemy_aim", {{E_OBS + P_OBS + 30, 2}}},
-    {"enemy_shield", {{E_OBS + P_OBS + 32, 2}}},
-    {"enemy_energy", {{E_OBS + P_OBS + 34, 7}}},
-    {"hit_flags", {{E_OBS + P_OBS + 41, 2}, {D_OBS + P_OBS + 42, 3}}},
-    {"enemy_lives", {{E_OBS + P_OBS + 43, 3}}},
-    {"aim_to_enemy", {{E_OBS + P_OBS + 46, 2}}},
-    {"enemy_ray", {{E_OBS + IW_ENEMY_RAY_IDX, 2}}},
-    {"own_weapon", {{D_OBS + 0, 5}}},
-    {"own_utility", {{D_OBS + 5, 4}, {D_OBS + 19, 4}}},
-    {"own_grapple", {{D_OBS + 9, 10}}},
-    {"own_portals", {{D_OBS + 23, P_OBS}}},
-    {"own_buttons", {{D_OBS + P_OBS + 23, 2}}},
-    {"own_pos", {{D_OBS + P_OBS + 25, 2}}},
-    {"own_vel", {{D_OBS + P_OBS + 27, 2}}},
-    {"own_aim", {{D_OBS + P_OBS + 29, 2}}},
-    {"aim_vel", {{D_OBS + P_OBS + 31, 2}}},
-    {"own_shield", {{D_OBS + P_OBS + 33, 2}}},
-    {"own_energy", {{D_OBS + P_OBS + 35, 7}}},
-    {"own_lives", {{D_OBS + P_OBS + 45, 3}}},
-    {"own_aim_ray", {{D_OBS + IW_DRONE_RAY_IDX, 2}}},
-    {"own_vel_ray", {{D_OBS + IW_DRONE_RAY_IDX + 2, 2}}},
-    {"own_drift_ray", {{D_OBS + IW_DRONE_RAY_IDX + 4, 2}}},
-    {"misc", {{M_OBS, 4}}},
+    {"enemy_utility", {{E_UTIL, IW_UTILITY_GRAPPLE}, {E_UTIL + IW_UTILITY_MINE, IW_MINE_SIZE}}},
+    {"enemy_grapple", {{E_UTIL + IW_UTILITY_GRAPPLE, IW_GRAPPLE_SIZE}}},
+    {"enemy_portals", {{E_UTIL + IW_UTILITY_PORTALS, PORTALS_LEN}}},
+    {"enemy_mirrors", {{E_UTIL + IW_UTILITY_MIRRORS, MIRRORS_LEN}}},
+    {"enemy_pos", {{E_STATE + 0, 3}}},
+    {"enemy_vel", {{E_STATE + 3, 2}}},
+    {"enemy_dir", {{E_STATE + 5, 2}}},
+    {"enemy_aim", {{E_STATE + 7, 2}}},
+    {"enemy_shield", {{E_STATE + 9, 2}}},
+    {"enemy_energy", {{E_STATE + 11, 7}}},
+    {"hit_flags", {{E_STATE + 18, 2}, {D_STATE + 19, 3}}},
+    {"enemy_lives", {{E_STATE + 20, 3}}},
+    {"aim_to_enemy", {{E_STATE + 23, 2}}},
+    {"enemy_ray", {{E_OBS + IW_ENEMY_RAY_IDX, IW_RAY_SIZE}}},
+    {"own_weapon", {{D_OBS, IW_WEAPON_SIZE}}},
+    {"own_utility", {{D_UTIL, IW_UTILITY_GRAPPLE}, {D_UTIL + IW_UTILITY_MINE, IW_MINE_SIZE}}},
+    {"own_grapple", {{D_UTIL + IW_UTILITY_GRAPPLE, IW_GRAPPLE_SIZE}}},
+    {"own_portals", {{D_UTIL + IW_UTILITY_PORTALS, PORTALS_LEN}}},
+    {"own_mirrors", {{D_UTIL + IW_UTILITY_MIRRORS, MIRRORS_LEN}}},
+    {"own_buttons", {{D_STATE + 0, 2}}},
+    {"own_pos", {{D_STATE + 2, 2}}},
+    {"own_vel", {{D_STATE + 4, 2}}},
+    {"own_aim", {{D_STATE + 6, 2}}},
+    {"aim_vel", {{D_STATE + 8, 2}}},
+    {"own_shield", {{D_STATE + 10, 2}}},
+    {"own_energy", {{D_STATE + 12, 7}}},
+    {"own_lives", {{D_STATE + 22, 3}}},
+    {"own_aim_ray", {{D_OBS + IW_DRONE_RAY_IDX, IW_RAY_SIZE}}},
+    {"own_vel_ray", {{D_OBS + IW_DRONE_RAY_IDX + IW_RAY_SIZE, IW_RAY_SIZE}}},
+    {"own_drift_ray", {{D_OBS + IW_DRONE_RAY_IDX + 2 * IW_RAY_SIZE, IW_RAY_SIZE}}},
+    {"misc", {{M_OBS, IW_MISC_SIZE}}},
     // finer groups, not used for the weights output
-    {"own_weapon_type", {{D_OBS + 0, 1}}},
-    {"own_weapon_state", {{D_OBS + 1, 4}}},
+    {"own_weapon_type", {{D_OBS + IW_DRONE_WEAPON_TYPE, 1}}},
+    {"own_weapon_state", {{D_OBS + 1, IW_WEAPON_SIZE - 1}}},
     {"own_charge", {{D_OBS + 3, 2}}},
-    {"own_utility_type", {{D_OBS + 5, 1}}},
-    {"own_utility_state", {{D_OBS + 6, 17 + P_OBS}}},
-    {"own_mine", {{D_OBS + 19, 4}}},
-    {"own_mine_pos", {{D_OBS + 21, 2}}},
-    {"own_portal_pos", {{D_OBS + 24, 2}, {D_OBS + 24 + PORTAL_INFO_OBS_SIZE, 2}}},
-    {"enemy_weapon_type", {{E_OBS + 0, 1}}},
-    {"enemy_weapon_state", {{E_OBS + 1, 4}}},
+    {"own_utility_type", {{D_UTIL, 1}}},
+    {"own_utility_state", {{D_UTIL + 1, IW_UTILITY_SIZE - 1}}},
+    {"own_mine", {{D_UTIL + IW_UTILITY_MINE, IW_MINE_SIZE}}},
+    {"own_mine_pos", {{D_UTIL + IW_UTILITY_MINE + 2, 2}}},
+    {"own_portal_pos", {{D_UTIL + IW_UTILITY_PORTALS + 1, 2}, {D_UTIL + IW_UTILITY_PORTALS + IW_PORTAL_SIZE + 1, 2}}},
+    {"enemy_weapon_type", {{E_OBS + IW_DRONE_WEAPON_TYPE, 1}}},
+    {"enemy_weapon_state", {{E_OBS + 1, IW_WEAPON_SIZE - 1}}},
     {"enemy_charge", {{E_OBS + 3, 2}}},
-    {"enemy_utility_type", {{E_OBS + 5, 1}}},
-    {"enemy_utility_state", {{E_OBS + 6, 17 + P_OBS}}},
-    {"enemy_mine", {{E_OBS + 19, 4}}},
-    {"enemy_mine_pos", {{E_OBS + 21, 2}}},
-    {"enemy_portal_pos", {{E_OBS + 24, 2}, {E_OBS + 24 + PORTAL_INFO_OBS_SIZE, 2}}},
-    {"enemy_loadout", {{E_OBS + 0, 23 + P_OBS}}},
-    {"own_loadout", {{D_OBS + 0, 25 + P_OBS}}},
+    {"enemy_utility_type", {{E_UTIL, 1}}},
+    {"enemy_utility_state", {{E_UTIL + 1, IW_UTILITY_SIZE - 1}}},
+    {"enemy_mine", {{E_UTIL + IW_UTILITY_MINE, IW_MINE_SIZE}}},
+    {"enemy_mine_pos", {{E_UTIL + IW_UTILITY_MINE + 2, 2}}},
+    {"enemy_portal_pos", {{E_UTIL + IW_UTILITY_PORTALS + 1, 2}, {E_UTIL + IW_UTILITY_PORTALS + IW_PORTAL_SIZE + 1, 2}}},
+    {"enemy_loadout", {{E_OBS, IW_WEAPON_SIZE + IW_UTILITY_SIZE}}},
+    {"own_loadout", {{D_OBS, IW_WEAPON_SIZE + IW_UTILITY_SIZE + 2}}},
     {"combo_ep", {{M_OBS + 1, 1}}},
     {"steps_left", {{M_OBS + 2, 1}}},
     {"sudden_death", {{M_OBS + 3, 1}}},
 };
 #define NUM_OBS_GROUPS (sizeof(obsGroups) / sizeof(obsGroups[0]))
 // groups before this one partition the obs for the weights output
-#define NUM_PRIMARY_GROUPS 34
+#define NUM_PRIMARY_GROUPS 36
 
 typedef struct obsMask {
     char name[96];
@@ -750,9 +757,10 @@ static uint32_t hashSeed(uint64_t x) {
 static void buildObsNames(void) {
     static const char *weaponFields[IW_WEAPON_SIZE] = {"type", "ammo", "cooldown", "charge", "hold"};
     static const char *utilityFields[4] = {"type", "ammo", "regen", "active"};
-    static const char *mineFields[MINE_OBS_SIZE] = {"in_flight", "welded", "x", "y"};
-    static const char *portalFields[PORTAL_INFO_OBS_SIZE] = {"open", "x", "y", "normal_x", "normal_y", "facing"};
-    static const char *grappleFields[GRAPPLE_OBS_SIZE] = {"on", "x", "y", "tension", "reeling", "hp", "att_none", "att_wall", "att_floating", "att_drone"};
+    static const char *mineFields[IW_MINE_SIZE] = {"in_flight", "welded", "x", "y"};
+    static const char *portalFields[IW_PORTAL_SIZE] = {"open", "x", "y", "normal_x", "normal_y", "facing"};
+    static const char *grappleFields[IW_GRAPPLE_SIZE] = {"on", "x", "y", "tension", "reeling", "hp", "att_none", "att_wall", "att_floating", "att_drone"};
+    static const char *mirrorFields[IW_MIRROR_SIZE] = {"live", "x", "y", "normal_x", "normal_y", "growth", "time_left", "vel_x", "vel_y"};
     static const char *rayFields[2] = {"type", "dist"};
     static const char *enemyFields[] = {"rel_x", "rel_y", "dist", "vel_x", "vel_y", "dir_x", "dir_y", "aim_x", "aim_y",
                                         "shield_hp", "shield_dur", "energy", "depleted", "refill_wait", "braking", "burst_cd",
@@ -764,7 +772,7 @@ static void buildObsNames(void) {
     static const char *ownTail[] = {"hit_shot", "took_shot", "own_shot_taken", "lives", "alive", "respawn"};
     static const char *ownRays[3] = {"aim_ray", "vel_ray", "drift_ray"};
     static const char *fwFields[IW_FLOATING_WALL_SIZE] = {"type", "x", "y", "sin", "cos", "vel_x", "vel_y"};
-    static const char *misc[4] = {"not_easy_ep", "combo_ep", "steps_left", "sudden_death_steps"};
+    static const char *misc[IW_MISC_SIZE] = {"not_easy_ep", "combo_ep", "steps_left", "sudden_death_steps"};
 
     for (int i = 0; i < OBS_SIZE; i++) {
         snprintf(obsNames[i], sizeof(obsNames[i]), "obs%d", i);
@@ -796,15 +804,20 @@ static void buildObsNames(void) {
     for (int k = 0; k < 4; k++) {
         snprintf(obsNames[i++], 48, "enemy_utility_%s", utilityFields[k]);
     }
-    for (int k = 0; k < GRAPPLE_OBS_SIZE; k++) {
+    for (int k = 0; k < IW_GRAPPLE_SIZE; k++) {
         snprintf(obsNames[i++], 48, "enemy_grapple_%s", grappleFields[k]);
     }
-    for (int k = 0; k < MINE_OBS_SIZE; k++) {
+    for (int k = 0; k < IW_MINE_SIZE; k++) {
         snprintf(obsNames[i++], 48, "enemy_mine_%s", mineFields[k]);
     }
-    for (int p = 0; p < NUM_PORTAL_OBS; p++) {
-        for (int k = 0; k < PORTAL_INFO_OBS_SIZE; k++) {
+    for (int p = 0; p < IW_NUM_PORTALS; p++) {
+        for (int k = 0; k < IW_PORTAL_SIZE; k++) {
             snprintf(obsNames[i++], 48, "enemy_portal%d_%s", p, portalFields[k]);
+        }
+    }
+    for (int m = 0; m < IW_NUM_MIRRORS; m++) {
+        for (int k = 0; k < IW_MIRROR_SIZE; k++) {
+            snprintf(obsNames[i++], 48, "enemy_mirror%d_%s", m, mirrorFields[k]);
         }
     }
     for (size_t k = 0; k < sizeof(enemyFields) / sizeof(enemyFields[0]); k++) {
@@ -824,15 +837,20 @@ static void buildObsNames(void) {
     for (int k = 0; k < 4; k++) {
         snprintf(obsNames[i++], 48, "own_utility_%s", utilityFields[k]);
     }
-    for (int k = 0; k < GRAPPLE_OBS_SIZE; k++) {
+    for (int k = 0; k < IW_GRAPPLE_SIZE; k++) {
         snprintf(obsNames[i++], 48, "own_grapple_%s", grappleFields[k]);
     }
-    for (int k = 0; k < MINE_OBS_SIZE; k++) {
+    for (int k = 0; k < IW_MINE_SIZE; k++) {
         snprintf(obsNames[i++], 48, "own_mine_%s", mineFields[k]);
     }
-    for (int p = 0; p < NUM_PORTAL_OBS; p++) {
-        for (int k = 0; k < PORTAL_INFO_OBS_SIZE; k++) {
+    for (int p = 0; p < IW_NUM_PORTALS; p++) {
+        for (int k = 0; k < IW_PORTAL_SIZE; k++) {
             snprintf(obsNames[i++], 48, "own_portal%d_%s", p, portalFields[k]);
+        }
+    }
+    for (int m = 0; m < IW_NUM_MIRRORS; m++) {
+        for (int k = 0; k < IW_MIRROR_SIZE; k++) {
+            snprintf(obsNames[i++], 48, "own_mirror%d_%s", m, mirrorFields[k]);
         }
     }
     for (size_t k = 0; k < sizeof(ownFields) / sizeof(ownFields[0]); k++) {
@@ -1027,7 +1045,7 @@ static void bindAgent(iwEnv *e, const uint8_t agent, policyBatch *p, const int b
 
 // the policy plays drone seat; the opponent policy, if any, plays the other
 static void initAnalyzeEnv(iwEnv *e, policyBatch *p, policyBatch *opp, const int b, const uint8_t seat) {
-    initEnv(e, 2, opp != NULL ? 2 : 1, -1, 1, false, true, false, BOT_SCRIPTED, 0.0f, 0.0f);
+    initEnv(e, opp != NULL ? 2 : 1, -1, 1, false, true, false, BOT_SCRIPTED, 0.0f, 0.0f);
     bindAgent(e, seat, p, b);
     if (opp != NULL) {
         bindAgent(e, 1 - seat, opp, b);
@@ -1088,7 +1106,7 @@ static void snapshot(gameSlot *slot, const droneAnalysisStats *analysis) {
 // sets the types of the starting utility pickups, which are the first
 // pickups, created one nearest each drone in drone order
 static void setStartUtilities(iwEnv *e, const uint8_t *utilities) {
-    for (uint8_t i = 0; i < e->numDrones && i < cc_array_size(e->pickups); i++) {
+    for (uint8_t i = 0; i < NUM_DRONES && i < cc_array_size(e->pickups); i++) {
         weaponPickupEntity *pickup = safe_array_get_at(e->pickups, i);
         if (pickup->kind != UTILITY_PICKUP) {
             return;
@@ -1873,8 +1891,8 @@ static void buildScaleFeatures(void) {
     addScaleFeature("own_mine_pos", SCALE_TANH, MAX_OBS_RELATIVE_POS, "own_mine_x", "own_mine_y", "own_mine_in_flight", "own_mine_welded");
     addScaleFeature("enemy_mine_pos", SCALE_TANH, MAX_OBS_RELATIVE_POS, "enemy_mine_x", "enemy_mine_y", "enemy_mine_in_flight", "enemy_mine_welded");
     addScaleFeature("own_grapple_pos", SCALE_TANH, MAX_OBS_RELATIVE_POS, "own_grapple_x", "own_grapple_y", "own_grapple_on", NULL);
-    addScaleSlots("own_portal_pos", "own_portal%d", NUM_PORTAL_OBS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_open");
-    addScaleSlots("enemy_portal_pos", "enemy_portal%d", NUM_PORTAL_OBS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_open");
+    addScaleSlots("own_portal_pos", "own_portal%d", IW_NUM_PORTALS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_open");
+    addScaleSlots("enemy_portal_pos", "enemy_portal%d", IW_NUM_PORTALS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_open");
     addScaleSlots("near_wall", "near_wall%d", IW_NUM_NEAR_WALLS, SCALE_TANH, MAX_OBS_WALL_POS, "_x", "_y", "_type");
     addScaleSlots("pickup", "pickup%d", IW_NUM_PICKUPS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_type");
     addScaleSlots("fw_pos", "fw%d", IW_NUM_FLOATING_WALLS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_type");
@@ -2254,7 +2272,7 @@ static const char *pickupObsName(const int type) {
         return "ammo_crate";
     }
     if (type > AMMO_CRATE_OBS_TYPE) {
-        static const char *utilityPickups[] = {"utility_grapple", "utility_mines", "utility_portals"};
+        static const char *utilityPickups[] = {"utility_grapple", "utility_mines", "utility_portals", "utility_mirror"};
         _Static_assert(sizeof(utilityPickups) / sizeof(utilityPickups[0]) == IW_UTILITY_VOCAB - 1, "name every utility pickup");
         return utilityPickups[type - AMMO_CRATE_OBS_TYPE - 1];
     }
@@ -2266,7 +2284,7 @@ static const char *pickupObsName(const int type) {
 static const char *className(const int obsIdx, const int vocab, const int cls) {
     static const char *walls[] = {"none", "standard", "bouncy", "death"};
     static const char *rays[] = {"none", "wall", "bouncy", "death", "fw", "fw_bouncy", "fw_death", "drone"};
-    static const char *utilities[] = {"none", "grapple", "mines", "portals"};
+    static const char *utilities[] = {"none", "grapple", "mines", "portals", "mirror"};
     _Static_assert(sizeof(utilities) / sizeof(utilities[0]) == IW_UTILITY_VOCAB, "name every utility");
     if (obsIdx == E_OBS + IW_DRONE_UTILITY_TYPE || obsIdx == D_OBS + IW_DRONE_UTILITY_TYPE) {
         return utilities[cls];

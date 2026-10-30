@@ -93,13 +93,13 @@ static bool gridCellRange(const gridWindow *w, const b2AABB aabb, uint8_t *minCo
     const int16_t c1 = (int16_t)floorf((aabb.upperBound.x - w->origin.x) / WALL_THICKNESS);
     const int16_t r0 = (int16_t)floorf((aabb.lowerBound.y - w->origin.y) / WALL_THICKNESS);
     const int16_t r1 = (int16_t)floorf((aabb.upperBound.y - w->origin.y) / WALL_THICKNESS);
-    if (c1 < 0 || r1 < 0 || c0 >= MAP_OBS_COLUMNS || r0 >= MAP_OBS_ROWS) {
+    if (c1 < 0 || r1 < 0 || c0 >= IW_GRID_SIZE || r0 >= IW_GRID_SIZE) {
         return false;
     }
     *minCol = (uint8_t)max(c0, 0);
-    *maxCol = (uint8_t)min(c1, MAP_OBS_COLUMNS - 1);
+    *maxCol = (uint8_t)min(c1, IW_GRID_SIZE - 1);
     *minRow = (uint8_t)max(r0, 0);
-    *maxRow = (uint8_t)min(r1, MAP_OBS_ROWS - 1);
+    *maxRow = (uint8_t)min(r1, IW_GRID_SIZE - 1);
     return true;
 }
 
@@ -161,10 +161,10 @@ static void markFloatingWall(const gridWindow *w, const wallEntity *wall, uint8_
             if (!polygonOverlapsBox(verts, (uint8_t)poly.count, gridCellBox(w, col, row))) {
                 continue;
             }
-            uint8_t *code = &codes[col + (row * MAP_OBS_COLUMNS)];
-            const uint8_t curType = (*code >> GRID_FLOATING_WALL_SHIFT) & 0x3;
+            uint8_t *code = &codes[col + (row * IW_GRID_SIZE)];
+            const uint8_t curType = (*code >> IW_GRID_FLOATING_SHIFT) & 0x3;
             if (type > curType) {
-                *code = (uint8_t)((*code & ~(0x3 << GRID_FLOATING_WALL_SHIFT)) | (type << GRID_FLOATING_WALL_SHIFT));
+                *code = (uint8_t)((*code & ~(0x3 << IW_GRID_FLOATING_SHIFT)) | (type << IW_GRID_FLOATING_SHIFT));
             }
         }
     }
@@ -189,7 +189,7 @@ static void markDrone(const gridWindow *w, const droneEntity *drone, uint8_t *co
             const b2AABB box = gridCellBox(w, col, row);
             const b2Vec2 closest = b2Clamp(drone->pos, box.lowerBound, box.upperBound);
             if (b2DistanceSquared(closest, drone->pos) < radius * radius) {
-                codes[col + (row * MAP_OBS_COLUMNS)] |= GRID_ENEMY_BIT;
+                codes[col + (row * IW_GRID_SIZE)] |= IW_GRID_ENEMY_BIT;
             }
         }
     }
@@ -197,14 +197,14 @@ static void markDrone(const gridWindow *w, const droneEntity *drone, uint8_t *co
 
 // fills a grid centered on the agent's cell with packed cell codes of
 // static walls, floating walls, available weapon pickups and enemy drones,
-// see GRID_* in settings.h
-void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffset) {
+// see IW_GRID_* in impulse_wars_obs.h
+void computeMapObs(iwEnv *e, const uint8_t agentIdx) {
     const droneEntity *drone = safe_array_get_at(e->drones, agentIdx);
     const int16_t droneCellCol = drone->mapCellIdx % e->map->columns;
     const int16_t droneCellRow = drone->mapCellIdx / e->map->columns;
     gridWindow w = {
-        .startCol = droneCellCol - (MAP_OBS_COLUMNS / 2),
-        .startRow = droneCellRow - (MAP_OBS_ROWS / 2),
+        .startCol = droneCellCol - (IW_GRID_SIZE / 2),
+        .startRow = droneCellRow - (IW_GRID_SIZE / 2),
     };
     w.origin = (b2Vec2){
         .x = (w.startCol * WALL_THICKNESS) - ((e->map->columns * WALL_THICKNESS) / 2.0f),
@@ -212,14 +212,14 @@ void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffs
     };
 
     // static walls
-    uint8_t codes[MAP_OBS_SIZE];
-    for (uint8_t row = 0; row < MAP_OBS_ROWS; row++) {
-        for (uint8_t col = 0; col < MAP_OBS_COLUMNS; col++) {
-            uint8_t *code = &codes[col + (row * MAP_OBS_COLUMNS)];
+    uint8_t codes[IW_MAP_CELLS];
+    for (uint8_t row = 0; row < IW_GRID_SIZE; row++) {
+        for (uint8_t col = 0; col < IW_GRID_SIZE; col++) {
+            uint8_t *code = &codes[col + (row * IW_GRID_SIZE)];
             const int16_t mapCol = w.startCol + col;
             const int16_t mapRow = w.startRow + row;
             if (mapCol < 0 || mapCol >= e->map->columns || mapRow < 0 || mapRow >= e->map->rows) {
-                *code = GRID_OUT_OF_BOUNDS;
+                *code = IW_GRID_OUT_OF_BOUNDS;
                 continue;
             }
 
@@ -249,10 +249,10 @@ void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffs
         }
         const int16_t col = (pickup->mapCellIdx % e->map->columns) - w.startCol;
         const int16_t row = (pickup->mapCellIdx / e->map->columns) - w.startRow;
-        if (col < 0 || col >= MAP_OBS_COLUMNS || row < 0 || row >= MAP_OBS_ROWS) {
+        if (col < 0 || col >= IW_GRID_SIZE || row < 0 || row >= IW_GRID_SIZE) {
             continue;
         }
-        codes[col + (row * MAP_OBS_COLUMNS)] |= GRID_PICKUP_BIT;
+        codes[col + (row * IW_GRID_SIZE)] |= IW_GRID_PICKUP_BIT;
     }
 
     for (uint8_t i = 0; i < e->numDrones; i++) {
@@ -263,30 +263,29 @@ void computeMapObs(iwEnv *e, const uint8_t agentIdx, const uint16_t obsStartOffs
         markDrone(&w, otherDrone, codes);
     }
 
-    float *obs = agentObs(e, agentIdx) + obsStartOffset;
-    for (uint16_t i = 0; i < MAP_OBS_SIZE; i++) {
+    float *obs = agentObs(e, agentIdx);
+    for (uint16_t i = 0; i < IW_MAP_CELLS; i++) {
         obs[i] = (float)codes[i];
     }
 }
 
 // computes observations for N nearest walls, floating walls, and weapon pickups
-void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
-    nearWall nearWalls[NUM_NEAR_WALL_OBS];
-    findNearWalls(e, drone, nearWalls, NUM_NEAR_WALL_OBS);
+void computeNearObs(iwEnv *e, const droneEntity *drone, float *obs) {
+    nearWall nearWalls[IW_NUM_NEAR_WALLS];
+    findNearWalls(e, drone, nearWalls, IW_NUM_NEAR_WALLS);
 
     uint16_t offset;
 
     // compute type and position of N nearest walls
-    for (uint8_t i = 0; i < NUM_NEAR_WALL_OBS; i++) {
+    for (uint8_t i = 0; i < IW_NUM_NEAR_WALLS; i++) {
         const nearWall *wall = &nearWalls[i];
 
-        offset = NEAR_WALL_INFO_OBS_OFFSET + (i * NEAR_WALL_INFO_OBS_SIZE);
-        ASSERTF(offset + NEAR_WALL_INFO_OBS_SIZE <= FLOATING_WALL_INFO_OBS_OFFSET, "offset: %d", offset);
+        offset = IW_NEAR_WALL_OFFSET + (i * IW_NEAR_WALL_SIZE);
         const b2Vec2 wallRelPos = squashVec(b2Sub(wall->pos, drone->pos), MAX_OBS_WALL_POS);
 
-        continuousObs[offset++] = (float)(wall->type + 1);
-        continuousObs[offset++] = wallRelPos.x;
-        continuousObs[offset] = wallRelPos.y;
+        obs[offset++] = (float)(wall->type + 1);
+        obs[offset++] = wallRelPos.x;
+        obs[offset] = wallRelPos.y;
     }
 
     const size_t numFloatingWalls = cc_array_size(e->floatingWalls);
@@ -301,13 +300,13 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
             };
             nearFloatingWalls[i] = nearEnt;
         }
-        if (numFloatingWalls > NUM_FLOATING_WALL_OBS) {
+        if (numFloatingWalls > IW_NUM_FLOATING_WALLS) {
             insertionSortEntities(nearFloatingWalls, numFloatingWalls);
         }
 
         // compute type, position, angle and velocity of N nearest floating walls
         for (uint8_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
-            if (i == NUM_FLOATING_WALL_OBS) {
+            if (i == IW_NUM_FLOATING_WALLS) {
                 break;
             }
             const wallEntity *wall = nearFloatingWalls[i].entity;
@@ -321,16 +320,15 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
 
             // DEBUG_LOGF("floating wall %d cell %d", i, wall->mapCellIdx);
 
-            offset = FLOATING_WALL_INFO_OBS_OFFSET + (i * FLOATING_WALL_INFO_OBS_SIZE);
-            ASSERTF(offset + FLOATING_WALL_INFO_OBS_SIZE <= WEAPON_PICKUP_INFO_OBS_OFFSET, "offset: %d", offset);
-            continuousObs[offset++] = (float)(wall->type + 1);
+            offset = IW_FLOATING_WALL_OFFSET + (i * IW_FLOATING_WALL_SIZE);
+            obs[offset++] = (float)(wall->type + 1);
             const b2Vec2 wallObsPos = squashVec(wallRelPos, MAX_OBS_RELATIVE_POS);
-            continuousObs[offset++] = wallObsPos.x;
-            continuousObs[offset++] = wallObsPos.y;
-            continuousObs[offset++] = sinf(angle);
-            continuousObs[offset++] = cosf(angle);
-            continuousObs[offset++] = wallRelVel.x;
-            continuousObs[offset] = wallRelVel.y;
+            obs[offset++] = wallObsPos.x;
+            obs[offset++] = wallObsPos.y;
+            obs[offset++] = sinf(angle);
+            obs[offset++] = cosf(angle);
+            obs[offset++] = wallRelVel.x;
+            obs[offset] = wallRelVel.y;
         }
     }
 
@@ -351,25 +349,24 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *continuousObs) {
             };
             nearPickups[numActivePickups++] = nearEnt;
         }
-        if (numActivePickups > NUM_WEAPON_PICKUP_OBS) {
+        if (numActivePickups > IW_NUM_PICKUPS) {
             insertionSortEntities(nearPickups, numActivePickups);
         }
 
         // compute type and location of N nearest weapon pickups
         for (uint8_t i = 0; i < numActivePickups; i++) {
-            if (i == NUM_WEAPON_PICKUP_OBS) {
+            if (i == IW_NUM_PICKUPS) {
                 break;
             }
             const weaponPickupEntity *pickup = nearPickups[i].entity;
 
             // DEBUG_LOGF("pickup %d cell %d", i, pickup->mapCellIdx);
 
-            offset = WEAPON_PICKUP_INFO_OBS_OFFSET + (i * WEAPON_PICKUP_INFO_OBS_SIZE);
-            ASSERTF(offset + WEAPON_PICKUP_INFO_OBS_SIZE <= ENEMY_DRONE_OBS_OFFSET, "offset: %d", offset);
-            continuousObs[offset++] = pickupObsType(pickup);
+            offset = IW_PICKUP_OFFSET + (i * IW_PICKUP_SIZE);
+            obs[offset++] = pickupObsType(pickup);
             const b2Vec2 pickupRelPos = squashVec(b2Sub(pickup->pos, drone->pos), MAX_OBS_RELATIVE_POS);
-            continuousObs[offset++] = pickupRelPos.x;
-            continuousObs[offset] = pickupRelPos.y;
+            obs[offset++] = pickupRelPos.x;
+            obs[offset] = pickupRelPos.y;
         }
     }
 }
@@ -433,7 +430,7 @@ static inline void computeUtilityObs(const iwEnv *e, const droneEntity *drone, c
     }
 
     computeDroneGrappleObs(drone, pos, obs, offset);
-    offset += GRAPPLE_OBS_SIZE;
+    offset += IW_GRAPPLE_SIZE;
 
     const projectileEntity *mine = droneMine(e, drone);
     if (mine != NULL) {
@@ -443,7 +440,7 @@ static inline void computeUtilityObs(const iwEnv *e, const droneEntity *drone, c
         obs[offset++] = mineRelPos.x;
         obs[offset++] = mineRelPos.y;
     } else {
-        offset += MINE_OBS_SIZE;
+        offset += IW_MINE_SIZE;
     }
 
     for (uint8_t i = 0; i < drone->openPortals; i++) {
@@ -458,11 +455,11 @@ static inline void computeUtilityObs(const iwEnv *e, const droneEntity *drone, c
         obs[offset++] = portal->normal.y;
         obs[offset++] = clampValue(b2Dot(portal->normal, toDrone), -1.0f, 1.0f);
     }
-    offset += (NUM_PORTAL_OBS - drone->openPortals) * PORTAL_INFO_OBS_SIZE;
+    offset += (IW_NUM_PORTALS - drone->openPortals) * IW_PORTAL_SIZE;
 
     // mirrors are kept oldest first
     uint8_t mirrors = 0;
-    for (uint8_t i = 0; i < cc_array_size(e->mirrors) && mirrors < NUM_MIRROR_OBS; i++) {
+    for (uint8_t i = 0; i < cc_array_size(e->mirrors) && mirrors < IW_NUM_MIRRORS; i++) {
         const mirrorEntity *mirror = safe_array_get_at(e->mirrors, i);
         if (mirror->droneIdx != drone->idx) {
             continue;
@@ -493,14 +490,14 @@ static inline float rayHitType(const entity *ent) {
     if (entityTypeIsWall(ent->type)) {
         const wallEntity *wall = ent->entity;
         if (wall->isFloating) {
-            return (float)(RAY_HIT_FLOATING_WALL + wall->type);
+            return (float)(IW_RAY_HIT_FLOATING_WALL + wall->type);
         }
-        return (float)(RAY_HIT_WALL + wall->type);
+        return (float)(IW_RAY_HIT_WALL + wall->type);
     }
     if (ent->type == DRONE_ENTITY || ent->type == SHIELD_ENTITY) {
-        return (float)RAY_HIT_DRONE;
+        return (float)IW_RAY_HIT_DRONE;
     }
-    return (float)RAY_HIT_NONE;
+    return (float)IW_RAY_HIT_NONE;
 }
 
 typedef struct rayObsContext {
@@ -543,7 +540,7 @@ static float castDroneCircle(const iwEnv *e, const droneEntity *drone, const flo
     b2World_CastShape(e->worldID, &proxy, translation, filter, rayObsCallback, &ctx);
     *fraction = ctx.fraction;
     if (ctx.hitEnt == NULL) {
-        return (float)RAY_HIT_NONE;
+        return (float)IW_RAY_HIT_NONE;
     }
     return rayHitType(ctx.hitEnt);
 }
@@ -552,7 +549,7 @@ static float castDroneCircle(const iwEnv *e, const droneEntity *drone, const flo
 // travel in RAY_TIME_HORIZON seconds at velocity, and writes the hit
 // type and time until the hit squashed by OBS_RAY_TIME_KNEE
 static void computeVelocityRayObs(const iwEnv *e, const droneEntity *drone, const b2Vec2 velocity, float *obs) {
-    obs[0] = (float)RAY_HIT_NONE;
+    obs[0] = (float)IW_RAY_HIT_NONE;
     obs[1] = 1.0f;
     const float speed = b2Length(velocity);
     if (speed < 0.1f) {
@@ -578,7 +575,7 @@ static void computeVelocityRayObs(const iwEnv *e, const droneEntity *drone, cons
     const b2QueryFilter filter = {.categoryBits = DRONE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE};
     float fraction;
     obs[0] = castDroneCircle(e, drone, radius, translation, filter, &fraction);
-    if (obs[0] == (float)RAY_HIT_NONE) {
+    if (obs[0] == (float)IW_RAY_HIT_NONE) {
         return;
     }
 
@@ -610,7 +607,7 @@ static void computeDroneRayObs(const iwEnv *e, const droneEntity *drone, float *
     obs[1] = squashValue(fraction * MAX_DISTANCE, MAX_OBS_RAY_DISTANCE);
 
     // where the drone is drifting to
-    computeVelocityRayObs(e, drone, drone->velocity, obs + RAY_OBS_SIZE);
+    computeVelocityRayObs(e, drone, drone->velocity, obs + IW_RAY_SIZE);
 }
 
 static void computeAgentRayObs(const iwEnv *e, const droneEntity *drone, float *obs) {
@@ -618,7 +615,7 @@ static void computeAgentRayObs(const iwEnv *e, const droneEntity *drone, float *
 
     // where the drone would drift to if it fired now
     const b2Vec2 recoilVelocity = b2MulSV(-drone->weapon.weaponInfo->recoilMagnitude / DRONE_MASS, drone->lastAim);
-    computeVelocityRayObs(e, drone, b2Add(drone->velocity, recoilVelocity), obs + (2 * RAY_OBS_SIZE));
+    computeVelocityRayObs(e, drone, b2Add(drone->velocity, recoilVelocity), obs + (2 * IW_RAY_SIZE));
 }
 
 static void computeEnemyRayObs(const iwEnv *e, const droneEntity *drone, const droneEntity *enemyDrone, float *obs) {
@@ -633,7 +630,7 @@ static void computeEnemyRayObs(const iwEnv *e, const droneEntity *drone, const d
     rayObsContext ctx = {.drone = drone, .target = enemyDrone, .hitEnt = NULL, .fraction = 1.0f};
     b2World_CastRay(e->worldID, drone->pos, translation, filter, rayObsCallback, &ctx);
     if (ctx.hitEnt == NULL) {
-        obs[0] = (float)RAY_HIT_DRONE;
+        obs[0] = (float)IW_RAY_HIT_DRONE;
         obs[1] = squashValue(distance, MAX_OBS_RAY_DISTANCE);
         return;
     }
@@ -650,18 +647,11 @@ void computeObs(iwEnv *e) {
             continue;
         }
 
-        // compute discrete map observations
         float *obs = agentObs(e, agentIdx);
-        const uint16_t discreteObsStart = 0;
-        memset(obs, 0x0, e->obsSize * sizeof(float));
-        computeMapObs(e, agentIdx, discreteObsStart);
-
-        // compute continuous observations
-        uint16_t continuousObsOffset;
-        const uint16_t continuousObsStart = discreteObsStart + DISCRETE_OBS_SIZE;
-        float *continuousObs = obs + continuousObsStart;
-
-        computeNearObs(e, agentDrone, continuousObs);
+        memset(obs, 0x0, OBS_SIZE * sizeof(float));
+        computeMapObs(e, agentIdx);
+        computeNearObs(e, agentDrone, obs);
+        uint16_t offset;
 
         // compute enemy drone observations
         bool hitShot = false;
@@ -697,54 +687,54 @@ void computeObs(iwEnv *e) {
                 enemyShieldDuration = enemyDrone->shield->duration;
             }
 
-            continuousObsOffset = ENEMY_DRONE_OBS_OFFSET + (processedDrones * ENEMY_DRONE_OBS_SIZE);
+            offset = IW_ENEMY_DRONE_OFFSET + (processedDrones * IW_ENEMY_DRONE_SIZE);
 
-            computeWeaponObs(&enemyDrone->weapon, continuousObs, continuousObsOffset);
-            continuousObsOffset += WEAPON_OBS_SIZE;
-            computeUtilityObs(e, enemyDrone, agentDrone->pos, agentDrone->velocity, continuousObs, continuousObsOffset);
-            continuousObsOffset += UTILITY_OBS_SIZE;
+            computeWeaponObs(&enemyDrone->weapon, obs, offset);
+            offset += IW_WEAPON_SIZE;
+            computeUtilityObs(e, enemyDrone, agentDrone->pos, agentDrone->velocity, obs, offset);
+            offset += IW_UTILITY_SIZE;
 
             const b2Vec2 enemyDroneObsPos = squashVec(enemyDroneRelPos, MAX_OBS_RELATIVE_POS);
-            continuousObs[continuousObsOffset++] = enemyDroneObsPos.x;
-            continuousObs[continuousObsOffset++] = enemyDroneObsPos.y;
-            continuousObs[continuousObsOffset++] = squashValue(enemyDroneDistance, MAX_OBS_DRONE_DISTANCE);
-            continuousObs[continuousObsOffset++] = enemyDroneRelVel.x;
-            continuousObs[continuousObsOffset++] = enemyDroneRelVel.y;
-            continuousObs[continuousObsOffset++] = enemyDroneRelNormPos.x;
-            continuousObs[continuousObsOffset++] = enemyDroneRelNormPos.y;
-            continuousObs[continuousObsOffset++] = enemyDrone->lastAim.x;
-            continuousObs[continuousObsOffset++] = enemyDrone->lastAim.y;
-            continuousObs[continuousObsOffset++] = scaleValue(enemyShieldHealth, DRONE_SHIELD_HEALTH, true);
-            continuousObs[continuousObsOffset++] = scaleValue(enemyShieldDuration, DRONE_SHIELD_RESPAWN_DURATION, true);
+            obs[offset++] = enemyDroneObsPos.x;
+            obs[offset++] = enemyDroneObsPos.y;
+            obs[offset++] = squashValue(enemyDroneDistance, MAX_OBS_DRONE_DISTANCE);
+            obs[offset++] = enemyDroneRelVel.x;
+            obs[offset++] = enemyDroneRelVel.y;
+            obs[offset++] = enemyDroneRelNormPos.x;
+            obs[offset++] = enemyDroneRelNormPos.y;
+            obs[offset++] = enemyDrone->lastAim.x;
+            obs[offset++] = enemyDrone->lastAim.y;
+            obs[offset++] = scaleValue(enemyShieldHealth, DRONE_SHIELD_HEALTH, true);
+            obs[offset++] = scaleValue(enemyShieldDuration, DRONE_SHIELD_RESPAWN_DURATION, true);
 
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->energyLeft, DRONE_ENERGY_MAX, true);
-            continuousObs[continuousObsOffset++] = enemyDrone->energyFullyDepleted;
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->energyRefillWait, DRONE_ENERGY_REFILL_EMPTY_WAIT, true);
-            continuousObs[continuousObsOffset++] = enemyDrone->braking;
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->burstCooldown, DRONE_BURST_COOLDOWN, true);
-            continuousObs[continuousObsOffset++] = enemyDrone->chargingBurst;
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->burstCharge, DRONE_ENERGY_MAX, true);
+            obs[offset++] = scaleValue(enemyDrone->energyLeft, DRONE_ENERGY_MAX, true);
+            obs[offset++] = enemyDrone->energyFullyDepleted;
+            obs[offset++] = scaleValue(enemyDrone->energyRefillWait, DRONE_ENERGY_REFILL_EMPTY_WAIT, true);
+            obs[offset++] = enemyDrone->braking;
+            obs[offset++] = scaleValue(enemyDrone->burstCooldown, DRONE_BURST_COOLDOWN, true);
+            obs[offset++] = enemyDrone->chargingBurst;
+            obs[offset++] = scaleValue(enemyDrone->burstCharge, DRONE_ENERGY_MAX, true);
 
-            continuousObs[continuousObsOffset++] = tookShot;
-            continuousObs[continuousObsOffset++] = hitShot;
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->livesLeft, DRONE_LIVES, true);
-            continuousObs[continuousObsOffset++] = !enemyDrone->dead;
-            continuousObs[continuousObsOffset++] = scaleValue(enemyDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
+            obs[offset++] = tookShot;
+            obs[offset++] = hitShot;
+            obs[offset++] = scaleValue(enemyDrone->livesLeft, DRONE_LIVES, true);
+            obs[offset++] = !enemyDrone->dead;
+            obs[offset++] = scaleValue(enemyDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
             // sin and cos of the angle to turn our aim by to point at this enemy
-            continuousObs[continuousObsOffset++] = b2Cross(agentDrone->lastAim, enemyDroneRelNormPos);
-            continuousObs[continuousObsOffset++] = b2Dot(agentDrone->lastAim, enemyDroneRelNormPos);
-            ASSERT(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + (processedDrones * ENEMY_DRONE_OBS_SIZE) + ENEMY_DRONE_RAY_OBS_IDX);
+            obs[offset++] = b2Cross(agentDrone->lastAim, enemyDroneRelNormPos);
+            obs[offset++] = b2Dot(agentDrone->lastAim, enemyDroneRelNormPos);
+            ASSERT(offset == IW_ENEMY_DRONE_OFFSET + (processedDrones * IW_ENEMY_DRONE_SIZE) + IW_ENEMY_RAY_IDX);
             if (!agentDrone->dead && !enemyDrone->dead) {
-                computeEnemyRayObs(e, agentDrone, enemyDrone, continuousObs + continuousObsOffset);
+                computeEnemyRayObs(e, agentDrone, enemyDrone, obs + offset);
             }
-            continuousObsOffset += RAY_OBS_SIZE;
+            offset += IW_RAY_SIZE;
 
             processedDrones++;
-            ASSERTF(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + (processedDrones * ENEMY_DRONE_OBS_SIZE), "offset: %d", continuousObsOffset);
+            ASSERTF(offset == IW_ENEMY_DRONE_OFFSET + (processedDrones * IW_ENEMY_DRONE_SIZE), "offset: %d", offset);
         }
 
         // compute active drone observations
-        continuousObsOffset = ENEMY_DRONE_OBS_OFFSET + ((e->numDrones - 1) * ENEMY_DRONE_OBS_SIZE);
+        offset = IW_DRONE_OFFSET;
 
         // sin and cos of the angle from our aim to our velocity, both 0
         // when barely moving
@@ -764,51 +754,52 @@ void computeObs(iwEnv *e) {
             shieldDuration = agentDrone->shield->duration;
         }
 
-        computeWeaponObs(&agentDrone->weapon, continuousObs, continuousObsOffset);
-        continuousObsOffset += WEAPON_OBS_SIZE;
-        computeUtilityObs(e, agentDrone, agentDrone->pos, agentDrone->velocity, continuousObs, continuousObsOffset);
-        continuousObsOffset += UTILITY_OBS_SIZE;
-        continuousObs[continuousObsOffset++] = agentDrone->triggerHeld;
-        continuousObs[continuousObsOffset++] = agentDrone->utilityHeld;
+        computeWeaponObs(&agentDrone->weapon, obs, offset);
+        offset += IW_WEAPON_SIZE;
+        computeUtilityObs(e, agentDrone, agentDrone->pos, agentDrone->velocity, obs, offset);
+        offset += IW_UTILITY_SIZE;
+        obs[offset++] = agentDrone->triggerHeld;
+        obs[offset++] = agentDrone->utilityHeld;
 
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->pos.x, MAX_OBS_AGENT_POS, false);
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->pos.y, MAX_OBS_AGENT_POS, false);
-        continuousObs[continuousObsOffset++] = agentSquashedVel.x;
-        continuousObs[continuousObsOffset++] = agentSquashedVel.y;
-        continuousObs[continuousObsOffset++] = agentDrone->lastAim.x;
-        continuousObs[continuousObsOffset++] = agentDrone->lastAim.y;
-        continuousObs[continuousObsOffset++] = aimVelSin;
-        continuousObs[continuousObsOffset++] = aimVelCos;
-        continuousObs[continuousObsOffset++] = scaleValue(shieldHealth, DRONE_SHIELD_HEALTH, true);
-        continuousObs[continuousObsOffset++] = scaleValue(shieldDuration, DRONE_SHIELD_RESPAWN_DURATION, true);
+        obs[offset++] = scaleValue(agentDrone->pos.x, MAX_OBS_AGENT_POS, false);
+        obs[offset++] = scaleValue(agentDrone->pos.y, MAX_OBS_AGENT_POS, false);
+        obs[offset++] = agentSquashedVel.x;
+        obs[offset++] = agentSquashedVel.y;
+        obs[offset++] = agentDrone->lastAim.x;
+        obs[offset++] = agentDrone->lastAim.y;
+        obs[offset++] = aimVelSin;
+        obs[offset++] = aimVelCos;
+        obs[offset++] = scaleValue(shieldHealth, DRONE_SHIELD_HEALTH, true);
+        obs[offset++] = scaleValue(shieldDuration, DRONE_SHIELD_RESPAWN_DURATION, true);
 
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->energyLeft, DRONE_ENERGY_MAX, true);
-        continuousObs[continuousObsOffset++] = agentDrone->energyFullyDepleted;
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->energyRefillWait, DRONE_ENERGY_REFILL_EMPTY_WAIT, true);
-        continuousObs[continuousObsOffset++] = agentDrone->braking;
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->burstCooldown, DRONE_BURST_COOLDOWN, true);
-        continuousObs[continuousObsOffset++] = agentDrone->chargingBurst;
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->burstCharge, DRONE_ENERGY_MAX, true);
+        obs[offset++] = scaleValue(agentDrone->energyLeft, DRONE_ENERGY_MAX, true);
+        obs[offset++] = agentDrone->energyFullyDepleted;
+        obs[offset++] = scaleValue(agentDrone->energyRefillWait, DRONE_ENERGY_REFILL_EMPTY_WAIT, true);
+        obs[offset++] = agentDrone->braking;
+        obs[offset++] = scaleValue(agentDrone->burstCooldown, DRONE_BURST_COOLDOWN, true);
+        obs[offset++] = agentDrone->chargingBurst;
+        obs[offset++] = scaleValue(agentDrone->burstCharge, DRONE_ENERGY_MAX, true);
 
-        continuousObs[continuousObsOffset++] = hitShot;
-        continuousObs[continuousObsOffset++] = tookShot;
-        continuousObs[continuousObsOffset++] = agentDrone->stepInfo.ownShotTaken;
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->livesLeft, DRONE_LIVES, true);
-        continuousObs[continuousObsOffset++] = !agentDrone->dead;
-        continuousObs[continuousObsOffset++] = scaleValue(agentDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
+        obs[offset++] = hitShot;
+        obs[offset++] = tookShot;
+        obs[offset++] = agentDrone->stepInfo.ownShotTaken;
+        obs[offset++] = scaleValue(agentDrone->livesLeft, DRONE_LIVES, true);
+        obs[offset++] = !agentDrone->dead;
+        obs[offset++] = scaleValue(agentDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
 
-        ASSERT(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + ((e->numDrones - 1) * ENEMY_DRONE_OBS_SIZE) + DRONE_RAY_OBS_IDX);
+        ASSERT(offset == IW_DRONE_OFFSET + IW_DRONE_RAY_IDX);
         if (!agentDrone->dead) {
-            computeAgentRayObs(e, agentDrone, continuousObs + continuousObsOffset);
+            computeAgentRayObs(e, agentDrone, obs + offset);
         }
-        continuousObsOffset += NUM_DRONE_RAY_OBS * RAY_OBS_SIZE;
+        offset += IW_NUM_DRONE_RAYS * IW_RAY_SIZE;
 
-        ASSERTF(continuousObsOffset == ENEMY_DRONE_OBS_OFFSET + ((e->numDrones - 1) * ENEMY_DRONE_OBS_SIZE) + DRONE_OBS_SIZE, "offset: %d", continuousObsOffset);
+        ASSERTF(offset == IW_MISC_OFFSET, "offset: %d", offset);
 
-        continuousObs[continuousObsOffset++] = !e->easyEp;
-        continuousObs[continuousObsOffset++] = e->comboEp;
-        continuousObs[continuousObsOffset++] = scaleValue(e->stepsLeft, e->totalSteps, true);
-        continuousObs[continuousObsOffset++] = scaleValue(e->suddenDeathSteps, e->totalSuddenDeathSteps, true);
+        obs[offset++] = !e->easyEp;
+        obs[offset++] = e->comboEp;
+        obs[offset++] = scaleValue(e->stepsLeft, e->totalSteps, true);
+        obs[offset++] = scaleValue(e->suddenDeathSteps, e->totalSuddenDeathSteps, true);
+        ASSERTF(offset == OBS_SIZE, "offset: %d", offset);
     }
 }
 
@@ -967,7 +958,9 @@ iwEnv *initEnv(iwEnv *e, uint8_t numDrones, uint8_t numAgents, int8_t mapIdx, ui
     e->botCLDecay = botCLDecay;
     setBotPersonality(e, botPolicy);
 
-    e->obsSize = obsSize(e->numDrones);
+    if (e->numDrones - 1 > IW_NUM_ENEMIES) {
+        ERRORF("%d drones need more than the %d other drone obs blocks OBS_SIZE has room for", e->numDrones, IW_NUM_ENEMIES);
+    }
 
     e->continuousActions = continuousActions;
 
@@ -1783,7 +1776,7 @@ static void reportNonfinite(const iwEnv *e, const char *what, const int agent, c
     if (strcmp(what, "obs") == 0) {
         const float *obs = agentObs(e, agent);
         fprintf(stderr, "  bad obs idxs:");
-        for (uint16_t i = 0; i < e->obsSize; i++) {
+        for (uint16_t i = 0; i < OBS_SIZE; i++) {
             if (!isfinite(obs[i])) {
                 fprintf(stderr, " %d", i);
             }
@@ -1812,7 +1805,7 @@ static void checkObsRewardsFinite(iwEnv *e) {
         int first = -1;
         int count = 0;
         float value = 0.0f;
-        for (uint16_t j = 0; j < e->obsSize; j++) {
+        for (uint16_t j = 0; j < OBS_SIZE; j++) {
             if (!isfinite(obs[j])) {
                 if (first == -1) {
                     first = j;
@@ -1823,7 +1816,7 @@ static void checkObsRewardsFinite(iwEnv *e) {
         }
         if (count != 0) {
             reportNonfinite(e, "obs", i, first, count, value);
-            for (uint16_t j = 0; j < e->obsSize; j++) {
+            for (uint16_t j = 0; j < OBS_SIZE; j++) {
                 if (!isfinite(obs[j])) {
                     obs[j] = 0.0f;
                 }

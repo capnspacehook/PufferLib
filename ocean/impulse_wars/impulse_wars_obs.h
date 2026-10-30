@@ -1,19 +1,24 @@
-// Impulse Wars observation layout for the encoder, shared by the CUDA
-// encoder (impulse_wars.cu) and the CPU net (impulse_wars_net.h). Mirrors
-// the obs offsets in settings.h, which the CUDA build can't include (it
-// pulls in box2d). impulse_wars_net.h asserts the two agree.
+// Impulse Wars observation layout, shared by the env (env.h), the CUDA
+// encoder (impulse_wars.cu) and the CPU net (impulse_wars_net.h). It only
+// holds macros and helpers so the CUDA build can include it without box2d;
+// settings.h checks the values that depend on the game's types against
+// them.
 //
-// The map grid holds packed cell codes (see GRID_* in settings.h) that are
-// unpacked into one-hot channels and fed to a 3 layer CNN. Floating wall
-// slots are records for the floating wall branch: a shared MLP over every
-// slot, max pooled over the non-empty ones. Wall type slots hold 0 (empty)
-// or wall type + 1, weapon type slots hold a weapon type (0 is UNSET_WEAPON: no
+// The map grid holds packed cell codes (see IW_GRID_*) that are unpacked
+// into one-hot channels and fed to a 3 layer CNN. Floating wall slots are
+// records for the floating wall branch: a shared MLP over every slot, max
+// pooled over the non-empty ones. Wall type slots hold 0 (empty) or wall
+// type + 1, weapon type slots hold a weapon type (0 is UNSET_WEAPON: no
 // entity or no weapon), utility type slots hold a utility type (0 is
 // UNSET_UTILITY), pickup type slots hold a weapon type, one past the last
 // weapon for an ammo crate, or a utility type past that for a utility, ray
-// hit type slots hold a RAY_HIT_* value; these are one-hot encoded with
+// hit type slots hold an IW_RAY_HIT_* value; these are one-hot encoded with
 // type 0 as all zeros. Every other obs value is a continuous scalar that is passed
 // through to the projection unchanged.
+//
+// The obs is the map grid, the near walls, floating walls and pickups, a
+// block per other drone, the agent's own drone block and the misc values.
+// OBS_SIZE (impulse_wars.h) sets how many other drone blocks there are.
 #ifndef IMPULSE_WARS_OBS_H
 #define IMPULSE_WARS_OBS_H
 
@@ -26,39 +31,94 @@
 #define IW_MATH_FN static inline
 #endif
 
-#define IW_MAP_CELLS 121
+// map grid centered on the agent's cell. Each cell is a packed code: bits
+// 0-2 hold the static wall id (0 for empty, wall type + 1, or
+// IW_GRID_OUT_OF_BOUNDS), bits 3-4 hold the overlapping floating wall type
+// + 1, bit 5 is set if an available weapon pickup is in the cell and bit 6
+// if an enemy drone overlaps it; codes stay below 256 so they're exact in
+// bf16
+#define IW_GRID_SIZE 11
+#define IW_MAP_CELLS (IW_GRID_SIZE * IW_GRID_SIZE)
+#define IW_GRID_OUT_OF_BOUNDS 4
+#define IW_GRID_STATIC_MASK 0x7
+#define IW_GRID_FLOATING_SHIFT 3
+#define IW_GRID_PICKUP_BIT (1 << 5)
+#define IW_GRID_ENEMY_BIT (1 << 6)
+#define IW_GRID_CODE_MAX (IW_GRID_ENEMY_BIT | IW_GRID_PICKUP_BIT | (0x3 << IW_GRID_FLOATING_SHIFT) | IW_GRID_STATIC_MASK)
+
+// type and position of the nearest walls
 #define IW_NUM_NEAR_WALLS 4
 #define IW_NEAR_WALL_SIZE 3
+// type, position, sin and cos of 4x the angle, and relative velocity of
+// the nearest floating walls
 #define IW_NUM_FLOATING_WALLS 8
 #define IW_FLOATING_WALL_SIZE 7
+// type and position of the nearest available pickups
 #define IW_NUM_PICKUPS 3
 #define IW_PICKUP_SIZE 3
+
+// ray cast observations are a hit type followed by a scaled distance or
+// time; hit types are IW_RAY_HIT_NONE, wall type + IW_RAY_HIT_WALL,
+// floating wall type + IW_RAY_HIT_FLOATING_WALL or IW_RAY_HIT_DRONE
 #define IW_RAY_SIZE 2
+#define IW_RAY_HIT_NONE 0
+#define IW_RAY_HIT_WALL 1
+#define IW_RAY_HIT_FLOATING_WALL 4
+#define IW_RAY_HIT_DRONE 7
+
 // every drone block starts with its weapon: type, ammo, cooldown, charge
 // and full charge hold time, then its utility: type, ammo, regen progress,
 // active count, the grapple's state, the mine's state, each portal's
 // state and each mirror's state
 #define IW_WEAPON_SIZE 5
-#define IW_UTILITY_SIZE 48
+#define IW_GRAPPLE_SIZE 10
+// own mine in flight, own mine welded and its relative position
+#define IW_MINE_SIZE 4
+// open flag, relative position, the wall face's normal and how directly
+// the drone faces it, per open portal
+#define IW_NUM_PORTALS 2
+#define IW_PORTAL_SIZE 6
+// live flag, relative position, the face's normal pointing towards the
+// observer, growth, time left and relative velocity, per live mirror
+#define IW_NUM_MIRRORS 2
+#define IW_MIRROR_SIZE 9
+// offsets in the utility's state
+#define IW_UTILITY_GRAPPLE 4
+#define IW_UTILITY_MINE (IW_UTILITY_GRAPPLE + IW_GRAPPLE_SIZE)
+#define IW_UTILITY_PORTALS (IW_UTILITY_MINE + IW_MINE_SIZE)
+#define IW_UTILITY_MIRRORS (IW_UTILITY_PORTALS + IW_NUM_PORTALS * IW_PORTAL_SIZE)
+#define IW_UTILITY_SIZE (IW_UTILITY_MIRRORS + IW_NUM_MIRRORS * IW_MIRROR_SIZE)
 // offsets of the weapon and utility type slots in a drone block
 #define IW_DRONE_WEAPON_TYPE 0
 #define IW_DRONE_UTILITY_TYPE IW_WEAPON_SIZE
-// ray to the enemy, last in each enemy drone block
-#define IW_ENEMY_RAY_IDX 78
+// scalar drone state after the utility's
+#define IW_DRONE_STATE (IW_DRONE_UTILITY_TYPE + IW_UTILITY_SIZE)
+// other drones: position, distance, velocity, direction, aim, shield,
+// energy and burst, hit flags, lives, respawn and the aim to them, then
+// the ray to them
+#define IW_ENEMY_STATE_SIZE 25
+#define IW_ENEMY_RAY_IDX (IW_DRONE_STATE + IW_ENEMY_STATE_SIZE)
 #define IW_ENEMY_DRONE_SIZE (IW_ENEMY_RAY_IDX + IW_RAY_SIZE)
-// aim, velocity and recoil rays, last in the agent's drone block
-#define IW_DRONE_RAY_IDX 78
+// the agent's drone: buttons held, position, velocity, aim, shield, energy
+// and burst, hit flags, lives and respawn, then the aim, velocity and
+// recoil rays
+#define IW_DRONE_STATE_SIZE 25
+#define IW_DRONE_RAY_IDX (IW_DRONE_STATE + IW_DRONE_STATE_SIZE)
 #define IW_NUM_DRONE_RAYS 3
 #define IW_DRONE_SIZE (IW_DRONE_RAY_IDX + IW_NUM_DRONE_RAYS * IW_RAY_SIZE)
+// easy episode flag, combo episode flag, steps left and sudden death steps
+// left
+#define IW_MISC_SIZE 4
 
 #define IW_NEAR_WALL_OFFSET IW_MAP_CELLS
 #define IW_FLOATING_WALL_OFFSET (IW_NEAR_WALL_OFFSET + IW_NUM_NEAR_WALLS * IW_NEAR_WALL_SIZE)
 #define IW_PICKUP_OFFSET (IW_FLOATING_WALL_OFFSET + IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE)
 #define IW_ENEMY_DRONE_OFFSET (IW_PICKUP_OFFSET + IW_NUM_PICKUPS * IW_PICKUP_SIZE)
-// obs size with zero enemy drones; each enemy adds IW_ENEMY_DRONE_SIZE
-#define IW_BASE_OBS_SIZE 286
+// obs size with zero other drones; each one adds IW_ENEMY_DRONE_SIZE
+#define IW_BASE_OBS_SIZE (IW_ENEMY_DRONE_OFFSET + IW_DRONE_SIZE + IW_MISC_SIZE)
 #define IW_NUM_ENEMIES ((OBS_SIZE - IW_BASE_OBS_SIZE) / IW_ENEMY_DRONE_SIZE)
 #define IW_DRONE_OFFSET (IW_ENEMY_DRONE_OFFSET + IW_NUM_ENEMIES * IW_ENEMY_DRONE_SIZE)
+#define IW_MISC_OFFSET (IW_DRONE_OFFSET + IW_DRONE_SIZE)
 
 // empty + standard, bouncy, death walls
 #define IW_WALL_VOCAB 4
@@ -70,7 +130,7 @@
 #define IW_PICKUP_VOCAB (IW_WEAPON_VOCAB + IW_UTILITY_VOCAB)
 // none + static standard, bouncy, death walls + floating standard,
 // bouncy, death walls + drone
-#define IW_RAY_VOCAB 8
+#define IW_RAY_VOCAB (IW_RAY_HIT_DRONE + 1)
 
 // map grid CNN: cell codes are unpacked into IW_GRID_CHANNELS one-hot
 // planes padded by 1 cell, then 3 unpadded convs with ReLU:
@@ -78,18 +138,11 @@
 // The CUDA encoder keeps conv activations NHWC, as its matmul rows, so im2col
 // columns and conv weights are (kh, kw, channel) with the channel fastest,
 // and the CNN block of the concat is the 3x3 output flattened NHWC
-#define IW_GRID_SIZE 11
 #define IW_GRID_PAD 1
-// static wall id bits, floating wall type bits, pickup and enemy bits
-#define IW_GRID_STATIC_MASK 0x7
-#define IW_GRID_FLOATING_SHIFT 3
-#define IW_GRID_PICKUP_BIT (1 << 5)
-#define IW_GRID_ENEMY_BIT (1 << 6)
-#define IW_GRID_CODE_MAX 127
 // channels: static empty, standard, bouncy, death, out of bounds, floating
 // standard, bouncy, death, pickup, enemy; the empty channel stands in for
 // a conv bias
-#define IW_GRID_STATIC_IDS 5
+#define IW_GRID_STATIC_IDS (IW_GRID_OUT_OF_BOUNDS + 1)
 #define IW_GRID_CHANNELS 10
 
 #define IW_C1_IN (IW_GRID_SIZE + 2 * IW_GRID_PAD)

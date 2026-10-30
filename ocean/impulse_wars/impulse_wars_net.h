@@ -88,34 +88,8 @@ static inline float *iw_conv_weights_to_nchw(const float *w, int oc, int ic, int
 }
 
 static inline ImpulseWarsNet *init_impulse_wars_net(Weights *weights, int num_agents, int hidden, int layers) {
-    // impulse_wars_obs.h mirrors settings.h, ensure they agree
-    assert(IW_MAP_CELLS == MAP_OBS_SIZE);
-    assert(IW_GRID_SIZE == MAP_OBS_ROWS && IW_GRID_SIZE == MAP_OBS_COLUMNS);
-    assert(IW_GRID_FLOATING_SHIFT == GRID_FLOATING_WALL_SHIFT);
-    assert(IW_GRID_PICKUP_BIT == GRID_PICKUP_BIT && IW_GRID_ENEMY_BIT == GRID_ENEMY_BIT);
-    assert(IW_GRID_STATIC_IDS == GRID_OUT_OF_BOUNDS + 1);
-    assert(IW_GRID_CODE_MAX == (GRID_ENEMY_BIT | GRID_PICKUP_BIT | (0x3 << GRID_FLOATING_WALL_SHIFT) | IW_GRID_STATIC_MASK));
     // make_conv2d doesn't align, so the conv weights must keep the 8 float alignment
     assert(IW_C1_W_N % 8 == 0 && IW_C2_W_N % 8 == 0 && IW_C3_W_N % 8 == 0);
-    assert(IW_NEAR_WALL_OFFSET == DISCRETE_OBS_SIZE + NEAR_WALL_INFO_OBS_OFFSET);
-    assert(IW_NUM_FLOATING_WALLS == NUM_FLOATING_WALL_OBS);
-    assert(IW_FLOATING_WALL_SIZE == FLOATING_WALL_INFO_OBS_SIZE);
-    assert(IW_FLOATING_WALL_OFFSET == DISCRETE_OBS_SIZE + FLOATING_WALL_INFO_OBS_OFFSET);
-    assert(IW_PICKUP_OFFSET == DISCRETE_OBS_SIZE + WEAPON_PICKUP_INFO_OBS_OFFSET);
-    assert(IW_ENEMY_DRONE_OFFSET == DISCRETE_OBS_SIZE + ENEMY_DRONE_OBS_OFFSET);
-    assert(IW_ENEMY_DRONE_SIZE == ENEMY_DRONE_OBS_SIZE);
-    assert(IW_ENEMY_RAY_IDX == ENEMY_DRONE_RAY_OBS_IDX);
-    assert(IW_DRONE_SIZE == DRONE_OBS_SIZE);
-    assert(IW_DRONE_RAY_IDX == DRONE_RAY_OBS_IDX);
-    assert(IW_NUM_DRONE_RAYS == NUM_DRONE_RAY_OBS);
-    assert(IW_RAY_SIZE == RAY_OBS_SIZE);
-    assert(IW_WEAPON_SIZE == WEAPON_OBS_SIZE);
-    assert(IW_UTILITY_SIZE == UTILITY_OBS_SIZE);
-    assert(IW_RAY_VOCAB == NUM_RAY_HIT_TYPES);
-    assert(IW_BASE_OBS_SIZE == DISCRETE_OBS_SIZE + _CONTINUOUS_OBS_SIZE);
-    assert(IW_WEAPON_VOCAB == NUM_WEAPONS && AMMO_CRATE_OBS_TYPE == NUM_WEAPONS);
-    assert(IW_UTILITY_VOCAB == NUM_UTILITIES);
-    assert(IW_PICKUP_VOCAB == UTILITY_PICKUP_OBS_TYPE(NUM_UTILITIES - 1) + 1);
 
     ImpulseWarsNet *net = (ImpulseWarsNet *)calloc(1, sizeof(ImpulseWarsNet));
     net->num_agents = num_agents;
