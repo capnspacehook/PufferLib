@@ -191,7 +191,7 @@ static const float FLOATING_WALL_SLEEP_THRESHOLD = 0.5f;
 static const float STANDARD_WALL_RESTITUTION = 0.01f;
 static const float STANDARD_WALL_FRICTION = 0.3f;
 static const float BOUNCY_WALL_RESTITUTION = 1.0f;
-static const float WALL_DENSITY = 4.0f;
+static const float WALL_DENSITY = 3.0f;
 #define FLOATING_WALL_INV_MASS INV_MASS(WALL_DENSITY * FLOATING_WALL_THICKNESS * FLOATING_WALL_THICKNESS)
 
 // weapon pickup settings
@@ -347,7 +347,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define SHOTGUN_PROJECTILES 8
 #define SHOTGUN_RECOIL_MAGNITUDE 100.0f
 #define SHOTGUN_FIRE_MAGNITUDE 25.0f
-#define SHOTGUN_DAMPING 0.4f
+#define SHOTGUN_DAMPING 0.75f
 #define SHOTGUN_CHARGE 0.0f
 #define SHOTGUN_COOL_DOWN 0.8f
 #define SHOTGUN_MAX_DISTANCE 75.0f
@@ -379,23 +379,6 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define IMPLODER_EXPLOSION_RADIUS 15.0f
 #define IMPLODER_EXPLOSION_IMPULSE -250.0f
 
-#define ACCELERATOR_AMMO 5
-#define ACCELERATOR_PROJECTILES 1
-#define ACCELERATOR_RECOIL_MAGNITUDE 50.0f
-#define ACCELERATOR_FIRE_MAGNITUDE 50.0f
-#define ACCELERATOR_DAMPING 0.0f
-#define ACCELERATOR_CHARGE 0.0f
-#define ACCELERATOR_COOL_DOWN 0.5f
-#define ACCELERATOR_MAX_DISTANCE INFINITE
-#define ACCELERATOR_RADIUS 0.5f
-#define ACCELERATOR_DENSITY 2.0f
-#define ACCELERATOR_MASS MASS(ACCELERATOR_DENSITY, ACCELERATOR_RADIUS)
-#define ACCELERATOR_INV_MASS INV_MASS(ACCELERATOR_MASS)
-#define ACCELERATOR_BOUNCE 2
-#define ACCELERATOR_BOUNCE_SPEED_COEF 2.0f
-#define ACCELERATOR_MAX_SPEED 500.f
-#define ACCELERATOR_SPAWN_WEIGHT 5.0f
-
 #define FLAK_CANNON_AMMO 12
 #define FLAK_CANNON_PROJECTILES 1
 #define FLAK_CANNON_RECOIL_MAGNITUDE 30.0f
@@ -416,16 +399,16 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define FLAK_CANNON_EXPLOSION_RADIUS 7.5f
 #define FLAK_CANNON_EXPLOSION_IMPULSE 15.0f
 
-#define BLACK_HOLE_AMMO 3
+#define BLACK_HOLE_AMMO 5
 #define BLACK_HOLE_PROJECTILES 1
 #define BLACK_HOLE_RECOIL_MAGNITUDE 75.0f
-#define BLACK_HOLE_FIRE_MAGNITUDE 175.0f
+#define BLACK_HOLE_FIRE_MAGNITUDE 27.0f
 #define BLACK_HOLE_DAMPING 0.0f
-#define BLACK_HOLE_CHARGE 0.75f
+#define BLACK_HOLE_CHARGE 0.0f
 #define BLACK_HOLE_COOL_DOWN 1.0f
 #define BLACK_HOLE_MAX_DISTANCE INFINITE
 #define BLACK_HOLE_RADIUS 0.5f
-#define BLACK_HOLE_DENSITY 10.0f
+#define BLACK_HOLE_DENSITY 1.5f
 #define BLACK_HOLE_MASS MASS(BLACK_HOLE_DENSITY, BLACK_HOLE_RADIUS)
 #define BLACK_HOLE_INV_MASS INV_MASS(BLACK_HOLE_MASS)
 #define BLACK_HOLE_BOUNCE 1
@@ -434,7 +417,8 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define BLACK_HOLE_SPAWN_WEIGHT 5.0f
 #define BLACK_HOLE_PROXIMITY_RADIUS 10.0f
 #define BLACK_HOLE_PARENT_IGNORE_DISTANCE BLACK_HOLE_PROXIMITY_RADIUS * 1.5f
-#define BLACK_HOLE_PULL_MAGNITUDE -350.0f
+#define BLACK_HOLE_PULL_MAGNITUDE -500.0f
+#define BLACK_HOLE_PROJECTILE_PULL_REDUCTION 0.75
 // Seconds for the visual pull field and tint to fade after projectile destruction.
 #define BLACK_HOLE_DISTORTION_FADE_TIME 0.3f
 
@@ -687,33 +671,6 @@ static const weaponInformation imploder = {
     .spawnWeight = IMPLODER_SPAWN_WEIGHT,
 };
 
-static const weaponInformation accelerator = {
-    .type = ACCELERATOR_WEAPON,
-    .ammo = ACCELERATOR_AMMO,
-    .isPhysicsBullet = true,
-    .canSleep = false,
-    .numProjectiles = ACCELERATOR_PROJECTILES,
-    .fireMagnitude = ACCELERATOR_FIRE_MAGNITUDE,
-    .recoilMagnitude = ACCELERATOR_RECOIL_MAGNITUDE,
-    .damping = ACCELERATOR_DAMPING,
-    .maxCharge = ACCELERATOR_CHARGE,
-    .cooldown = ACCELERATOR_COOL_DOWN,
-    .maxDistance = ACCELERATOR_MAX_DISTANCE,
-    .radius = ACCELERATOR_RADIUS,
-    .density = ACCELERATOR_DENSITY,
-    .mass = ACCELERATOR_MASS,
-    .invMass = ACCELERATOR_INV_MASS,
-    .initialSpeed = ACCELERATOR_FIRE_MAGNITUDE * ACCELERATOR_INV_MASS,
-    .maxBounces = ACCELERATOR_BOUNCE + 1,
-    .explosive = false,
-    .destroyedOnDroneHit = true,
-    .explodesOnDroneHit = false,
-    .hasSensor = false,
-    .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF,
-    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
-    .spawnWeight = ACCELERATOR_SPAWN_WEIGHT,
-};
-
 static const weaponInformation flakCannon = {
     .type = FLAK_CANNON_WEAPON,
     .ammo = FLAK_CANNON_AMMO,
@@ -885,7 +842,6 @@ static weaponInformation *weaponInfos[] = {
     (weaponInformation *)&sniper,
     (weaponInformation *)&shotgun,
     (weaponInformation *)&imploder,
-    (weaponInformation *)&accelerator,
     (weaponInformation *)&flakCannon,
     (weaponInformation *)&blackHole,
     (weaponInformation *)&nuke,
@@ -964,7 +920,6 @@ static const char *weaponNames[] = {
     "sniper",
     "shotgun",
     "imploder",
-    "accelerator",
     "flak_cannon",
     "black_hole",
     "tactical_nuke",
@@ -1019,8 +974,6 @@ static float weaponFire(unsigned int *seed, const enum weaponType type) {
     }
     case IMPLODER_WEAPON:
         return IMPLODER_FIRE_MAGNITUDE;
-    case ACCELERATOR_WEAPON:
-        return ACCELERATOR_FIRE_MAGNITUDE;
     case FLAK_CANNON_WEAPON:
         return FLAK_CANNON_FIRE_MAGNITUDE;
     case MINE_LAUNCHER_WEAPON:

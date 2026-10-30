@@ -171,7 +171,6 @@ static const float botWeaponValue[_NUM_WEAPONS] = {
     [SNIPER_WEAPON] = 4.5f,
     [SHOTGUN_WEAPON] = 2.0f,
     [IMPLODER_WEAPON] = 2.0f,
-    [ACCELERATOR_WEAPON] = 1.5f,
     [FLAK_CANNON_WEAPON] = 2.5f,
     [MINE_LAUNCHER_WEAPON] = 1.0f,
     [BLACK_HOLE_WEAPON] = 2.5f,
@@ -185,7 +184,6 @@ static const float evaderWeaponValue[_NUM_WEAPONS] = {
     [SHOTGUN_WEAPON] = 4.0f,
     [FLAK_CANNON_WEAPON] = 3.5f,
     [SNIPER_WEAPON] = 3.0f,
-    [ACCELERATOR_WEAPON] = 3.0f,
 };
 
 static const float camperWeaponValue[_NUM_WEAPONS] = {
@@ -193,7 +191,6 @@ static const float camperWeaponValue[_NUM_WEAPONS] = {
     [SNIPER_WEAPON] = 5.0f,
     [SHOTGUN_WEAPON] = 0.5f,
     [IMPLODER_WEAPON] = 3.5f,
-    [ACCELERATOR_WEAPON] = 4.5f,
     [FLAK_CANNON_WEAPON] = 0.5f,
     [MINE_LAUNCHER_WEAPON] = 0.5f,
     [BLACK_HOLE_WEAPON] = 1.0f,
@@ -205,7 +202,6 @@ static const float rusherWeaponValue[_NUM_WEAPONS] = {
     [SNIPER_WEAPON] = 0.5f,
     [SHOTGUN_WEAPON] = 5.0f,
     [IMPLODER_WEAPON] = 1.0f,
-    [ACCELERATOR_WEAPON] = 0.5f,
     [FLAK_CANNON_WEAPON] = 4.0f,
     [MINE_LAUNCHER_WEAPON] = 0.5f,
     [BLACK_HOLE_WEAPON] = 1.0f,
@@ -217,7 +213,6 @@ static const float trapperWeaponValue[_NUM_WEAPONS] = {
     [SNIPER_WEAPON] = 1.0f,
     [SHOTGUN_WEAPON] = 1.0f,
     [IMPLODER_WEAPON] = 4.0f,
-    [ACCELERATOR_WEAPON] = 1.0f,
     [FLAK_CANNON_WEAPON] = 1.0f,
     [MINE_LAUNCHER_WEAPON] = 5.0f,
     [BLACK_HOLE_WEAPON] = 4.5f,
@@ -363,7 +358,6 @@ static const float BOOST_ENERGY_RESERVE = 0.4f;
 static const float THREAT_HORIZON = 2.0f;
 static const float NUKE_THREAT_HORIZON = 5.0f;
 static const float THREAT_BURST_TIME = 0.35f;
-static const float ACCELERATOR_THREAT_SPEED = 60.0f;
 static const float SNIPER_TELL_CHARGE = 0.5f;
 static const float SNIPER_URGENT_CHARGE = 0.8f;
 static const float DODGE_HOLD_TIME = 0.5f;
@@ -1198,7 +1192,6 @@ float weaponTypeIdealRangeSquared(const enum weaponType type) {
     case FLAK_CANNON_WEAPON:
         return SQUARED(FLAK_CANNON_SAFE_DISTANCE + 5.0f);
     case SNIPER_WEAPON:
-    case ACCELERATOR_WEAPON:
     case BLACK_HOLE_WEAPON:
     case NUKE_WEAPON:
         return FLT_MAX;
@@ -1381,13 +1374,6 @@ bool projectileThreat(const projectileEntity *proj, float *radius, float *horizo
     case BLACK_HOLE_WEAPON:
         *radius = BLACK_HOLE_PROXIMITY_RADIUS;
         *blastRadius = BLACK_HOLE_PROXIMITY_RADIUS;
-        return true;
-    case ACCELERATOR_WEAPON:
-        if (proj->speed < ACCELERATOR_THREAT_SPEED) {
-            return false;
-        }
-        *radius = DRONE_RADIUS + ACCELERATOR_RADIUS + 1.0f;
-        *blastRadius = 0.0f;
         return true;
     default:
         return false;
@@ -2025,7 +2011,7 @@ float camperSpotScore(botCtx *c, const uint16_t cellIdx) {
 // the camper fights from cover with anything that isn't short range or
 // area denial
 static inline bool camperWeapon(const enum weaponType type) {
-    return type == STANDARD_WEAPON || type == MACHINEGUN_WEAPON || type == SNIPER_WEAPON || type == ACCELERATOR_WEAPON || type == IMPLODER_WEAPON || type == NUKE_WEAPON;
+    return type == STANDARD_WEAPON || type == MACHINEGUN_WEAPON || type == SNIPER_WEAPON || type == IMPLODER_WEAPON || type == NUKE_WEAPON;
 }
 
 // with a charged weapon, waits at a spot with a line to the enemy and only

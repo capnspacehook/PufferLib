@@ -49,17 +49,26 @@ WEAPON_SETS = {
     # projectile
     'portals': ['unset', 'standard', 'machinegun', 'sniper', 'shotgun', 'imploder', 'accelerator', 'flak',
                 'blackhole', 'nuke', 'grapple', 'mine', 'portal'],
+    # from the accelerator's removal on
+    'no_accelerator': ['unset', 'standard', 'machinegun', 'sniper', 'shotgun', 'imploder', 'flak', 'blackhole',
+                       'nuke', 'grapple', 'mine', 'portal'],
 }
 # weapons whose projectiles are only fired by a utility, as weaponIsUtility
 # in settings.h
 UTILITY_PROJECTILES = ('grapple', 'mine', 'portal')
-WEAPONS = WEAPON_SETS['portals']
+WEAPONS = WEAPON_SETS['no_accelerator']
 
 
 def weapon_names(drone):
     """Weapon names in the order a result's per weapon arrays use."""
     if 'utilitiesPickedUp' in drone:
-        return WEAPON_SETS['portals' if len(drone['shotsFired']) == len(WEAPON_SETS['portals']) else 'utilities']
+        if len(drone['shotsFired']) == len(WEAPON_SETS['portals']):
+            return WEAPON_SETS['portals']
+        # builds without the accelerator have as many weapons as the ones
+        # before the portal utility, but have its utility too
+        if len(drone['utilitiesPickedUp']) == len(UTILITY_WEAPONS) + 1:
+            return WEAPON_SETS['no_accelerator']
+        return WEAPON_SETS['utilities']
     return WEAPON_SETS[len(drone['shotsFired'])]
 # action heads by how many there are; 8 is from before the utility slot
 ATNS = {
@@ -95,6 +104,8 @@ SECTIONS = ['opp', 'map', 'grid', 'weapons', 'boost', 'deaths', 'behavior', 'slo
 FEATURED = {'prototypeArena': 'machinegun', 'snipers': 'sniper', 'rooms': 'shotgun', 'xArena': 'nuke',
             'foamPit': 'imploder', 'siege': 'grapple', 'pinball': 'accelerator', 'moat': 'mine',
             'hourglass': 'blackhole', 'crossroads': 'flak'}
+# what replaced the accelerator on maps that featured it, in builds without it
+FEATURED_NO_ACCELERATOR = {'pinball': 'portal'}
 SITUATIONS = ['LoS', 'blocked close', 'blocked far']
 LEADS = ['behind', 'even', 'ahead']
 
@@ -589,6 +600,8 @@ def section_mapweapons(runs, side):
             kills = [total(gs, side, 'killsByWeapon', w) for w in range(len(WEAPONS))]
             t = sum(kills)
             featured = FEATURED.get(MAPS[m])
+            if featured == 'accelerator' and 'accelerator' not in WEAPONS:
+                featured = FEATURED_NO_ACCELERATOR.get(MAPS[m])
             cells = []
             for w in used:
                 cell = fmt(100 * ratio(kills[w], t), 1)

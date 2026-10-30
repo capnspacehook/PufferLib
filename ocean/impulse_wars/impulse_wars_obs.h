@@ -73,8 +73,8 @@
 
 // empty + standard, bouncy, death walls
 #define IW_WALL_VOCAB 4
-// none + 12 weapons, for drone weapons and projectiles
-#define IW_WEAPON_VOCAB 13
+// none + 11 weapons, for drone weapons and projectiles
+#define IW_WEAPON_VOCAB 12
 // none + grapple, mines, portals
 #define IW_UTILITY_VOCAB 4
 // weapon vocab + ammo crate + grapple, mines, portals

@@ -130,33 +130,28 @@ void puf_set_bot_policy(iwEnv *e, int botPolicy) {
     setBotPersonality(e, (enum botPolicy)botPolicy);
 }
 
-#define LOG_DRONE_STATS(log, out, idx, idxStr)                                                               \
-    dict_set(out, "policy_" idxStr "_score", log->stats[idx].score);                                         \
-    dict_set(out, "drone_" idxStr "_returns", log->stats[idx].returns);                                      \
-    dict_set(out, "drone_" idxStr "_distance_traveled", log->stats[idx].distanceTraveled);                   \
-    dict_set(out, "drone_" idxStr "_abs_distance_traveled", log->stats[idx].absDistanceTraveled);            \
-    dict_set(out, "drone_" idxStr "_brake_time", log->stats[idx].brakeTime);                                 \
-    dict_set(out, "drone_" idxStr "_total_bursts", log->stats[idx].totalBursts);                             \
-    dict_set(out, "drone_" idxStr "_bursts_hit", log->stats[idx].burstsHit);                                 \
-    dict_set(out, "drone_" idxStr "_energy_emptied", log->stats[idx].energyEmptied);                         \
-    dict_set(out, "drone_" idxStr "_shields_broken", log->stats[idx].shieldsBroken);                         \
-    dict_set(out, "drone_" idxStr "_own_shield_broken", log->stats[idx].ownShieldBroken);                    \
-    dict_set(out, "drone_" idxStr "_self_kills", log->stats[idx].selfKills);                                 \
-    dict_set(out, "drone_" idxStr "_kills", log->stats[idx].kills);                                          \
-    dict_set(out, "drone_" idxStr "_unknown_kills", log->stats[idx].unknownKills);                           \
-    dict_set(out, "drone_" idxStr "_crates_picked_up", log->stats[idx].cratesPickedUp);                      \
-    dict_set(out, "drone_" idxStr "_crates_refilled", log->stats[idx].cratesRefilled);                       \
-    dict_set(out, "drone_" idxStr "_total_shots_fired", log->stats[idx].totalShotsFired);                    \
-    dict_set(out, "drone_" idxStr "_total_shots_hit", log->stats[idx].totalShotsHit);                        \
-    dict_set(out, "drone_" idxStr "_total_shots_taken", log->stats[idx].totalShotsTaken);                    \
-    dict_set(out, "drone_" idxStr "_total_own_shots_taken", log->stats[idx].totalOwnShotsTaken);             \
-    dict_set(out, "drone_" idxStr "_total_picked_up", log->stats[idx].totalWeaponsPickedUp);                 \
-    dict_set(out, "drone_" idxStr "_grapple_picked_up", log->stats[idx].utilitiesPickedUp[GRAPPLE_UTILITY]); \
-    dict_set(out, "drone_" idxStr "_mines_picked_up", log->stats[idx].utilitiesPickedUp[MINE_UTILITY]);      \
-    dict_set(out, "drone_" idxStr "_total_shot_distances", log->stats[idx].totalShotDistances);              \
-    dict_set(out, "drone_" idxStr "_shots_aimed_10", log->stats[idx].shotsAimed10);                          \
-    dict_set(out, "drone_" idxStr "_shots_aimed_30", log->stats[idx].shotsAimed30);                          \
-    dict_set(out, "drone_" idxStr "_total_aim_error", log->stats[idx].totalAimError);                        \
+#define LOG_DRONE_STATS(log, out, idx, idxStr)                                                    \
+    dict_set(out, "policy_" idxStr "_score", log->stats[idx].score);                              \
+    dict_set(out, "drone_" idxStr "_returns", log->stats[idx].returns);                           \
+    dict_set(out, "drone_" idxStr "_distance_traveled", log->stats[idx].distanceTraveled);        \
+    dict_set(out, "drone_" idxStr "_abs_distance_traveled", log->stats[idx].absDistanceTraveled); \
+    dict_set(out, "drone_" idxStr "_brake_time", log->stats[idx].brakeTime);                      \
+    dict_set(out, "drone_" idxStr "_total_bursts", log->stats[idx].totalBursts);                  \
+    dict_set(out, "drone_" idxStr "_bursts_hit", log->stats[idx].burstsHit);                      \
+    dict_set(out, "drone_" idxStr "_energy_emptied", log->stats[idx].energyEmptied);              \
+    dict_set(out, "drone_" idxStr "_shields_broken", log->stats[idx].shieldsBroken);              \
+    dict_set(out, "drone_" idxStr "_own_shield_broken", log->stats[idx].ownShieldBroken);         \
+    dict_set(out, "drone_" idxStr "_self_kills", log->stats[idx].selfKills);                      \
+    dict_set(out, "drone_" idxStr "_kills", log->stats[idx].kills);                               \
+    dict_set(out, "drone_" idxStr "_unknown_kills", log->stats[idx].unknownKills);                \
+    dict_set(out, "drone_" idxStr "_total_shots_fired", log->stats[idx].totalShotsFired);         \
+    dict_set(out, "drone_" idxStr "_total_shots_hit", log->stats[idx].totalShotsHit);             \
+    dict_set(out, "drone_" idxStr "_total_shots_taken", log->stats[idx].totalShotsTaken);         \
+    dict_set(out, "drone_" idxStr "_total_own_shots_taken", log->stats[idx].totalOwnShotsTaken);  \
+    dict_set(out, "drone_" idxStr "_total_picked_up", log->stats[idx].totalWeaponsPickedUp);      \
+    dict_set(out, "drone_" idxStr "_shots_aimed_10", log->stats[idx].shotsAimed10);               \
+    dict_set(out, "drone_" idxStr "_shots_aimed_30", log->stats[idx].shotsAimed30);               \
+    dict_set(out, "drone_" idxStr "_total_aim_error", log->stats[idx].totalAimError);             \
     dict_set(out, "drone_" idxStr "_shots_aimed_away", log->stats[idx].shotsAimedAway)
 
 void puf_log(Log *log, Dict *out) {

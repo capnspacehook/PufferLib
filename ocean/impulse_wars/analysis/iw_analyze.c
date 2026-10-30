@@ -358,7 +358,7 @@ static const char *policyNames[NUM_BOT_POLICIES] = {
 
 static const char *analysisWeaponNames[NW] = {
     "unset", "standard", "machinegun", "sniper", "shotgun", "imploder",
-    "accelerator", "flak", "blackhole", "nuke", "grapple", "mine", "portal",
+    "flak", "blackhole", "nuke", "grapple", "mine", "portal",
 };
 
 // per step behavior stats polled from the env, per drone

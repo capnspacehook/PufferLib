@@ -147,7 +147,7 @@ static const float UTILITY_ARMED_RING_ALPHA = 0.9f;
 // sensor in front of it; bloom makes the slab look wider than it is.
 static const float PORTAL_SLAB_DEPTH = 0.15f;
 static const float PORTAL_SLAB_HEIGHT = 1.0f;
-static const float PORTAL_UNLINKED_FADE = 0.5f;
+static const float PORTAL_UNLINKED_FADE = 0.3f;
 static const float PORTAL_FIELD_MIN_ALPHA = 0.08f;
 static const float PORTAL_FIELD_MAX_ALPHA = 0.2f;
 // pulses per second of the field
@@ -166,8 +166,8 @@ static const float PORTAL_FLASH_FIELD_ALPHA = 0.6f;
 // twirls clockwise and the exit counterclockwise. Drones swapping places
 // from a direct portal shot hit twirl at both positions, the shooting
 // drone's position like an entry portal. 0 twist disables.
-static const float PORTAL_SWIRL_RADIUS = 3.5f;
-static const float PORTAL_SWAP_SWIRL_RADIUS = 5.0f;
+static const float PORTAL_SWIRL_RADIUS = 5.0f;
+static const float PORTAL_SWAP_SWIRL_RADIUS = 6.0f;
 // peak rotation at the center in radians
 static const float PORTAL_SWIRL_TWIST = 1.0f;
 // direction of the entry portal's twirl, 1 is clockwise on screen and -1
@@ -712,9 +712,6 @@ char *getWeaponAbreviation(const enum weaponType type) {
     case IMPLODER_WEAPON:
         name = "IMPL";
         break;
-    case ACCELERATOR_WEAPON:
-        name = "ACCL";
-        break;
     case FLAK_CANNON_WEAPON:
         name = "FLAK";
         break;
@@ -760,9 +757,6 @@ char *getWeaponName(const enum weaponType type) {
     case IMPLODER_WEAPON:
         name = "Imploder";
         break;
-    case ACCELERATOR_WEAPON:
-        name = "Accelerator";
-        break;
     case FLAK_CANNON_WEAPON:
         name = "Flak Cannon";
         break;
@@ -791,7 +785,6 @@ float getWeaponAimGuideWidth(const enum weaponType type) {
     switch (type) {
     case STANDARD_WEAPON:
     case IMPLODER_WEAPON:
-    case ACCELERATOR_WEAPON:
     case NUKE_WEAPON:
     case GRAPPLE_WEAPON:
         return 5.0f;
@@ -817,7 +810,6 @@ Color getProjectileColor(const enum weaponType type) {
         color = PURPLE;
         break;
     case IMPLODER_WEAPON:
-    case ACCELERATOR_WEAPON:
         color = DARKBLUE;
         break;
     case FLAK_CANNON_WEAPON:

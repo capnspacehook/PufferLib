@@ -3711,6 +3711,7 @@ void handleBlackHolePull(const iwEnv *e, projectileEntity *projectile) {
         droneEntity *drone;
         projectileEntity *proj;
         bool hasShield = false;
+        float pullReduction = 1.0f;
 
         switch (ent->type) {
         case STANDARD_WALL_ENTITY:
@@ -3729,6 +3730,7 @@ void handleBlackHolePull(const iwEnv *e, projectileEntity *projectile) {
             proj = ent->entity;
             bodyID = proj->bodyID;
             shapeID = proj->shapeID;
+            pullReduction = BLACK_HOLE_PROJECTILE_PULL_REDUCTION;
             break;
         default:
             ERRORF("unknown entity type %d for black hole suck", ent->type);
@@ -3760,7 +3762,7 @@ void handleBlackHolePull(const iwEnv *e, projectileEntity *projectile) {
         const b2Vec2 baseForce = b2MulSV(-1.0f * BLACK_HOLE_PULL_MAGNITUDE, direction);
         direction = b2Normalize(b2Add(baseForce, parentVelocity));
 
-        float magnitude = (BLACK_HOLE_PULL_MAGNITUDE + (-1.0f * parentSpeed)) * perimeter * scale;
+        float magnitude = (BLACK_HOLE_PULL_MAGNITUDE + (-1.0f * parentSpeed)) * perimeter * scale * pullReduction;
         if (hasShield) {
             magnitude *= DRONE_SHIELD_FORCE_REDUCTION;
         }
@@ -4140,8 +4142,6 @@ void handleBodyMoveEvents(iwEnv *e) {
 
 bool projectileIgnoresBouncyWalls(const projectileEntity *projectile) {
     switch (projectile->weaponInfo->type) {
-    case ACCELERATOR_WEAPON:
-        // all accelerator wall bounces are counted
     case GRAPPLE_WEAPON:
         // grapples can attach to all walls
     case MINE_LAUNCHER_WEAPON:
@@ -4204,8 +4204,9 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             projectile->projContactOwner = projectile2->droneIdx;
         }
 
-        // explode mines when hit by a projectile
-        if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON) {
+        // explode mines when hit by a projectile if they're attached
+        // to a wall
+        if (projectile->weaponInfo->type == MINE_LAUNCHER_WEAPON && projectile->welded) {
             uint8_t numDestroyed = 1;
             if (ent != NULL) {
                 const projectileEntity *projectile2 = ent->entity;
@@ -4256,16 +4257,6 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
             }
             parentDrone->stepInfo.brokeShield[shield->drone->idx] = true;
             e->stats[parentDrone->idx].shieldsBroken++;
-        }
-
-        // accelerator projectiles speed up off of shields, so shields
-        // count towards their max bounces
-        if (projectile->weaponInfo->type == ACCELERATOR_WEAPON) {
-            projectile->bounces++;
-            if (projectile->bounces == projectile->weaponInfo->maxBounces) {
-                destroyProjectile(e, projectile, true, true);
-                return 1;
-            }
         }
 
         return 0;
@@ -4495,11 +4486,6 @@ void handleProjectileEndContact(iwEnv *e, const entity *proj, const entity *ent)
     // the current speed will be the speed box2d set the projectile to
     // after a collision and we want to keep the speed consistent
     float newSpeed = projectile->lastSpeed;
-    if (projectile->weaponInfo->type == ACCELERATOR_WEAPON) {
-        newSpeed = fminf(projectile->lastSpeed * ACCELERATOR_BOUNCE_SPEED_COEF, ACCELERATOR_MAX_SPEED);
-        projectile->speed = newSpeed;
-    }
-
     // ensure the projectile's speed doesn't change after bouncing off
     // something
     b2Vec2 newVel = b2Body_GetLinearVelocity(projectile->bodyID);

@@ -64,7 +64,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from energy_refill import Settings  # noqa: E402
 
-WEAPONS = ['standard', 'machineGun', 'sniper', 'shotgun', 'imploder', 'accelerator',
+WEAPONS = ['standard', 'machineGun', 'sniper', 'shotgun', 'imploder',
            'flakCannon', 'blackHole', 'nuke', 'grapple', 'mineLauncher', 'portal']
 # portal projectiles open portals instead of hitting drones
 NO_HIT = {'portal'}
@@ -90,7 +90,7 @@ FIELD_ALIASES = {
 
 WEAPON_ALIASES = {
     'mg': 'machineGun', 'flak': 'flakCannon', 'bh': 'blackHole', 'mine': 'mineLauncher',
-    'mines': 'mineLauncher', 'accel': 'accelerator',
+    'mines': 'mineLauncher',
 }
 
 # metric each kind of weapon setting keeps by default when matched
@@ -351,11 +351,6 @@ def compute(s, rng):
         if name == 'shotgun':
             proj['speed min'] = (w['fireMagnitude'] - SHOTGUN_FIRE_JITTER) / m
             proj['speed max'] = (w['fireMagnitude'] + SHOTGUN_FIRE_JITTER) / m
-        if name == 'accelerator':
-            # speed doubles per bounce, it's destroyed on its last one
-            bounces = int(w['maxBounces']) - 1
-            cap = min(s['ACCELERATOR_MAX_SPEED'], BOX2D_MAX_SPEED)
-            proj['speed max'] = min(v0 * s['ACCELERATOR_BOUNCE_SPEED_COEF'] ** bounces, cap)
         out['proj'][name] = proj
 
         if name in NO_HIT:
@@ -368,8 +363,6 @@ def compute(s, rng):
         dodge = sidestep_time(drone_r + w['radius'], move_f, drone_m, drone_c)
         hits = pellets_hitting(s, w, name, rng)
         variants = [(name, v_hit)]
-        if name == 'accelerator':
-            variants.append(('accelerator bounced', proj['speed max']))
         for row, v in variants:
             j = hit_scale * mu * v
             shield_dmg = v * m * s['DRONE_SHIELD_HEALTH_IMPULSE_COEF']

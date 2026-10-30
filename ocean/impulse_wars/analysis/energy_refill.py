@@ -27,7 +27,7 @@ import math
 import os
 import re
 
-WEAPONS = ['standard', 'machineGun', 'sniper', 'shotgun', 'imploder', 'accelerator',
+WEAPONS = ['standard', 'machineGun', 'sniper', 'shotgun', 'imploder',
            'flakCannon', 'mineLauncher', 'blackHole', 'nuke', 'grapple']
 # mines are welded to a wall, so stationary, when they explode
 STATIONARY_EXPLOSIONS = {'mineLauncher'}
@@ -146,16 +146,6 @@ def main():
         ammo_str = 'inf' if ammo == s['INFINITE'] else str(ammo)
         cycle = w['cooldown'] + w['maxCharge']
         print(f'{name:<13} {ammo_str:>5} {per_hit:6.3f} {pickup:>7} {cycle:8.3f} {per_hit / cycle:6.3f}')
-
-    accel = s.weapon('accelerator')
-    accel_speed = accel['fireMagnitude'] / accel['mass']
-    bounce = s['ACCELERATOR_BOUNCE_SPEED_COEF']
-    cap = s['ACCELERATOR_MAX_SPEED']
-    to_cap = math.log(cap / accel_speed) / math.log(bounce)
-    by_bounce = ', '.join(f'{b}: {min(accel_speed * bounce ** b, cap) * accel["mass"] * accel["energyRefillCoef"]:.3f}'
-                          for b in (5, 10, 20, 30))
-    print(f'\naccelerator direct hit by bounces {by_bounce}; '
-          f'cap {cap * accel["mass"] * accel["energyRefillCoef"]:.3f} after {to_cap:.0f} bounces')
 
     pull_coef = s.get('BLACK_HOLE_PULL_ENERGY_REFILL_COEF')
     if pull_coef is not None:
