@@ -979,7 +979,9 @@ struct Env {
     bool easyEp;
 
     // with probability comboTrainingProb a training episode starts every
-    // drone with a random two weapon loadout, symmetric half of the time
+    // drone with a random weapon and utility loadout: all random or all the
+    // same, or in 2v2 also shared by teammates or mirrored between teams,
+    // each mode equally often
     float comboTrainingProb;
     // this episode started with combo loadouts, so pickups are ammo crates
     bool comboEp;

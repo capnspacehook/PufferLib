@@ -867,6 +867,74 @@ static void droneSetLoadout(droneEntity *drone, const enum weaponType weapon, co
     droneSetUtility(drone, utility);
 }
 
+// how combo episode loadouts are shared between drones
+enum comboLoadoutMode {
+    // every drone gets its own loadout
+    COMBO_RANDOM,
+    // every drone gets the same loadout
+    COMBO_SYMMETRIC,
+    // teammates share a loadout, each team a different one
+    COMBO_TEAMMATE_SYMMETRIC,
+    // every team gets the same set of loadouts, one per drone
+    COMBO_MIRRORED_TEAMS,
+};
+
+// gives every drone a combo loadout in one of the modes, picked
+// uniformly; the team modes need teams with more than one drone, so 1v1
+// and free for all pick between random and symmetric only
+static void setComboLoadouts(iwEnv *e) {
+    const bool teamModes = e->teamsEnabled && NUM_DRONES > e->numTeams;
+    const enum comboLoadoutMode mode = randInt(&e->rng, 0, teamModes ? 3 : 1);
+    DEBUG_LOGF("setting loadout for combo training episode; mode=%d", mode);
+
+    // loadouts by team and by drone's slot in its team, filled in as
+    // needed in drone order, so team 0's drones draw first
+    enum weaponType teamWeapons[_MAX_DRONES] = {0};
+    enum utilityType teamUtilities[_MAX_DRONES] = {0};
+    enum weaponType slotWeapons[_MAX_DRONES] = {0};
+    enum utilityType slotUtilities[_MAX_DRONES] = {0};
+    bool teamSet[_MAX_DRONES] = {false};
+    bool slotSet[_MAX_DRONES] = {false};
+    uint8_t teamSlots[_MAX_DRONES] = {0};
+    enum weaponType weapon = UNSET_WEAPON;
+    enum utilityType utility = UNSET_UTILITY;
+
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        const uint8_t team = drone->team;
+        const uint8_t slot = teamSlots[team]++;
+
+        switch (mode) {
+        case COMBO_RANDOM:
+            randLoadout(e, &weapon, &utility);
+            break;
+        case COMBO_SYMMETRIC:
+            if (i == 0) {
+                randLoadout(e, &weapon, &utility);
+            }
+            break;
+        case COMBO_TEAMMATE_SYMMETRIC:
+            if (!teamSet[team]) {
+                randLoadout(e, &teamWeapons[team], &teamUtilities[team]);
+                teamSet[team] = true;
+            }
+            weapon = teamWeapons[team];
+            utility = teamUtilities[team];
+            break;
+        case COMBO_MIRRORED_TEAMS:
+            if (!slotSet[slot]) {
+                randLoadout(e, &slotWeapons[slot], &slotUtilities[slot]);
+                slotSet[slot] = true;
+            }
+            weapon = slotWeapons[slot];
+            utility = slotUtilities[slot];
+            break;
+        }
+
+        droneSetLoadout(drone, weapon, utility);
+    }
+}
+
 void setupEnv(iwEnv *e) {
     e->needsReset = false;
 
@@ -905,18 +973,7 @@ void setupEnv(iwEnv *e) {
     // and combos get practiced; easy episodes are left alone
     e->comboEp = e->isTraining && !e->easyEp && e->comboTrainingProb > 0.0f && randFloat(&e->rng, 0.0f, 1.0f) <= e->comboTrainingProb;
     if (e->comboEp) {
-        const bool symmetric = randInt(&e->rng, 0, 1) == 1;
-        DEBUG_LOGF("setting loadout for combo training episode; symmetric=%d", symmetric);
-
-        enum weaponType weapon = UNSET_WEAPON;
-        enum utilityType utility = UNSET_UTILITY;
-        for (uint8_t i = 0; i < NUM_DRONES; i++) {
-            if (i == 0 || !symmetric) {
-                randLoadout(e, &weapon, &utility);
-            }
-            droneEntity *drone = safe_array_get_at(e->drones, i);
-            droneSetLoadout(drone, weapon, utility);
-        }
+        setComboLoadouts(e);
     }
 
     DEBUG_LOG("placing floating walls");
