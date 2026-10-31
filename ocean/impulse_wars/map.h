@@ -150,7 +150,7 @@ static mapEntry roomsMap = {
     .randFloatingDeathWalls = 3,
     .hasSetFloatingWalls = false,
     .weaponPickups = 8,
-    .maxSuddenDeathWalls = 5,
+    .maxSuddenDeathWalls = 4,
     .weaponSpawnWeights = {[SHOTGUN_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
@@ -189,7 +189,7 @@ static mapEntry xArena = {
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
     .weaponPickups = 8,
-    .maxSuddenDeathWalls = 6,
+    .maxSuddenDeathWalls = 5,
     .weaponSpawnWeights = {[NUKE_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
@@ -229,7 +229,7 @@ static mapEntry crossBounce = {
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
     .weaponPickups = 8,
-    .maxSuddenDeathWalls = 6,
+    .maxSuddenDeathWalls = 5,
 };
 
 static const char asteriskArenaLayout[]= {
@@ -267,7 +267,7 @@ static mapEntry asteriskArena = {
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
     .weaponPickups = 8,
-    .maxSuddenDeathWalls = 7,
+    .maxSuddenDeathWalls = 5,
 };
 
 static const char foamPitLayout[] = {
@@ -302,7 +302,7 @@ static mapEntry foamPitMap = {
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
     .weaponPickups = 6,
-    .maxSuddenDeathWalls = 5,
+    .maxSuddenDeathWalls = 4,
     .weaponSpawnWeights = {[IMPLODER_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 
@@ -341,7 +341,7 @@ static mapEntry siegeMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
-    .weaponPickups = 5,
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 8,
     .utilitySpawnWeights = {[GRAPPLE_UTILITY] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
@@ -378,7 +378,7 @@ static mapEntry pinballMap = {
     .randFloatingBouncyWalls = 0,
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = false,
-    .weaponPickups = 8,
+    .weaponPickups = 6,
     .maxSuddenDeathWalls = 5,
     .utilitySpawnWeights = {[PORTAL_UTILITY] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
@@ -455,7 +455,7 @@ static mapEntry hourglassMap = {
     .randFloatingDeathWalls = 0,
     .hasSetFloatingWalls = true,
     .weaponPickups = 6,
-    .maxSuddenDeathWalls = 4,
+    .maxSuddenDeathWalls = 5,
     .weaponSpawnWeights = {[BLACK_HOLE_WEAPON] = SPAWN_WEIGHT(MAX_PICKUP_SPAWN_WEIGHT)},
 };
 

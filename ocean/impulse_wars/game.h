@@ -3236,7 +3236,11 @@ bool isOverlappingCircle(const iwEnv *e, const b2Vec2 startPos, const float radi
 
 void handleSuddenDeath(iwEnv *e) {
     ASSERT(e->suddenDeathSteps == 0);
-    if (e->suddenDeathWallCounter >= e->map->maxSuddenDeathWalls) {
+    uint8_t maxWalls = e->map->maxSuddenDeathWalls;
+    if (NUM_DRONES > 2) {
+        maxWalls = max(maxWalls - 1, 0);
+    }
+    if (e->suddenDeathWallCounter >= maxWalls) {
         return;
     }
 
@@ -3992,6 +3996,9 @@ void handleBlackHolePull(const iwEnv *e, projectileEntity *projectile) {
             bodyID = proj->bodyID;
             shapeID = proj->shapeID;
             pullReduction = BLACK_HOLE_PROJECTILE_PULL_REDUCTION;
+            if (proj->weaponInfo->type == BLACK_HOLE_WEAPON) {
+                pullReduction = BLACK_HOLE_SELF_PULL_REDUCTION;
+            }
             break;
         default:
             ERRORF("unknown entity type %d for black hole suck", ent->type);

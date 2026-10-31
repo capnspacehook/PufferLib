@@ -151,7 +151,7 @@ static const float MIRROR_RENDER_ALPHA = 0.8f;
 
 static const float PORTAL_SLAB_DEPTH = 0.15f;
 static const float PORTAL_SLAB_HEIGHT = 1.0f;
-static const float PORTAL_UNLINKED_FADE = 0.3f;
+static const float PORTAL_UNLINKED_FADE = 0.7f;
 static const float PORTAL_FIELD_MIN_ALPHA = 0.08f;
 static const float PORTAL_FIELD_MAX_ALPHA = 0.2f;
 // pulses per second of the field
@@ -701,9 +701,9 @@ Color getDroneColor(const uint8_t droneIdx) {
     case 1:
         return PUFF_GREEN;
     case 2:
-        return PUFF_CYAN;
+        return VIOLET;
     case 3:
-        return PUFF_YELLOW;
+        return ORANGE;
     default:
         ERRORF("unsupported number of drones %d", droneIdx + 1);
     }
@@ -1185,8 +1185,8 @@ void renderTimer(const iwEnv *e, const char *timerStr, const Color color) {
 void renderUI(const iwEnv *e, const bool starting) {
     // render drone info
     const uint16_t fontSize = 2 * e->client->scale;
-    const uint16_t xMargin = 5 * e->client->scale;
-    const uint16_t yMargin = 12 * e->client->scale;
+    const uint16_t xMargin = 6 * e->client->scale;
+    const uint16_t yMargin = 10 * e->client->scale;
 
     for (int i = 0; i < NUM_DRONES; i++) {
         const droneEntity *drone = safe_array_get_at(e->drones, i);
@@ -1208,11 +1208,11 @@ void renderUI(const iwEnv *e, const bool starting) {
             break;
         case 2:
             x = xMargin;
-            y = e->client->height - yMargin - (6 * e->client->scale);
+            y = e->client->height - yMargin - (15 * e->client->scale);
             break;
         case 3:
             x = e->client->width - lineWidth - xMargin;
-            y = e->client->height - yMargin - (6 * e->client->scale);
+            y = e->client->height - yMargin - (15 * e->client->scale);
             break;
         }
 

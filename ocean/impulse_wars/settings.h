@@ -38,8 +38,8 @@ static const uint8_t SUDDEN_DEATH_SECONDS = 5;
 static const uint8_t ROUND_SECONDS = 90;
 static const uint16_t TRAINING_MAX_SECONDS = 150;
 #else
-static const uint8_t ROUND_SECONDS = 150;
-static const uint8_t TRAINING_MAX_SECONDS = 250;
+static const uint8_t ROUND_SECONDS = 180;
+static const uint16_t TRAINING_MAX_SECONDS = 300;
 #endif
 
 static const uint8_t NUM_DRONES = _MAX_DRONES;
@@ -321,7 +321,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define BLACK_HOLE_DAMPING 0.0f
 #define BLACK_HOLE_CHARGE 0.0f
 #define BLACK_HOLE_COOL_DOWN 1.0f
-#define BLACK_HOLE_MAX_DISTANCE INFINITE
+#define BLACK_HOLE_MAX_DISTANCE 150.0f
 #define BLACK_HOLE_RADIUS 0.5f
 #define BLACK_HOLE_DENSITY 3.0f
 #define BLACK_HOLE_MASS MASS(BLACK_HOLE_DENSITY, BLACK_HOLE_RADIUS)
@@ -334,6 +334,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define BLACK_HOLE_PARENT_IGNORE_DISTANCE BLACK_HOLE_PROXIMITY_RADIUS * 1.5f
 #define BLACK_HOLE_PULL_MAGNITUDE -500.0f
 #define BLACK_HOLE_PROJECTILE_PULL_REDUCTION 0.75
+#define BLACK_HOLE_SELF_PULL_REDUCTION 0.5
 // Seconds for the visual pull field and tint to fade after projectile destruction.
 #define BLACK_HOLE_DISTORTION_FADE_TIME 0.3f
 
