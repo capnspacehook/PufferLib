@@ -8,7 +8,8 @@ checkpoint's step count as analyze_run.sh writes them
 checkpoint. Both drones are counted, as both are the same policy.
 
 Tables: behavior (kills, self-kills, charging, setup kills, line of sight,
-firing without it, crates, standoffs, assists, utility presses, useful
+firing without it, crates, standoffs, utility assists, teammate assists
+(2v2 only), utility presses, useful
 presses and utility kills, and swaps, context use and holstered charges for
 results from before the utility slot), kills (kills per game by weapon) and held (% of live
 steps with each weapon in hand). --csv prints every column of every table
@@ -51,8 +52,11 @@ def summarize(games):
     row = {
         'kills/g': kills / n,
         'self/g': t('selfKills') / n,
-        'assists/g': t('assists') / n,
+        'util assists/g': sum(d.get('utilityAssists', d.get('assists', 0)) for d in ds) / n,
     }
+    # 2v2 results only
+    if 'teammateAssists' in ds[0]:
+        row['team assists/g'] = t('teammateAssists') / n
     # weapon slot columns, only in results from before the utility slot
     if 'swaps' in ds[0]:
         row['swaps/g'] = t('swaps') / n

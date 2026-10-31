@@ -2421,16 +2421,18 @@ static void writeDrone(FILE *f, const gameResult *g, const uint8_t i) {
     WRITE_F(kills);
     WRITE_F(selfKills);
     WRITE_F(unknownKills);
-    // droneStats no longer counts assists; the per weapon counts sum to it
-    double assists = 0;
+    // droneStats no longer counts utility assists; the per weapon counts
+    // sum to it
+    double utilityAssists = 0;
     for (int w = 0; w < NW; w++) {
-        assists += a->assistsByWeapon[w];
+        utilityAssists += a->assistsByWeapon[w];
     }
-    fprintf(f, "\"assists\":%g,", assists);
+    fprintf(f, "\"utilityAssists\":%g,", utilityAssists);
     WRITE_F(cratesPickedUp);
     WRITE_F(cratesRefilled);
     if (teamsMode()) {
         WRITE_F(teammateKills);
+        fprintf(f, "\"teammateAssists\":%g,", (double)a->teammateAssists);
     }
     // every death counts the weapon the drone died holding
     float deaths = 0.0f;

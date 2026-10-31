@@ -1640,7 +1640,9 @@ sourceContrib *getSourceContrib(sourceContrib *sources, int16_t *sourceSlots, ui
     return &sources[sourceSlots[slotIdx]];
 }
 
-int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const CC_Array *physicsTracking, const b2Vec2 lastVelocity, float *maxMoveContrib, physicsSource *source) {
+// droneContribs, if not NULL, gets every drone's push towards the
+// death, so contributors other than the killer can be ranked
+int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const CC_Array *physicsTracking, const b2Vec2 lastVelocity, float *maxMoveContrib, physicsSource *source, float *droneContribs) {
     b2Vec2 contrib[NUM_DRONES];
     memset(contrib, 0x0, NUM_DRONES * sizeof(b2Vec2));
     const uint16_t maxSources = NUM_DRONES * NUM_PHYSICS_TYPES * _NUM_WEAPONS * 2;
@@ -1740,6 +1742,9 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
     int8_t killer = -1;
     for (uint8_t i = 0; i < NUM_DRONES; i++) {
         DEBUG_LOGF("---\n> src drone contrib %d %f (%f, %f)", i, b2Length(contrib[i]), contrib[i].x, contrib[i].y);
+        if (droneContribs != NULL) {
+            droneContribs[i] = 0.0f;
+        }
         if (b2Equal(contrib[i], b2Vec2_zero)) {
             continue;
         }
@@ -1750,6 +1755,9 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
         DEBUG_LOGF("> src drone %d death normal dot %f", i, dot);
         const float totalContrib = b2Length(contrib[i]) * dot;
         DEBUG_LOGF("> src drone %d total contrib %f", i, totalContrib);
+        if (droneContribs != NULL) {
+            droneContribs[i] = totalContrib;
+        }
         if (totalContrib > maxContrib) {
             maxContrib = totalContrib;
             killer = i;
@@ -1778,21 +1786,50 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
     return killer;
 }
 
+// gives a teammate assist to the killer's teammate if it was the second
+// biggest contributor to the kill, ranked the same way the killer is, by
+// push towards the death; the dead drone's own pushes are ranked too
+static inline void recordTeammateAssist(iwEnv *e, const droneEntity *drone, const droneEntity *killerDrone, const float *droneContribs) {
+    float secondContrib = 1e-6f;
+    int8_t second = -1;
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        if (i == killerDrone->idx) {
+            continue;
+        }
+        if (droneContribs[i] > secondContrib) {
+            secondContrib = droneContribs[i];
+            second = i;
+        }
+    }
+    if (second == -1 || second == drone->idx) {
+        return;
+    }
+
+    const droneEntity *secondDrone = safe_array_get_at(e->drones, second);
+    if (secondDrone->team == killerDrone->team) {
+        DEBUG_LOGF(">>> drone %d assisted drone %d", second, killerDrone->idx);
+        e->analysisStats[second].teammateAssists++;
+    }
+}
+
 // returns the index of the killer, or -1 if it's unknown
 int8_t findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     float maxMoveContrib = -FLT_MAX;
     physicsSource source = {0};
+    float droneContribs[NUM_DRONES];
     DEBUG_LOG("finding drone killer");
-    int8_t killer = findBiggestContributor(e, DRONE_ENTITY, drone->physicsTracking, drone->lastVelocity, &maxMoveContrib, &source);
+    int8_t killer = findBiggestContributor(e, DRONE_ENTITY, drone->physicsTracking, drone->lastVelocity, &maxMoveContrib, &source, droneContribs);
     if (killWall != NULL && killWall->isFloating) {
         float wallContrib = -FLT_MAX;
         physicsSource wallSource = {0};
+        float wallContribs[NUM_DRONES];
         DEBUG_LOG("finding mover of floating death wall");
-        const int8_t wallMover = findBiggestContributor(e, DEATH_WALL_ENTITY, killWall->physicsTracking, killWall->velocity, &wallContrib, &wallSource);
+        const int8_t wallMover = findBiggestContributor(e, DEATH_WALL_ENTITY, killWall->physicsTracking, killWall->velocity, &wallContrib, &wallSource, wallContribs);
         if (wallContrib > maxMoveContrib) {
             DEBUG_LOGF(">>> drone %d killed by drone %d pushing floating death wall", drone->idx, wallMover);
             killer = wallMover;
             source = wallSource;
+            memcpy(droneContribs, wallContribs, sizeof(droneContribs));
         }
     }
 
@@ -1811,6 +1848,7 @@ int8_t findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall)
         e->stats[killer].teammateKills++;
     } else {
         e->stats[killer].kills++;
+        recordTeammateAssist(e, drone, killerDrone, droneContribs);
     }
     drone->killedBy = killer;
     drone->killSource = source;

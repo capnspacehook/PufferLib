@@ -105,6 +105,11 @@ opponent from each of the 4 seats, as in training. `analyze_run.sh` picks
 - The other drones' obs groups and features are named by slot: `ally`, then
   `enemy0`, `enemy1` in 2v2 and `enemy0`..`enemy2` in free for all
   (`--list-groups`). 1v1 keeps the `enemy` names.
+- Assists come in two kinds. Utility assists are black hole pulls and
+  grapple attachments shortly before an enemy dies, in any mode. Teammate
+  assists (2v2 only) go to the killer's teammate when it was the second
+  biggest contributor to an enemy kill, ranked by push towards the death
+  the same way the killer is (the dead drone's own pushes are ranked too).
 - `bot_tournament.c` plays 2v2 and `--ffa` the same way.
 - Results only compare to runs with the same drone count and mode.
 
@@ -234,7 +239,7 @@ The `utilities` section has, per utility:
 - time held and time with ammo to use it, pickups;
 - presses and how many did something (fired, started reeling an attached
   grapple or detonated mines), ammo spent;
-- hits on drones, kills, assists and self kills, kills per ammo, and kills
+- hits on drones, kills, utility assists and self kills, kills per ammo, and kills
   of this drone by the enemy's;
 - for the grapple: attaches by target, time attached and reeling, reeling
   speed against the mean speed, deaths while attached and kills by its pull;

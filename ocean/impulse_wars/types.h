@@ -658,7 +658,12 @@ typedef struct droneAnalysisStats {
     float selfKillsBySource[NUM_PHYSICS_TYPES];
     float floatingWallDeaths;
     float floatingWallSelfKills;
+    // utility assists: black hole pulls and grapple attachments shortly
+    // before an enemy's death, by the utility's weapon
     float assistsByWeapon[_NUM_WEAPONS];
+    // enemy kills where this drone was the second biggest contributor
+    // behind its teammate, the killer
+    float teammateAssists;
     float diedHoldingActive[_NUM_WEAPONS];
     // pickups by the weapon held before and the weapon picked up
     float pickupsFrom[_NUM_WEAPONS][_NUM_WEAPONS];

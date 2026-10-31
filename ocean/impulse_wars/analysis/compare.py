@@ -260,7 +260,7 @@ def weapon_metrics(games, side):
             'kills/g': kills / n,
             'self/g': self_kills / n,
             'net/pickup': ratio(kills - self_kills, picked),
-            'assists/g': sum(g[side].get('assistsByWeapon', [0] * (w + 1))[w] for g in games) / n,
+            'utility assists/g': sum(g[side].get('assistsByWeapon', [0] * (w + 1))[w] for g in games) / n,
             'boosted%': 100 * ratio(total(games, side, 'boostedShotsFired', w), fired),
             'boostKill%': 100 * ratio(total(games, side, 'boostedKills', w), kills),
         }
@@ -269,7 +269,7 @@ def weapon_metrics(games, side):
 
 def section_weapons(runs, side):
     metrics = [(name, weapon_metrics(games, side)) for name, games in runs]
-    for m, digits in [('kills/g', 3), ('assists/g', 3), ('net/pickup', 2), ('picked/g', 2), ('held%', 1), ('acc', 3), ('self/g', 3)]:
+    for m, digits in [('kills/g', 3), ('utility assists/g', 3), ('net/pickup', 2), ('picked/g', 2), ('held%', 1), ('acc', 3), ('self/g', 3)]:
         rows = [[w] + [fmt(wm[w][m], digits) for _, wm in metrics] for w in WEAPONS if w in metrics[0][1]]
         table(f'weapons: {m}', ['weapon'] + [name for name, _ in runs], rows)
     # pickups by weapon held before, for the baseline
@@ -312,15 +312,24 @@ def section_boost(runs, side):
     table('boost: hit rate of boosted shots and speed multiplier', header, rows)
 
 
+def utility_assists(d):
+    # results from before the rename call utility assists 'assists'
+    return d.get('utilityAssists', d.get('assists', 0))
+
+
 def section_deaths(runs, side):
     rows = []
+    # teammate assists are only written for 2v2 results
+    teams = all('teammateAssists' in games[0][side] for _, games in runs)
     for name, games in runs:
         n = len(games)
         rows.append([name, fmt(total(games, side, 'kills') / n, 2), fmt(total(games, side, 'deaths') / n, 2),
                      fmt(total(games, side, 'selfKills') / n, 2), fmt(total(games, side, 'floatingWallSelfKills') / n, 3),
                      fmt(total(games, side, 'floatingWallDeaths') / n, 3), fmt(total(games, side, 'unknownKills') / n, 3),
-                     fmt(sum(g[side].get('assists', 0) for g in games) / n, 3)])
-    table('kills and deaths per game', ['run', 'kills', 'deaths', 'self', 'floatSelf', 'floatDeaths', 'unknown', 'assists'], rows)
+                     fmt(sum(utility_assists(g[side]) for g in games) / n, 3)]
+                    + ([fmt(total(games, side, 'teammateAssists') / n, 3)] if teams else []))
+    table('kills and deaths per game', ['run', 'kills', 'deaths', 'self', 'floatSelf', 'floatDeaths', 'unknown', 'util assists']
+          + (['team assists'] if teams else []), rows)
     rows = []
     sources = {len(s): s for s in (SOURCES, SOURCES_NO_SWAP, SOURCES_NO_GRAPPLE)}[len(games[0][side]['deathsBySource'])]
     for t, src in enumerate(sources[1:], 1):
