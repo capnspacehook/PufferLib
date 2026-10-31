@@ -784,7 +784,10 @@ int main(int argc, char** argv) {
     frameskip = 1;
 #endif
 
+    unsigned int seed = (unsigned int)puf_ini_get(&ini, "base", "seed");
+    srand(seed);
     Env env = {0};
+    env.rng = seed;
     puf_init(&env, env_sec);
 
     // Heap, not VLAs: snake=256 / obs=968 overflows the 512KB WASM stack.
