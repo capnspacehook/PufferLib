@@ -819,6 +819,22 @@ void computeObs(iwEnv *e) {
         obs[offset++] = !agentDrone->dead;
         obs[offset++] = scaleValue(agentDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
 
+        // the last chosen action, which executes actionDelay steps later;
+        // written at every delay so the layout doesn't depend on it
+        if (!agentDrone->dead) {
+            const agentActions *chosen = &agentDrone->lastChosen;
+            obs[offset++] = chosen->move.x;
+            obs[offset++] = chosen->move.y;
+            obs[offset++] = chosen->aim.x;
+            obs[offset++] = chosen->aim.y;
+            obs[offset++] = chosen->trigger;
+            obs[offset++] = chosen->utility;
+            obs[offset++] = chosen->brake;
+            obs[offset++] = chosen->chargingBurst;
+        } else {
+            offset += IW_LAST_CHOSEN_SIZE;
+        }
+
         ASSERT(offset == IW_DRONE_OFFSET + IW_DRONE_RAY_IDX);
         if (!agentDrone->dead) {
             computeAgentRayObs(e, agentDrone, obs + offset);
@@ -1048,6 +1064,8 @@ iwEnv *initEnv(iwEnv *e, uint8_t numAgents, int8_t mapIdx, uint64_t seed, bool e
     setBotPersonality(e, botPolicy);
 
     e->continuousActions = continuousActions;
+    // undelayed unless the caller sets a delay after init
+    memset(e->actionDelay, 0x0, sizeof(e->actionDelay));
 
     setEnvFrameRate(e);
     e->rng = seed;
@@ -1396,13 +1414,38 @@ agentActions _computeActions(iwEnv *e, droneEntity *drone, const agentActions *m
     return actions;
 }
 
+// makes actions the drone's executed actions: physics, shots and the
+// obs other drones get read lastMove and lastAim
+static inline void applyActions(droneEntity *drone, const agentActions *actions) {
+    drone->lastMove = actions->move;
+    if (!b2Equal(actions->aim, b2Vec2_zero)) {
+        drone->lastAim = actions->aim;
+    }
+}
+
 agentActions computeActions(iwEnv *e, droneEntity *drone, const agentActions *manualActions) {
     const agentActions actions = _computeActions(e, drone, manualActions);
-    drone->lastMove = actions.move;
-    if (!b2Equal(actions.aim, b2Vec2_zero)) {
-        drone->lastAim = actions.aim;
-    }
+    applyActions(drone, &actions);
     return actions;
+}
+
+// decodes a learned agent's chosen action and returns the action that
+// executes this step, the one chosen actionDelay steps ago
+agentActions computeDelayedActions(iwEnv *e, droneEntity *drone) {
+    const agentActions chosen = _computeActions(e, drone, NULL);
+    drone->lastChosen = chosen;
+
+    agentActions executed = chosen;
+    const uint8_t delay = e->actionDelay[drone->idx];
+    if (delay != 0) {
+        ASSERT(delay <= MAX_ACTION_DELAY);
+        ASSERT(drone->actionQueueHead < delay);
+        executed = drone->actionQueue[drone->actionQueueHead];
+        drone->actionQueue[drone->actionQueueHead] = chosen;
+        drone->actionQueueHead = (drone->actionQueueHead + 1) % delay;
+    }
+    applyActions(drone, &executed);
+    return executed;
 }
 
 bool droneControlledByHuman(const iwEnv *e, uint8_t i) {
@@ -1993,7 +2036,7 @@ void puf_step(iwEnv *e) {
             }
 
             if (i < e->numAgents) {
-                e->cachedActions[i] = computeActions(e, drone, NULL);
+                e->cachedActions[i] = computeDelayedActions(e, drone);
             } else {
                 const agentActions scriptedActions = scriptedAgentActions(e, drone);
                 e->cachedActions[i] = computeActions(e, drone, &scriptedActions);

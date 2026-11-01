@@ -66,6 +66,11 @@
 //        iw_analyze --policy ckpt.bin --hidden H --layers L [--ffa]
 //                   --opponent ckpt.bin --opponent-hidden H --opponent-layers L
 //                   [--opponent-name name] [--combos] [--no-pickups | --loadout-pickups | --crates] [options]
+//   --action-delay D and --opponent-action-delay D (default 0) delay each
+//   policy's chosen actions by D steps, as [env] action_delay does in
+//   training; pass the delay a checkpoint was trained with, or vs-bot
+//   numbers overstate it. Bots are never delayed. run.sh reads them from
+//   the runs' inis.
 //   --episodes is per opponent (per matchup with --combos); against a
 //   policy it's rounded up to a multiple of the seats so every seed is
 //   played from every seat. Bot opponents are bot personality names and default to
@@ -756,6 +761,7 @@ static void buildObsGroups(void) {
         addGroup("own_hit_flags", D_STATE + 19, 3, 0, 0);
     }
     addGroup("own_lives", D_STATE + 22, 3, 0, 0);
+    addGroup("own_last_chosen", D_STATE + 25, IW_LAST_CHOSEN_SIZE, 0, 0);
     addGroup("own_aim_ray", D_OBS + IW_DRONE_RAY_IDX, IW_RAY_SIZE, 0, 0);
     addGroup("own_vel_ray", D_OBS + IW_DRONE_RAY_IDX + IW_RAY_SIZE, IW_RAY_SIZE, 0, 0);
     addGroup("own_drift_ray", D_OBS + IW_DRONE_RAY_IDX + 2 * IW_RAY_SIZE, IW_RAY_SIZE, 0, 0);
@@ -824,6 +830,9 @@ static Weights *oppWeights = NULL;
 static int oppHidden = 0;
 static int oppLayers = 0;
 static char oppName[64] = "policy";
+// steps the policy's and the opponent's chosen actions are delayed by
+static int policyDelay = 0;
+static int oppDelay = 0;
 static bool combos = false;
 static bool noPickups = false;
 static bool loadoutPickups = false;
@@ -885,7 +894,9 @@ static void buildObsNames(void) {
     static const char *ownFields[] = {"trigger_held", "utility_held", "pos_x", "pos_y", "vel_x", "vel_y", "aim_x", "aim_y",
                                       "aim_vel_sin", "aim_vel_cos", "shield_hp", "shield_dur", "energy", "depleted", "refill_wait",
                                       "braking", "burst_cd", "charging_burst", "burst_charge"};
-    static const char *ownTail[] = {"hit_shot", "took_shot", "own_shot_taken", "lives", "alive", "respawn"};
+    static const char *ownTail[] = {"hit_shot", "took_shot", "own_shot_taken", "lives", "alive", "respawn",
+                                    "chosen_move_x", "chosen_move_y", "chosen_aim_x", "chosen_aim_y",
+                                    "chosen_trigger", "chosen_utility", "chosen_brake", "chosen_burst"};
     static const char *ownRays[3] = {"aim_ray", "vel_ray", "drift_ray"};
     static const char *fwFields[IW_FLOATING_WALL_SIZE] = {"type", "x", "y", "sin", "cos", "vel_x", "vel_y"};
     static const char *misc[IW_MISC_SIZE] = {"not_easy_ep", "combo_ep", "steps_left", "sudden_death_steps"};
@@ -1177,8 +1188,10 @@ static void initAnalyzeEnv(iwEnv *e, policyBatch *p, policyBatch *opp, const int
     for (uint8_t i = 0; i < NUM_DRONES; i++) {
         if (isPolicyDrone(seat, i)) {
             bindAgent(e, i, p, b * policyDrones() + pRow++);
+            e->actionDelay[i] = policyDelay;
         } else if (opp != NULL) {
             bindAgent(e, i, opp, b * oppDrones() + oRow++);
+            e->actionDelay[i] = oppDelay;
         }
     }
     setRewards(e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
@@ -2770,6 +2783,10 @@ int main(int argc, char **argv) {
             oppHidden = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--opponent-layers") == 0 && hasValue) {
             oppLayers = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--action-delay") == 0 && hasValue) {
+            policyDelay = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--opponent-action-delay") == 0 && hasValue) {
+            oppDelay = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--opponent-name") == 0 && hasValue) {
             snprintf(oppName, sizeof(oppName), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--ffa") == 0) {
@@ -2832,6 +2849,15 @@ int main(int argc, char **argv) {
     if (!checkWeights("policy", policyWeights, policyHidden, policyLayers)) {
         return 1;
     }
+    if (policyDelay < 0 || policyDelay > MAX_ACTION_DELAY || oppDelay < 0 || oppDelay > MAX_ACTION_DELAY) {
+        fprintf(stderr, "action delays must be in [0, %d]\n", MAX_ACTION_DELAY);
+        return 1;
+    }
+    if (oppDelay != 0 && oppWeights == NULL) {
+        fprintf(stderr, "--opponent-action-delay needs --opponent\n");
+        return 1;
+    }
+    fprintf(stderr, "action delay: policy %d, opponent %d\n", policyDelay, oppWeights != NULL ? oppDelay : 0);
     if ((loadoutPickups || crates) && !combos) {
         fprintf(stderr, "--loadout-pickups and --crates need --combos\n");
         return 1;

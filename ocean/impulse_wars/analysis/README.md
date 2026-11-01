@@ -82,6 +82,19 @@ GPU build is bf16 by default, like training.
   games with other `--threads`, which should give identical games. Use it to
   check the GPU build after changing the net.
 
+### Action delay
+
+Runs trained with `[env] action_delay = D` execute each chosen action D
+steps later (see `REACTION_DELAY_PLAN.md`), and must be evaluated with the
+same delay or vs-bot numbers overstate them. `run.sh` and so
+`analyze_run.sh` read each run's delay from its ini (0 when it has none,
+as in older runs) and pass `--action-delay` / `--opponent-action-delay` to
+`iw_analyze`; pass them yourself to override, or for a checkpoint without
+an ini. The delays are per side, so policies trained at different delays
+can play each other. Bots are never delayed. `bot_tournament.c` takes
+`--action-delay` for its `--policy`. The harness prints the delays it uses
+to stderr.
+
 ### 4 drone builds
 
 The harness plays the drone count it's built with: 2 by default, or 4 with

@@ -127,6 +127,16 @@ void puf_init(Env *env, Dict *kwargs) {
     env->easyEpHitRate = dict_get(kwargs, "easy_ep_hit_rate");
     env->comboTrainingProb = dict_get(kwargs, "combo_training_prob");
 
+    // learned agents' chosen actions execute this many steps later
+    const int action_delay = dict_get(kwargs, "action_delay");
+    if (action_delay < 0 || action_delay > MAX_ACTION_DELAY) {
+        fprintf(stderr, "impulse_wars: action_delay %d out of range [0, %d]\n", action_delay, MAX_ACTION_DELAY);
+        abort();
+    }
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
+        env->actionDelay[i] = action_delay;
+    }
+
     // in envs that play a past checkpoint, agents are trained (policy 0)
     // or played by the checkpoint (policy 1) by team: with teams the
     // learner's team is team 0, without the learner is the first agent

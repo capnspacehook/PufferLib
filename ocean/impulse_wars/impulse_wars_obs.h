@@ -103,9 +103,10 @@
 #define IW_ENEMY_RAY_IDX (IW_DRONE_STATE + IW_ENEMY_STATE_SIZE)
 #define IW_ENEMY_DRONE_SIZE (IW_ENEMY_RAY_IDX + IW_RAY_SIZE)
 // the agent's drone: buttons held, position, velocity, aim, shield, energy
-// and burst, hit flags, lives and respawn, then the aim, velocity and
-// recoil rays
-#define IW_DRONE_STATE_SIZE 25
+// and burst, hit flags, lives and respawn, the last chosen action (move,
+// aim and the 4 buttons), then the aim, velocity and recoil rays
+#define IW_LAST_CHOSEN_SIZE 8
+#define IW_DRONE_STATE_SIZE (25 + IW_LAST_CHOSEN_SIZE)
 #define IW_DRONE_RAY_IDX (IW_DRONE_STATE + IW_DRONE_STATE_SIZE)
 #define IW_NUM_DRONE_RAYS 3
 #define IW_DRONE_SIZE (IW_DRONE_RAY_IDX + IW_NUM_DRONE_RAYS * IW_RAY_SIZE)

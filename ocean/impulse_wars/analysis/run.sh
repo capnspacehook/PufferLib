@@ -6,7 +6,9 @@
 #   Policy sizes are read from the run's ini in logs/impulse_wars, found by
 #   the run name or the checkpoint's directory, either as the file name or
 #   its run_id; pass --hidden/--layers (--opponent-hidden/--opponent-layers)
-#   to override or when there's no ini.
+#   to override or when there's no ini. The action delay is read from the
+#   ini's [env] action_delay (0 when missing, as in runs from before the
+#   delay); pass --action-delay/--opponent-action-delay to override.
 #   Defaults: every bot personality, 1400 games each (100 per map). With
 #   --opponent, 1400 games against that policy, each seed played from both
 #   drones; pass the same run twice for self-play.
@@ -53,6 +55,29 @@ arch() {
         END {print h, l}' "$ini"
 }
 
+# finds the ini of a run by file name or run_id, empty if there's none
+find_ini() {
+    local ini="$REPO/logs/impulse_wars/$1.ini"
+    if [ ! -f "$ini" ]; then
+        ini="$(grep -lx "run_id = $1" "$REPO"/logs/impulse_wars/*.ini 2>/dev/null | head -1)"
+    fi
+    [ -f "$ini" ] && echo "$ini"
+    return 0
+}
+
+# prints a run's [env] action_delay, 0 when it has none
+delay() {
+    local ini
+    ini="$(find_ini "$1")"
+    if [ -z "$ini" ]; then
+        echo "no ini for run $1, assuming action delay 0" >&2
+        echo 0
+        return
+    fi
+    awk -F' *= *' '$0 == "[env]" {in_sec = 1; next} /^\[/ {in_sec = 0}
+        in_sec && $1 == "action_delay" {d = $2} END {print d == "" ? 0 : d}' "$ini"
+}
+
 resolve "$1"
 OUT="$2"
 shift 2
@@ -78,6 +103,9 @@ if [[ " ${ARGS[*]} " != *" --hidden "* ]]; then
     [ -n "$H" ] || exit 1
     EXTRA+=(--hidden "$H" --layers "$L")
 fi
+if [[ " ${ARGS[*]} " != *" --action-delay "* ]]; then
+    EXTRA+=(--action-delay "$(delay "$POLICY_RUN")")
+fi
 echo "policy: $POLICY_CKPT" >&2
 if [ -n "$OPP_TARGET" ]; then
     resolve "$OPP_TARGET"
@@ -86,6 +114,9 @@ if [ -n "$OPP_TARGET" ]; then
         read -r H L <<< "$(arch "$RUN")"
         [ -n "$H" ] || exit 1
         EXTRA+=(--opponent-hidden "$H" --opponent-layers "$L")
+    fi
+    if [[ " ${ARGS[*]} " != *" --opponent-action-delay "* ]]; then
+        EXTRA+=(--opponent-action-delay "$(delay "$RUN")")
     fi
     if [[ " ${ARGS[*]} " != *" --opponent-name "* ]]; then
         EXTRA+=(--opponent-name "$RUN")

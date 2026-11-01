@@ -25,6 +25,10 @@
 #define AIM_COARSE_SECTORS 16
 #define AIM_FINE_STEPS 8
 
+// the most steps a learned agent's actions can be delayed by, the size of
+// each drone's action queue
+#define MAX_ACTION_DELAY 4
+
 static const uint8_t NUM_WALL_TYPES = 3;
 
 #define MAX_TRAIL_POINTS 20
@@ -519,6 +523,15 @@ enum assistWeapon {
     NUM_ASSIST_WEAPONS,
 };
 
+typedef struct agentActions {
+    b2Vec2 move;
+    b2Vec2 aim;
+    bool trigger;
+    bool brake;
+    bool chargingBurst;
+    bool utility;
+} agentActions;
+
 typedef struct droneEntity {
     b2BodyId bodyID;
     b2ShapeId shapeID;
@@ -596,8 +609,17 @@ typedef struct droneEntity {
     b2Vec2 pos;
     int16_t mapCellIdx;
     b2Vec2 lastPos;
+    // the executed move and aim; physics, shots and other drones' obs
+    // read these
     b2Vec2 lastMove;
     b2Vec2 lastAim;
+    // learned agents' chosen actions wait actionDelay steps before they
+    // execute: a ring buffer of the chosen, unexecuted actions, oldest at
+    // actionQueueHead
+    agentActions actionQueue[MAX_ACTION_DELAY];
+    uint8_t actionQueueHead;
+    // the most recent chosen action, for the agent's own obs
+    agentActions lastChosen;
     b2Vec2 velocity;
     b2Vec2 lastVelocity;
     // set when an explosion overwrote lastVelocity mid step; tracked pushes
@@ -854,15 +876,6 @@ typedef struct boostSparksInfo {
     unsigned int sparkSeed;
 } boostSparksInfo;
 
-typedef struct agentActions {
-    b2Vec2 move;
-    b2Vec2 aim;
-    bool trigger;
-    bool brake;
-    bool chargingBurst;
-    bool utility;
-} agentActions;
-
 typedef struct debugPoint {
     b2Vec2 pos;
     float size;
@@ -1044,6 +1057,9 @@ struct Env {
     float hitRewardCoef;
 
     bool continuousActions;
+    // steps each learned agent's chosen action waits before it executes,
+    // per drone so policies trained at different delays can play each other
+    uint8_t actionDelay[_MAX_DRONES];
 
     uint8_t frameRate;
     float deltaTime;

@@ -34,6 +34,8 @@
 //   policy on identical seeds, so variants are compared by their paired
 //   difference to the first variant. Actions are sampled with a per game
 //   seeded rng so runs are reproducible; --argmax picks the greedy action.
+//   --action-delay D (default 0) delays the policy's chosen actions by D
+//   steps like [env] action_delay; pass the delay it was trained with.
 #include <pthread.h>
 #include <stdatomic.h>
 
@@ -168,6 +170,7 @@ static Weights *policyWeights = NULL;
 static int policyHidden = 0;
 static int policyLayers = 0;
 static bool policyArgmax = false;
+static int policyDelay = 0;
 
 typedef struct policyRunner {
     ImpulseWarsNet *net;
@@ -247,6 +250,7 @@ static void initTournamentEnv(iwEnv *e, policyRunner *p) {
         e->agents[i].actions = p[i].actions;
         e->agents[i].rewards = &p[i].reward;
         e->agents[i].terminals = &p[i].terminal;
+        e->actionDelay[i] = policyDelay;
     }
     setRewards(e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     e->easyEpProb = 0.0f;
@@ -569,6 +573,12 @@ int main(int argc, char **argv) {
             policyHidden = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--layers") == 0 && i + 1 < argc) {
             policyLayers = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--action-delay") == 0 && i + 1 < argc) {
+            policyDelay = atoi(argv[++i]);
+            if (policyDelay < 0 || policyDelay > MAX_ACTION_DELAY) {
+                fprintf(stderr, "--action-delay must be in [0, %d]\n", MAX_ACTION_DELAY);
+                return 1;
+            }
         } else if (strcmp(argv[i], "--argmax") == 0) {
             policyArgmax = true;
         } else if (strcmp(argv[i], "--ffa") == 0) {

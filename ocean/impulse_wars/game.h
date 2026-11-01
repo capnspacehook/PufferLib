@@ -1173,6 +1173,18 @@ static inline uint8_t droneTeam(const iwEnv *e, const uint8_t idx) {
     return idx;
 }
 
+// fills a drone's action queue and last chosen action with a no-op that
+// keeps its current aim, so a delayed drone idles until its first chosen
+// action executes
+void resetActionQueue(droneEntity *drone) {
+    const agentActions noop = {.aim = drone->lastAim};
+    for (uint8_t i = 0; i < MAX_ACTION_DELAY; i++) {
+        drone->actionQueue[i] = noop;
+    }
+    drone->actionQueueHead = 0;
+    drone->lastChosen = noop;
+}
+
 void createDrone(iwEnv *e, const uint8_t idx) {
     const int8_t groupIdx = -(idx + 1);
     b2BodyDef droneBodyDef = b2DefaultBodyDef();
@@ -1225,6 +1237,7 @@ void createDrone(iwEnv *e, const uint8_t idx) {
     drone->pos = droneBodyDef.position;
     drone->mapCellIdx = entityPosToCellIdx(e, droneBodyDef.position);
     drone->lastAim = (b2Vec2){.x = 0.0f, .y = -1.0f};
+    resetActionQueue(drone);
     drone->livesLeft = DRONE_LIVES;
     drone->respawnGuideLifetime = UINT16_MAX;
     memset(&drone->stepInfo, 0x0, sizeof(droneStepInfo));
@@ -2115,6 +2128,9 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
     // actions aren't computed for dead drones, so the cached ones are
     // from before it died; do nothing until the next step's actions
     e->cachedActions[drone->idx] = (agentActions){.aim = drone->lastAim};
+    // a delayed drone idles for actionDelay steps after respawning, its
+    // reaction time on spawn
+    resetActionQueue(drone);
     drone->pos = pos;
     drone->lastPos = pos;
     drone->mapCellIdx = entityPosToCellIdx(e, drone->pos);
