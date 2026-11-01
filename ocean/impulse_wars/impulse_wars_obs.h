@@ -103,10 +103,17 @@
 #define IW_ENEMY_RAY_IDX (IW_DRONE_STATE + IW_ENEMY_STATE_SIZE)
 #define IW_ENEMY_DRONE_SIZE (IW_ENEMY_RAY_IDX + IW_RAY_SIZE)
 // the agent's drone: buttons held, position, velocity, aim, shield, energy
-// and burst, hit flags, lives and respawn, the last chosen action (move,
-// aim and the 4 buttons), then the aim, velocity and recoil rays
-#define IW_LAST_CHOSEN_SIZE 8
-#define IW_DRONE_STATE_SIZE (25 + IW_LAST_CHOSEN_SIZE)
+// and burst, hit flags, lives and respawn, the action queue, then the aim,
+// velocity and recoil rays
+// the action queue holds the chosen actions that haven't executed yet, in
+// the order they will: slot i executes i + 1 steps from now. Each is the
+// move, aim and the 4 buttons. With a delay of D only the first D slots are
+// used, so the layout doesn't depend on the delay; it must match
+// MAX_ACTION_DELAY
+#define IW_ACTION_SIZE 8
+#define IW_ACTION_QUEUE_SLOTS 3
+#define IW_ACTION_QUEUE_SIZE (IW_ACTION_QUEUE_SLOTS * IW_ACTION_SIZE)
+#define IW_DRONE_STATE_SIZE (25 + IW_ACTION_QUEUE_SIZE)
 #define IW_DRONE_RAY_IDX (IW_DRONE_STATE + IW_DRONE_STATE_SIZE)
 #define IW_NUM_DRONE_RAYS 3
 #define IW_DRONE_SIZE (IW_DRONE_RAY_IDX + IW_NUM_DRONE_RAYS * IW_RAY_SIZE)

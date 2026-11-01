@@ -761,7 +761,13 @@ static void buildObsGroups(void) {
         addGroup("own_hit_flags", D_STATE + 19, 3, 0, 0);
     }
     addGroup("own_lives", D_STATE + 22, 3, 0, 0);
-    addGroup("own_last_chosen", D_STATE + 25, IW_LAST_CHOSEN_SIZE, 0, 0);
+    // one group per queue slot, the next action to execute first; slots
+    // past the run's delay are always zero
+    for (int q = 0; q < IW_ACTION_QUEUE_SLOTS; q++) {
+        char name[32];
+        snprintf(name, sizeof(name), "own_queue%d", q);
+        addGroup(name, D_STATE + 25 + q * IW_ACTION_SIZE, IW_ACTION_SIZE, 0, 0);
+    }
     addGroup("own_aim_ray", D_OBS + IW_DRONE_RAY_IDX, IW_RAY_SIZE, 0, 0);
     addGroup("own_vel_ray", D_OBS + IW_DRONE_RAY_IDX + IW_RAY_SIZE, IW_RAY_SIZE, 0, 0);
     addGroup("own_drift_ray", D_OBS + IW_DRONE_RAY_IDX + 2 * IW_RAY_SIZE, IW_RAY_SIZE, 0, 0);
@@ -894,9 +900,9 @@ static void buildObsNames(void) {
     static const char *ownFields[] = {"trigger_held", "utility_held", "pos_x", "pos_y", "vel_x", "vel_y", "aim_x", "aim_y",
                                       "aim_vel_sin", "aim_vel_cos", "shield_hp", "shield_dur", "energy", "depleted", "refill_wait",
                                       "braking", "burst_cd", "charging_burst", "burst_charge"};
-    static const char *ownTail[] = {"hit_shot", "took_shot", "own_shot_taken", "lives", "alive", "respawn",
-                                    "chosen_move_x", "chosen_move_y", "chosen_aim_x", "chosen_aim_y",
-                                    "chosen_trigger", "chosen_utility", "chosen_brake", "chosen_burst"};
+    static const char *ownTail[] = {"hit_shot", "took_shot", "own_shot_taken", "lives", "alive", "respawn"};
+    static const char *queueFields[IW_ACTION_SIZE] = {"move_x", "move_y", "aim_x", "aim_y",
+                                                      "trigger", "utility", "brake", "burst"};
     static const char *ownRays[3] = {"aim_ray", "vel_ray", "drift_ray"};
     static const char *fwFields[IW_FLOATING_WALL_SIZE] = {"type", "x", "y", "sin", "cos", "vel_x", "vel_y"};
     static const char *misc[IW_MISC_SIZE] = {"not_easy_ep", "combo_ep", "steps_left", "sudden_death_steps"};
@@ -991,6 +997,12 @@ static void buildObsNames(void) {
     }
     for (size_t k = 0; k < sizeof(ownTail) / sizeof(ownTail[0]); k++) {
         snprintf(obsNames[i++], 48, "own_%s", ownTail[k]);
+    }
+    // queue slot q executes q + 1 steps from now
+    for (int q = 0; q < IW_ACTION_QUEUE_SLOTS; q++) {
+        for (int k = 0; k < IW_ACTION_SIZE; k++) {
+            snprintf(obsNames[i++], 48, "own_queue%d_%s", q, queueFields[k]);
+        }
     }
     assert(i == D_OBS + IW_DRONE_RAY_IDX);
     for (int r = 0; r < 3; r++) {

@@ -95,6 +95,13 @@ can play each other. Bots are never delayed. `bot_tournament.c` takes
 `--action-delay` for its `--policy`. The harness prints the delays it uses
 to stderr.
 
+The agent's obs holds its whole action queue: one slot per step of the
+maximum delay of 3, each the move, aim and 4 buttons, in the order they
+execute (slot 0 next), with the slots past the run's delay zero. Their
+weight groups are `own_queue0` to `own_queue2`. Checkpoints from before
+the queue obs (374 obs with 2 drones, where `own_last_chosen` was only the
+newest chosen action) don't load in builds with it (390).
+
 ### 4 drone builds
 
 The harness plays the drone count it's built with: 2 by default, or 4 with

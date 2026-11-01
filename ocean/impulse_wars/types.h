@@ -27,7 +27,7 @@
 
 // the most steps a learned agent's actions can be delayed by, the size of
 // each drone's action queue
-#define MAX_ACTION_DELAY 4
+#define MAX_ACTION_DELAY 3
 
 static const uint8_t NUM_WALL_TYPES = 3;
 
@@ -618,8 +618,6 @@ typedef struct droneEntity {
     // actionQueueHead
     agentActions actionQueue[MAX_ACTION_DELAY];
     uint8_t actionQueueHead;
-    // the most recent chosen action, for the agent's own obs
-    agentActions lastChosen;
     b2Vec2 velocity;
     b2Vec2 lastVelocity;
     // set when an explosion overwrote lastVelocity mid step; tracked pushes

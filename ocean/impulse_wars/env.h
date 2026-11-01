@@ -819,21 +819,25 @@ void computeObs(iwEnv *e) {
         obs[offset++] = !agentDrone->dead;
         obs[offset++] = scaleValue(agentDrone->respawnWait, DRONE_RESPAWN_WAIT, true);
 
-        // the last chosen action, which executes actionDelay steps later;
-        // written at every delay so the layout doesn't depend on it
+        // the chosen actions that haven't executed yet, the next to
+        // execute first; the ring buffer's oldest action is at its head.
+        // Slots past the delay stay zero
         if (!agentDrone->dead) {
-            const agentActions *chosen = &agentDrone->lastChosen;
-            obs[offset++] = chosen->move.x;
-            obs[offset++] = chosen->move.y;
-            obs[offset++] = chosen->aim.x;
-            obs[offset++] = chosen->aim.y;
-            obs[offset++] = chosen->trigger;
-            obs[offset++] = chosen->utility;
-            obs[offset++] = chosen->brake;
-            obs[offset++] = chosen->chargingBurst;
-        } else {
-            offset += IW_LAST_CHOSEN_SIZE;
+            const uint8_t delay = e->actionDelay[agentDrone->idx];
+            for (uint8_t i = 0; i < delay; i++) {
+                const agentActions *queued = &agentDrone->actionQueue[(agentDrone->actionQueueHead + i) % delay];
+                float *slot = obs + offset + (i * IW_ACTION_SIZE);
+                slot[0] = queued->move.x;
+                slot[1] = queued->move.y;
+                slot[2] = queued->aim.x;
+                slot[3] = queued->aim.y;
+                slot[4] = queued->trigger;
+                slot[5] = queued->utility;
+                slot[6] = queued->brake;
+                slot[7] = queued->chargingBurst;
+            }
         }
+        offset += IW_ACTION_QUEUE_SIZE;
 
         ASSERT(offset == IW_DRONE_OFFSET + IW_DRONE_RAY_IDX);
         if (!agentDrone->dead) {
@@ -1429,11 +1433,12 @@ agentActions computeActions(iwEnv *e, droneEntity *drone, const agentActions *ma
     return actions;
 }
 
+_Static_assert(IW_ACTION_QUEUE_SLOTS == MAX_ACTION_DELAY, "the action queue obs needs a slot per queued action");
+
 // decodes a learned agent's chosen action and returns the action that
 // executes this step, the one chosen actionDelay steps ago
 agentActions computeDelayedActions(iwEnv *e, droneEntity *drone) {
     const agentActions chosen = _computeActions(e, drone, NULL);
-    drone->lastChosen = chosen;
 
     agentActions executed = chosen;
     const uint8_t delay = e->actionDelay[drone->idx];

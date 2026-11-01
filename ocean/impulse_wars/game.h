@@ -1173,16 +1173,14 @@ static inline uint8_t droneTeam(const iwEnv *e, const uint8_t idx) {
     return idx;
 }
 
-// fills a drone's action queue and last chosen action with a no-op that
-// keeps its current aim, so a delayed drone idles until its first chosen
-// action executes
+// fills a drone's action queue with a no-op that keeps its current aim, so
+// a delayed drone idles until its first chosen action executes
 void resetActionQueue(droneEntity *drone) {
     const agentActions noop = {.aim = drone->lastAim};
     for (uint8_t i = 0; i < MAX_ACTION_DELAY; i++) {
         drone->actionQueue[i] = noop;
     }
     drone->actionQueueHead = 0;
-    drone->lastChosen = noop;
 }
 
 void createDrone(iwEnv *e, const uint8_t idx) {
