@@ -58,12 +58,12 @@ def summarize(games):
     if 'teammateAssists' in ds[0]:
         row['team assists/g'] = t('teammateAssists') / n
     # weapon slot columns, only in results from before the utility slot
-    if 'swaps' in ds[0]:
+    if 'swapsFrom' in ds[0]:
         row['swaps/g'] = t('swaps') / n
         row['ctx held'] = ratio(sum(sum(d.get('contextPressed', [0])) for d in ds), alive)
         row['ctx press/g'] = sum(sum(d['contextPresses']) for d in ds) / n if 'contextPresses' in ds[0] else float('nan')
     row['charging'] = ratio(t('charging'), alive)
-    if 'swaps' in ds[0]:
+    if 'swapsFrom' in ds[0]:
         row['hol chg%'] = 100 * ratio(t('holsterCharged'), alive)
     row.update({
         'setup%': 100 * ratio(t('setupKillsAny'), kills),

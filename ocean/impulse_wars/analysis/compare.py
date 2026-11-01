@@ -491,7 +491,7 @@ def combo_tables(runs, side, used):
 
 
 def section_slots(runs, side):
-    if 'swaps' not in runs[0][1][0][side]:
+    if 'swapsFrom' not in runs[0][1][0][side]:
         section_weapon_pickups(runs, side)
         return
     cols = [(name, slot_metrics(games, side)) for name, games in runs]
