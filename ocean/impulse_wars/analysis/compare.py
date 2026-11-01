@@ -9,15 +9,17 @@ game or per event rates side by side.
 
 Opponents are bot personalities or, for runs made with --opponent, the
 opponent policy's name. --side b summarizes the opponent instead of the
-policy. Sections: opp, map, grid, weapons, boost, deaths, behavior, slots,
-utilities, pace, mapweapons, standoff, shadow; all by default. Combo
+policy. Sections: opp, map, grid, weapons, boost, deflections, deaths,
+behavior, slots, utilities, pace, mapweapons, standoff, shadow; all by default. Combo
 tournament runs (iw_analyze --combos, weapon + utility loadouts from the
 utility slot on) get a combos section instead of opp, map and grid;
 --sections combos shows only it.
 
 slots: weapon pickups and combo and setup kills, or the weapon slot stats
 for results from before the utility slot. utilities: use, kills and the
-grapple's and mines' own stats per utility.
+grapple's, mines', portals' and mirror's own stats per utility.
+deflections: enemy projectiles taken over by bursts, explosions, other
+projectiles and mirrors, and their hits and kills.
 
 pace: game length, draws, line of sight, firing without it and crate
 refills, which together show passive play (e.g. combo drills farming
@@ -96,6 +98,8 @@ SOURCES_NO_GRAPPLE = ['invalid', 'movement', 'recoil', 'burst', 'projectile', 'e
 # mirror the first four
 UTILITIES = ['none', 'grapple', 'mines', 'portals', 'mirror']
 UTILITY_WEAPONS = {1: 'grapple', 2: 'mine', 3: 'portal', 4: 'mirror'}
+# deflectType in types.h; builds before the mirror have the first three
+DEFLECT_TYPES = ['burst', 'explosion', 'projectile', 'mirror']
 
 
 def utility_names(drone):
@@ -103,7 +107,7 @@ def utility_names(drone):
     return UTILITIES[:len(drone.get('utilitiesPickedUp', UTILITIES))]
 GRAPPLE_TARGETS = ['wall', 'floating wall', 'drone']
 OPPS = ['scripted', 'evader', 'camper', 'rusher', 'trapper', 'turtle', 'fundamentals']
-SECTIONS = ['opp', 'map', 'grid', 'weapons', 'boost', 'deaths', 'behavior', 'slots', 'utilities', 'pace', 'mapweapons',
+SECTIONS = ['opp', 'map', 'grid', 'weapons', 'boost', 'deflections', 'deaths', 'behavior', 'slots', 'utilities', 'pace', 'mapweapons',
             'standoff', 'projectiles', 'shadow']
 # each map's featured weapon (its spawn weight override in map.h), marked in
 # the mapweapons section; only applies to builds from fe03156a on. From the
@@ -588,6 +592,98 @@ def section_utilities(runs, side):
                 ['kills/g', fmt(total(games, side, 'killsByWeapon', mine) / n, 3)],
                 ['self kills/g', fmt(total(games, side, 'selfKillsByWeapon', mine) / n, 3)]]
         table(f'{name}: mines', ['metric', 'value'], rows)
+        if 'portalsOpened' in games[0][side]:
+            section_portals(name, games, side, n, alive)
+        if 'mirrorsPlaced' in games[0][side]:
+            section_mirror(name, games, side, n)
+
+
+def section_mirror(name, games, side, n):
+    """Mirror use: mirrors placed, projectiles reflected and enemy shots taken over, by weapon."""
+    nw = len(WEAPONS)
+    take = DEFLECT_TYPES.index('mirror')
+    reflected = sum(total(games, side, 'mirrorReflections', w) for w in range(nw))
+    taken = sum(total(games, side, 'deflections', take * nw + w) for w in range(nw))
+    rows = [['mirrors placed/g', fmt(total(games, side, 'mirrorsPlaced') / n, 3)],
+            ['reflections/g', fmt(reflected / n, 3)],
+            ['enemy shots taken over/g', fmt(taken / n, 3)],
+            ['taken over % of reflections', fmt(100 * ratio(taken, reflected), 1)]]
+    table(f'{name}: mirror (reflections = every projectile reversed, own and teammates\' included; '
+          'taken over = enemy weapon shots reversed, which become this drone\'s)', ['metric', 'value'], rows)
+    rows = []
+    for w, weapon in enumerate(WEAPONS):
+        refl = total(games, side, 'mirrorReflections', w)
+        if refl == 0:
+            continue
+        rows.append([weapon, fmt(refl / n, 3), fmt(total(games, side, 'deflections', take * nw + w) / n, 3)])
+    if rows:
+        table(f'{name}: mirror reflections by weapon', ['weapon', 'reflected/g', 'taken over/g'], rows)
+
+
+def section_deflections(runs, side):
+    """Enemy projectiles taken over by deflecting them, by what deflected them, and their hits and kills."""
+    if 'deflections' not in runs[0][1][0][side]:
+        return
+    nw = len(WEAPONS)
+    for name, games in runs:
+        n = len(games)
+        nt = len(games[0][side]['deflections']) // nw
+        rows = []
+        for w, weapon in enumerate(WEAPONS):
+            by_type = [total(games, side, 'deflections', t * nw + w) for t in range(nt)]
+            hits = total(games, side, 'deflectedHits', w)
+            kills = total(games, side, 'deflectedKills', w)
+            if sum(by_type) == 0 and hits == 0 and kills == 0:
+                continue
+            rows.append([weapon] + [fmt(c / n, 3) for c in by_type]
+                        + [fmt(sum(by_type) / n, 3), fmt(hits / n, 3), fmt(kills / n, 3)])
+        if rows:
+            table(f'{name}: deflections (enemy projectiles taken over per game, by what turned them; '
+                  'hits and kills on enemies with them, any deflection type)',
+                  ['weapon'] + DEFLECT_TYPES[:nt] + ['total', 'hits/g', 'kills/g'], rows)
+
+
+def section_portals(name, games, side, n, alive):
+    """Portal use, from results with the portal instrumentation."""
+    u = UTILITIES.index('portals')
+    shots = total(games, side, 'utilityAmmoSpent', u)
+    swaps = total(games, side, 'swaps')
+    kills = total(games, side, 'kills')
+    portaled_kills = sum(total(games, side, 'portaledKills', w) for w in range(len(WEAPONS)))
+    transit_kills = total(games, side, 'transitKills', 0) + total(games, side, 'transitKills', 1)
+    rows = [['portals opened/g', fmt(total(games, side, 'portalsOpened') / n, 2)],
+            # portals stay open after switching to another utility, so this
+            # isn't a share of steps holding portals
+            ['linked pair % of live', fmt(100 * ratio(total(games, side, 'portalLinked'), alive), 1)],
+            ['within 6 of own portal % of live', fmt(100 * ratio(total(games, side, 'portalNear'), alive), 2)],
+            ['shots aimed within 30° of enemy %', fmt(100 * ratio(total(games, side, 'portalShotsAimedAtEnemy'), shots), 1)],
+            ['shots within 60° of motion %', fmt(100 * ratio(total(games, side, 'portalShotsAlongMotion'), shots), 1)],
+            ['shots with a pair already open %', fmt(100 * ratio(total(games, side, 'portalShotsWithPair'), shots), 1)],
+            ['own transits, own portals/g', fmt(total(games, side, 'portalDroneTransits', 0) / n, 3)],
+            ["own transits, others' portals/g", fmt(total(games, side, 'portalDroneTransits', 1) / n, 3)],
+            ['projectile transits, own portals/g', fmt(total(games, side, 'portalProjTransits', 0) / n, 2)],
+            ["projectile transits, others' portals/g", fmt(total(games, side, 'portalProjTransits', 1) / n, 2)],
+            ['kills by portaled projectiles/g', fmt(portaled_kills / n, 3)],
+            ['kills after the enemy went through own portals/g', fmt(total(games, side, 'transitKills', 0) / n, 3)],
+            ["kills after the enemy went through others' portals/g", fmt(total(games, side, 'transitKills', 1) / n, 3)],
+            ['portal-involved kills % (either kind, may overlap)', fmt(100 * ratio(portaled_kills + transit_kills, kills), 1)],
+            ['self kills after a transit/g', fmt(total(games, side, 'transitSelfKills') / n, 3)],
+            ['swaps with an enemy/g', fmt(swaps / n, 3)],
+            ['swapped enemy dies within 2s %', fmt(100 * ratio(total(games, side, 'swapEnemyDeaths'), swaps), 1)],
+            ['swapper dies within 2s %', fmt(100 * ratio(total(games, side, 'swapperDeaths'), swaps), 1)]]
+    table(f'{name}: portals (shots = portal shots fired; transits by drones and projectiles; '
+          'portaled = went through a portal; deaths tied within 2s)', ['metric', 'value'], rows)
+    rows = []
+    for w, weapon in enumerate(WEAPONS):
+        fired = total(games, side, 'portaledShots', w)
+        if fired == 0:
+            continue
+        hits = total(games, side, 'portaledHits', w)
+        rows.append([weapon, fmt(fired / n, 3), fmt(hits / n, 3), fmt(ratio(hits, fired), 3),
+                     fmt(total(games, side, 'portaledKills', w) / n, 3)])
+    if rows:
+        table(f'{name}: portaled projectiles by weapon (shots counted once at their first transit; hits on enemies)',
+              ['weapon', 'shots/g', 'hits/g', 'hits/shot', 'kills/g'], rows)
 
 
 def section_pace(runs, side):

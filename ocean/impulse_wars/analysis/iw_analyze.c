@@ -346,6 +346,8 @@ static void iw_mingru(MinGRU *layer, const float *input) {
 // steps before a kill another weapon must have been fired in to count as
 // part of a combo
 #define COMBO_WINDOW 30
+// distance from one of its open portals a drone counts as near it
+#define PORTAL_NEAR 6.0f
 // steps before a kill another weapon must have hit the enemy in to count
 // as setting it up
 #define SETUP_WINDOW 20
@@ -481,6 +483,10 @@ typedef struct behaviorStats {
     double grappleTethered;
     double grappleReeling;
     double grappleReelSpeed;
+    // steps with a linked portal pair, and within PORTAL_NEAR of one of
+    // this drone's open portals
+    double portalLinked;
+    double portalNear;
 
     // projectiles, per live step: live projectiles of this drone and the
     // enemy's, and those within PROJ_NEAR, as histograms by count; enemy
@@ -1413,6 +1419,13 @@ static void observeSlots(gameSlot *slot, const uint8_t i, const droneEntity *d) 
     const enum utilityType utility = d->utility.utilityInfo->type;
     s->utilityHeld[utility]++;
     s->utilityReady[utility] += d->utility.ammo > 0;
+    s->portalLinked += d->openPortals == _MAX_PORTALS;
+    for (uint8_t k = 0; k < d->openPortals; k++) {
+        if (b2Distance(d->pos, d->portals[k]->pos) <= PORTAL_NEAR) {
+            s->portalNear++;
+            break;
+        }
+    }
     if (d->grapple != NULL && d->grapple->welded) {
         if (d->utilityHeld) {
             s->grappleReeling++;
@@ -2470,7 +2483,18 @@ static void writeDrone(FILE *f, const gameResult *g, const uint8_t i) {
     WRITE_A(utilityAmmoSpent, _NUM_UTILITIES);
     WRITE_A(utilityHits, _NUM_UTILITIES);
     WRITE_A(grappleAttaches, 3);
+    fprintf(f, "\"portalsOpened\":%g,", a->portalsOpened);
+    WRITE_A(portalDroneTransits, 2);
+    WRITE_A(portalProjTransits, 2);
+    WRITE_A(portaledShots, NW);
+    WRITE_A(portaledHits, NW);
+    WRITE_A(portaledKills, NW);
+    WRITE_A(transitKills, 2);
+    fprintf(f, "\"transitSelfKills\":%g,\"swaps\":%g,\"swapEnemyDeaths\":%g,\"swapperDeaths\":%g,", a->transitSelfKills, a->swaps, a->swapEnemyDeaths, a->swapperDeaths);
+    fprintf(f, "\"portalShotsAimedAtEnemy\":%g,\"portalShotsAlongMotion\":%g,\"portalShotsWithPair\":%g,", a->portalShotsAimedAtEnemy, a->portalShotsAlongMotion, a->portalShotsWithPair);
     fprintf(f, "\"grappleAttachedDeaths\":%g,\"minesDetonated\":%g,", a->grappleAttachedDeaths, a->minesDetonated);
+    fprintf(f, "\"mirrorsPlaced\":%g,", a->mirrorsPlaced);
+    WRITE_A(mirrorReflections, NW);
     WRITE_A(boostedSpeedAfter, NW);
     WRITE_BA(held, NW);
     WRITE_BA(fireDist, NW);
@@ -2534,6 +2558,8 @@ static void writeDrone(FILE *f, const gameResult *g, const uint8_t i) {
     WRITE_B(grappleTethered);
     WRITE_B(grappleReeling);
     WRITE_B(grappleReelSpeed);
+    WRITE_B(portalLinked);
+    WRITE_B(portalNear);
     WRITE_BA(projOwnHist, PROJ_HIST);
     WRITE_BA(projEnemyHist, PROJ_HIST);
     WRITE_BA(projOwnNearHist, PROJ_HIST);

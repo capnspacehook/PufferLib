@@ -109,7 +109,9 @@ opponent from each of the 4 seats, as in training. `analyze_run.sh` picks
   grapple attachments shortly before an enemy dies, in any mode. Teammate
   assists (2v2 only) go to the killer's teammate when it was the second
   biggest contributor to an enemy kill, ranked by push towards the death
-  the same way the killer is (the dead drone's own pushes are ranked too).
+  the same way the killer is (the dead drone's own pushes are ranked too),
+  and pushed at least half as much as the killer
+  (`TEAMMATE_ASSIST_MIN_SHARE`).
 - `bot_tournament.c` plays 2v2 and `--ffa` the same way.
 - Results only compare to runs with the same drone count and mode.
 
@@ -243,7 +245,25 @@ The `utilities` section has, per utility:
   of this drone by the enemy's;
 - for the grapple: attaches by target, time attached and reeling, reeling
   speed against the mean speed, deaths while attached and kills by its pull;
-- for mines: detonations, kills and self kills.
+- for mines: detonations, kills and self kills;
+- for portals: portals opened, time with a linked pair and near an own
+  portal, where portal shots were aimed (at the nearest enemy within 30°,
+  along the drone's motion within 60°, with a pair already open so the
+  older portal closes), transits of drones and projectiles through own
+  and others' portals, and portal-involved outcomes: kills by projectiles
+  that went through a portal (a kill counts if any of the killing push
+  went through one), kills of enemies that went through a portal in the
+  2 s before dying, self kills after a transit, and swaps with an enemy
+  with how often either drone died within 2 s. A per weapon table has
+  projectiles that went through a portal, their hits on enemies and kills;
+- for the mirror: mirrors placed, projectiles reflected (own and
+  teammates' included) and enemy shots taken over, which become the
+  mirror owner's, in all and by weapon.
+
+The `deflections` section has, per weapon, enemy projectiles taken over
+per game by what turned them (bursts, explosions, other projectiles and
+mirrors), and the hits and kills on enemies with deflected projectiles of
+any kind.
 
 Utility hits and firing are kept out of the shot stats, as hitting the
 enemy often isn't the point of a utility.

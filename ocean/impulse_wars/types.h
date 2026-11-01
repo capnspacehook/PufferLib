@@ -280,6 +280,8 @@ typedef struct projectileEntity {
     uint8_t prevDroneIdx;
     // the drone that fired it, which droneIdx no longer is once deflected
     uint8_t firerIdx;
+    // went through a portal at least once
+    bool portaled;
     // direction and the other projectile's owner when a contact with
     // another projectile began, to check for a deflection when it ends
     bool inProjContact;
@@ -455,6 +457,10 @@ typedef struct physicsSource {
     // the projectile was deflected and the push is credited to the drone
     // that deflected it or the previous owner
     bool deflected;
+    // the projectile went through a portal; for analysis only, so it isn't
+    // part of a source's identity when finding a killer: a source is
+    // portaled if any of its pushes were
+    bool portaled;
 } physicsSource;
 
 typedef struct physicsStepInfo {
@@ -555,6 +561,16 @@ typedef struct droneEntity {
     // episode frame + 1 this drone last pulled each drone with a black
     // hole or had its grapple attached to it, 0 if it hasn't
     uint16_t assistFrame[_MAX_DRONES][NUM_ASSIST_WEAPONS];
+    // for portal analysis: episode frame + 1 this drone last went through
+    // a portal and the drone owning it, and last was swapped by another
+    // drone's portal shot and by which drone; 0 if it hasn't
+    uint16_t portalTransitFrame;
+    uint8_t portalTransitOwner;
+    uint16_t swappedFrame;
+    uint8_t swappedBy;
+    // episode frame + 1 this drone last swapped with an enemy, 0 if it
+    // hasn't
+    uint16_t swapFrame;
 
     float energyLeft;
     bool braking;
@@ -698,6 +714,36 @@ typedef struct droneAnalysisStats {
     // reversed weapon, own projectiles included
     float mirrorsPlaced;
     float mirrorReflections[_NUM_WEAPONS];
+    // portals opened; this drone's transits through its own portals and
+    // through other drones'; its projectiles going through its own portals
+    // and other drones', counting every transit
+    float portalsOpened;
+    float portalDroneTransits[2];
+    float portalProjTransits[2];
+    // this drone's projectiles that went through a portal at least once,
+    // by weapon, counted at their first transit, and their hits on drones
+    // of other teams and weapon kills of them (a kill counts if any of the
+    // killing source's pushes was portaled)
+    float portaledShots[_NUM_WEAPONS];
+    float portaledHits[_NUM_WEAPONS];
+    float portaledKills[_NUM_WEAPONS];
+    // kills of enemies that went through a portal in the
+    // PORTAL_ANALYSIS_WINDOW before dying, through this drone's portals or
+    // any other drone's, and self kills after going through one
+    float transitKills[2];
+    float transitSelfKills;
+    // portal shots that swapped this drone with an enemy, and swaps the
+    // swapped enemy died within PORTAL_ANALYSIS_WINDOW after, or this drone
+    // died within it
+    float swaps;
+    float swapEnemyDeaths;
+    float swapperDeaths;
+    // portal shots aimed within 30 degrees of the nearest enemy, within 60
+    // degrees of this drone's velocity while moving, and fired with both
+    // portals already open, which closes the older one
+    float portalShotsAimedAtEnemy;
+    float portalShotsAlongMotion;
+    float portalShotsWithPair;
 } droneAnalysisStats;
 
 struct Log {

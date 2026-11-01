@@ -617,6 +617,7 @@ void createPortal(iwEnv *e, droneEntity *drone, wallEntity *wall, const b2Vec2 p
 
     ASSERT(drone->openPortals < 2);
     drone->portals[drone->openPortals++] = portal;
+    e->analysisStats[drone->idx].portalsOpened++;
 
     if (drone->openPortals == 2) {
         drone->portals[0]->linkedPortal = portal;
@@ -1729,6 +1730,7 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
 
         sourceContrib *src = getSourceContrib(sources, sourceSlots, &numSources, maxSources, srcIdx, physicsStep->source);
         src->contrib = b2Add(src->contrib, stepContrib);
+        src->source.portaled |= physicsStep->source.portaled;
 
         // DEBUG_LOGF("# step %d drone %d contrib %f (%f, %f)", physicsStep->step, physicsStep->srcIdx, b2Length(contrib[physicsStep->srcIdx]), contrib[physicsStep->srcIdx].x, contrib[physicsStep->srcIdx].y);
     }
@@ -1788,7 +1790,8 @@ int8_t findBiggestContributor(const iwEnv *e, const enum entityType type, const 
 
 // gives a teammate assist to the killer's teammate if it was the second
 // biggest contributor to the kill, ranked the same way the killer is, by
-// push towards the death; the dead drone's own pushes are ranked too
+// push towards the death (the dead drone's own pushes are ranked too), and
+// pushed at least TEAMMATE_ASSIST_MIN_SHARE of the killer's push
 static inline void recordTeammateAssist(iwEnv *e, const droneEntity *drone, const droneEntity *killerDrone, const float *droneContribs) {
     float secondContrib = 1e-6f;
     int8_t second = -1;
@@ -1802,6 +1805,9 @@ static inline void recordTeammateAssist(iwEnv *e, const droneEntity *drone, cons
         }
     }
     if (second == -1 || second == drone->idx) {
+        return;
+    }
+    if (secondContrib < TEAMMATE_ASSIST_MIN_SHARE * droneContribs[killerDrone->idx]) {
         return;
     }
 
@@ -1886,6 +1892,7 @@ void recordDeathAnalysis(iwEnv *e, const droneEntity *drone, const int8_t killer
     const droneEntity *killerDrone = safe_array_get_at(e->drones, killer);
     if (weapon && killerDrone->team != drone->team) {
         droneAnalysisStats *killerStats = &e->analysisStats[killer];
+        killerStats->portaledKills[source.weapon] += source.portaled;
         if (source.deflected) {
             killerStats->deflectedKills[source.weapon]++;
             return;
@@ -1935,6 +1942,30 @@ void recordAssists(iwEnv *e, const droneEntity *drone, const int8_t killer) {
     }
 }
 
+// ties a death to a portal transit or swap in the PORTAL_ANALYSIS_WINDOW
+// before it, for analysis
+void recordPortalDeath(iwEnv *e, droneEntity *drone, const int8_t killer) {
+    const uint32_t window = (uint32_t)(PORTAL_ANALYSIS_WINDOW * e->frameRate);
+    const uint32_t now = (uint32_t)e->episodeLength + 1;
+    if (drone->portalTransitFrame != 0 && now - drone->portalTransitFrame <= window && killer != -1) {
+        const droneEntity *killerDrone = safe_array_get_at(e->drones, killer);
+        if (killer == drone->idx) {
+            e->analysisStats[drone->idx].transitSelfKills++;
+        } else if (killerDrone->team != drone->team) {
+            e->analysisStats[killer].transitKills[drone->portalTransitOwner == killer ? 0 : 1]++;
+        }
+    }
+    if (drone->swappedFrame != 0 && now - drone->swappedFrame <= window) {
+        e->analysisStats[drone->swappedBy].swapEnemyDeaths++;
+    }
+    if (drone->swapFrame != 0 && now - drone->swapFrame <= window) {
+        e->analysisStats[drone->idx].swapperDeaths++;
+    }
+    drone->portalTransitFrame = 0;
+    drone->swappedFrame = 0;
+    drone->swapFrame = 0;
+}
+
 void destroyGrapplesAttachedTo(iwEnv *e, const entity *ent) {
     for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
         droneEntity *drone = safe_array_get_at(e->drones, i);
@@ -1960,6 +1991,7 @@ void killDrone(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     const int8_t killer = findDroneKiller(e, drone, killWall);
     recordDeathAnalysis(e, drone, killer, killWall);
     recordAssists(e, drone, killer);
+    recordPortalDeath(e, drone, killer);
 
     for (size_t i = 0; i < cc_array_size(drone->physicsTracking); i++) {
         physicsStepInfo *physicsStep = safe_array_get_at(drone->physicsTracking, i);
@@ -2877,6 +2909,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         source.weapon = ctx->projectile->weaponInfo->type;
         source.boosted = ctx->projectile->boosted;
         source.deflected = ctx->projectile->deflected;
+        source.portaled = ctx->projectile->portaled;
     }
     // a deflected projectile exploding on its new owner is credited to
     // its previous owner
@@ -2974,6 +3007,9 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
             DEBUG_LOGF("drone %d hit by burst from drone %d", drone->idx, creditDrone->idx);
         } else {
             DEBUG_LOGF("drone %d hit drone %d with explosion from weapon %d", creditDrone->idx, drone->idx, ctx->projectile->weaponInfo->type);
+            if (ctx->projectile->portaled && creditDrone->team != drone->team) {
+                ctx->e->analysisStats[creditDrone->idx].portaledHits[ctx->projectile->weaponInfo->type]++;
+            }
             if (source.deflected) {
                 ctx->e->analysisStats[creditDrone->idx].deflectedHits[ctx->projectile->weaponInfo->type]++;
             } else {
@@ -3429,6 +3465,35 @@ void droneMove(const iwEnv *e, const droneEntity *drone, b2Vec2 direction) {
     applyTrackedForce(e, drone->bodyID, drone->physicsTracking, force, drone->idx, source);
 }
 
+// records where a portal shot was aimed, before it's fired, for analysis
+static void recordPortalShot(iwEnv *e, const droneEntity *drone, const b2Vec2 aim) {
+    b2Vec2 normAim = drone->lastAim;
+    if (!b2Equal(aim, b2Vec2_zero)) {
+        normAim = b2Normalize(aim);
+    }
+    droneAnalysisStats *stats = &e->analysisStats[drone->idx];
+    stats->portalShotsWithPair += drone->openPortals == _MAX_PORTALS;
+    if (b2Length(drone->velocity) > 1.0f) {
+        stats->portalShotsAlongMotion += fabsf(signedAngle(normAim, drone->velocity)) < 60.0f * DEG2RAD;
+    }
+    float bestDist = FLT_MAX;
+    b2Vec2 bearing = b2Vec2_zero;
+    for (uint8_t i = 0; i < NUM_DRONES; i++) {
+        const droneEntity *other = safe_array_get_at(e->drones, i);
+        if (other->idx == drone->idx || other->dead || other->team == drone->team) {
+            continue;
+        }
+        const float dist = b2DistanceSquared(drone->pos, other->pos);
+        if (dist < bestDist) {
+            bestDist = dist;
+            bearing = b2Sub(other->pos, drone->pos);
+        }
+    }
+    if (bestDist != FLT_MAX) {
+        stats->portalShotsAimedAtEnemy += fabsf(signedAngle(normAim, bearing)) < 30.0f * DEG2RAD;
+    }
+}
+
 // records how far the aim is from the bearing to the nearest live enemy
 static void recordAimError(iwEnv *e, droneEntity *drone, const b2Vec2 normAim) {
     float bestDist = FLT_MAX;
@@ -3685,6 +3750,9 @@ void droneUtility(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool hel
     stats->utilityAmmoSpent[info->type]++;
     utility->ammo--;
     utility->cooldown = info->projectileInfo->cooldown;
+    if (info->type == PORTAL_UTILITY) {
+        recordPortalShot(e, drone, aim);
+    }
 
     droneFireProjectiles(e, drone, info->projectileInfo, 0, aim);
 
@@ -4073,7 +4141,7 @@ void handleBlackHolePull(const iwEnv *e, projectileEntity *projectile) {
             magnitude *= DRONE_SHIELD_FORCE_REDUCTION;
         }
         const b2Vec2 force = b2MulSV(magnitude, direction);
-        physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = BLACK_HOLE_WEAPON, .deflected = projectile->deflected};
+        physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = BLACK_HOLE_WEAPON, .deflected = projectile->deflected, .portaled = projectile->portaled};
 
         if (entityTypeIsWall(ent->type)) {
             wallEntity *wall = ent->entity;
@@ -4509,7 +4577,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
 
     bool bodyIDSet = false;
     b2BodyId bodyID = {0};
-    const physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = projectile->weaponInfo->type, .boosted = projectile->boosted, .deflected = projectile->deflected};
+    const physicsSource source = {.type = PROJECTILE_PHYSICS, .weapon = projectile->weaponInfo->type, .boosted = projectile->boosted, .deflected = projectile->deflected, .portaled = projectile->portaled};
 
     // e (shape B in the collision) will be NULL if it's another
     // projectile that was just destroyed
@@ -4618,6 +4686,9 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
                 droneAddEnergy(shooterDrone, impulseEnergy);
             }
             shooterDrone->stepInfo.shotHit[hitDrone->idx] += hitStrength * SHOT_HIT_IMPULSE_SCALE;
+            if (projectile->portaled && shooterDrone->team != hitDrone->team) {
+                e->analysisStats[shooterDrone->idx].portaledHits[projectile->weaponInfo->type]++;
+            }
             if (hitSource.deflected) {
                 e->analysisStats[shooterDrone->idx].deflectedHits[projectile->weaponInfo->type]++;
             } else {
@@ -4720,6 +4791,12 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
                 startDroneSwapEffect(e, drone->pos, hitDronePos);
                 droneTeleport(e, hitDrone, drone->pos, b2Vec2_zero, false);
                 droneTeleport(e, drone, hitDronePos, b2Vec2_zero, false);
+                if (hitDrone->team != drone->team) {
+                    e->analysisStats[drone->idx].swaps++;
+                    hitDrone->swappedFrame = e->episodeLength + 1;
+                    hitDrone->swappedBy = drone->idx;
+                    drone->swapFrame = e->episodeLength + 1;
+                }
                 if (!hitDrone->dead) {
                     trackSwapClaim(e, hitDrone, drone->idx);
                 }
@@ -5280,6 +5357,9 @@ bool sendDroneThroughPortal(iwEnv *e, portalEntity *in, portalEntity *out, drone
     const b2Vec2 exitPos = portalExitPos(in, out, rot, entryPos, radius);
     const b2Vec2 exitVel = portalExitVelocity(in, out, rot, drone->lastVelocity);
     droneTeleport(e, drone, exitPos, exitVel, true);
+    e->analysisStats[drone->idx].portalDroneTransits[in->droneIdx == drone->idx ? 0 : 1]++;
+    drone->portalTransitFrame = e->episodeLength + 1;
+    drone->portalTransitOwner = in->droneIdx;
     if (!drone->dead) {
         trackPortalTransit(e, drone, rot);
     }
@@ -5340,6 +5420,13 @@ bool handlePortalBeginTouch(iwEnv *e, const entity *sensor, entity *visitor) {
         projectile->lastPos = projectile->pos;
         projectile->velocity = exitVel;
         projectile->lastVelocity = projectile->velocity;
+
+        droneAnalysisStats *stats = &e->analysisStats[projectile->droneIdx];
+        stats->portalProjTransits[portal->droneIdx == projectile->droneIdx ? 0 : 1]++;
+        if (!projectile->portaled) {
+            projectile->portaled = true;
+            stats->portaledShots[projectile->weaponInfo->type]++;
+        }
 
         if (projectile->trailPoints != NULL) {
             projectile->trailPoints->length = 0;

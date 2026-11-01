@@ -154,6 +154,12 @@ static const float DRONE_MOVE_AIM_COEF = 0.1f;
 // seconds after a black hole pull or grapple attachment that the enemy
 // dying earns the setter an assist
 static const float DRONE_ASSIST_WINDOW = 2.0f;
+// share of the killer's push towards a death the killer's teammate must
+// have pushed to earn a teammate assist, for analysis
+static const float TEAMMATE_ASSIST_MIN_SHARE = 0.5f;
+// seconds after a portal transit or swap a death is tied to it, for
+// analysis only
+static const float PORTAL_ANALYSIS_WINDOW = 2.0f;
 
 static const float DRONE_ENERGY_MAX = 1.0f;
 static const float DRONE_BRAKE_DAMPING_COEF = 2.5f;
