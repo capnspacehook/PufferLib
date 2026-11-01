@@ -321,6 +321,7 @@ typedef struct {
     bool async;
     bool reset_every_horizon;
     bool cudagraphs;
+    int train_chunk;  // minibatches per train graph chunk, see train_impl
     bool profile;
     int rank;
     int world_size;
@@ -549,7 +550,11 @@ typedef struct PuffeRL {
     int train_rows;     // learn_rows rounded down to whole minibatches
     cudaGraphExec_t* rollout_graphs;  // CPU: [slots][horizon][num_buffers]
     cudaGraphExec_t gpu_rollout_graph[2];  // GPU: full net+env horizon per slot
-    cudaGraphExec_t train_cudagraph[2];  // per async slot; src pointers differ
+    // Per async slot (src pointers differ): one graph per chunk of
+    // train_chunk minibatches, see train_impl
+    cudaGraphExec_t* train_cudagraph[2];
+    int train_num_chunks;
+    cudaEvent_t train_chunk_done[2];
     cudaStream_t* streams;  // per-buffer raw CUDA streams
     cudaStream_t default_stream;  // main-thread stream (captured once at init)
     cudaStream_t train_stream;    // dedicated learner stream (always non-default)
@@ -750,25 +755,31 @@ static Prec init_slot(Prec full, int slot) {
     return {.data = full.data + (long)slot * stride, .shape = {L, A, H}};
 }
 
-// Zero RNN state for agents that just terminated. Same grid as snapshot
-// (L*count*H); non-terminal threads return after one terminal load.
+#ifndef ZERO_TERM_THREADS
+#define ZERO_TERM_THREADS 128
+#endif
+#ifndef SAMPLE_THREADS
+#define SAMPLE_THREADS 32
+#endif
+
+// Zero RNN state for agents that just terminated. One block per agent
+// (count blocks): a non-terminal agent's block returns after one terminal
+// load, a terminal one zeroes its L*H state elements.
 __global__ void zero_term_state(Prec state, Float terminals,
         int state_start, int terminal_start, int count) {
+    int rel = blockIdx.x;
+    if (rel >= count || terminals.data[terminal_start + rel] == 0.0f) {
+        return;
+    }
     int L = state.shape[0];
+    int A = (int)state.shape[1];
     int H = state.shape[2];
-    int total = L * count * H;
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= total) {
-        return;
+    for (int i = threadIdx.x; i < L * H; i += blockDim.x) {
+        int layer = i / H;
+        int h = i % H;
+        state.data[state_elem_idx(layer, A, state_start + rel, h, H)] =
+            from_float(0.0f);
     }
-    int h = idx % H;
-    int rel = (idx / H) % count;
-    int layer = idx / (count * H);
-    if (terminals.data[terminal_start + rel] == 0.0f) {
-        return;
-    }
-    long i = state_elem_idx(layer, (int)state.shape[1], state_start + rel, h, H);
-    state.data[i] = from_float(0.0f);
 }
 
 // Select time t, then agents [start, start+count). Rank-2 has F==0 (zero-term shape);
@@ -861,7 +872,7 @@ static void pufferl_forward_step(PuffeRL* pufferl, int buf, int t,
 
         // Per-policy state is compact (n agents); local index 0..n-1.
         int state_n = (int)st->shape[0] * n * (int)st->shape[2];
-        zero_term_state<<<grid_size(state_n), BLOCK_SIZE, 0, stream>>>(
+        zero_term_state<<<n, ZERO_TERM_THREADS, 0, stream>>>(
             *st, env->terminals, 0, sub, n);
 
         // Carry path: snapshot trainable policy state into per-slot initial_states.
@@ -880,7 +891,9 @@ static void pufferl_forward_step(PuffeRL* pufferl, int buf, int t,
         }
 
         // Offset RNG by off so policies don't collide on per-buffer rng slots.
-        sample_logits<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
+        // One thread per agent; small blocks spread the agents over the SMs.
+        sample_logits<<<(n + SAMPLE_THREADS - 1) / SAMPLE_THREADS,
+                SAMPLE_THREADS, 0, stream>>>(
             dec, p_logstd, pufferl->act_sizes,
             act_b.data, env->actions.data + (long)sub * act_cols,
             lp_b.data, val_b.data,
@@ -1517,13 +1530,13 @@ __global__ void puf_stamp(unsigned long long* dst) {
     *dst = t;
 }
 
+// Minibatches [mb_begin, mb_end) of a train epoch; the first chunk
+// (mb_begin == 0) also does the per-epoch setup and the last one the end stamp.
 static void train_epoch_gpu(PuffeRL* pufferl, RolloutBuf src, int slot,
-        cudaStream_t stream) {
+        cudaStream_t stream, int mb_begin, int mb_end) {
     Hypers* hypers = &pufferl->hypers;
     RolloutBuf* rollouts = &pufferl->train_rollouts;
     unsigned long long* st = pufferl->profile.stamps + slot * NUM_TE;
-    puf_stamp<<<1, 1, 0, stream>>>(st + TE_S);
-
     int T = src.observations.shape[0];
     int B = src.observations.shape[1];
     int obs_size = (int)src.observations.shape[2];
@@ -1532,45 +1545,48 @@ static void train_epoch_gpu(PuffeRL* pufferl, RolloutBuf src, int slot,
     // Only learner seats are trained on; frozen historical seats are dropped.
     int stride = B / hypers->num_buffers;
     int keep = pufferl->learn_per_buf;
-    gather_rollout(rollouts->observations.data, src.observations.data,
-        T, B, obs_size, stride, keep, stream);
-    gather_rollout(rollouts->actions.data, src.actions.data,
-        T, B, num_atns, stride, keep, stream);
-    gather_rollout(rollouts->logprobs.data, src.logprobs.data,
-        T, B, 1, stride, keep, stream);
-    gather_rollout(rollouts->rewards.data, src.rewards.data,
-        T, B, 1, stride, keep, stream);
-    gather_rollout(rollouts->terminals.data, src.terminals.data,
-        T, B, 1, stride, keep, stream);
-    gather_rollout(rollouts->values.data, src.values.data,
-        T, B, 1, stride, keep, stream);
-    gather_rollout(rollouts->action_mask.data, src.action_mask.data,
-        T, B, mask_c, stride, keep, stream);
+    int total_minibatches = train_minibatches(pufferl);
+    if (mb_begin == 0) {
+        puf_stamp<<<1, 1, 0, stream>>>(st + TE_S);
+        gather_rollout(rollouts->observations.data, src.observations.data,
+            T, B, obs_size, stride, keep, stream);
+        gather_rollout(rollouts->actions.data, src.actions.data,
+            T, B, num_atns, stride, keep, stream);
+        gather_rollout(rollouts->logprobs.data, src.logprobs.data,
+            T, B, 1, stride, keep, stream);
+        gather_rollout(rollouts->rewards.data, src.rewards.data,
+            T, B, 1, stride, keep, stream);
+        gather_rollout(rollouts->terminals.data, src.terminals.data,
+            T, B, 1, stride, keep, stream);
+        gather_rollout(rollouts->values.data, src.values.data,
+            T, B, 1, stride, keep, stream);
+        gather_rollout(rollouts->action_mask.data, src.action_mask.data,
+            T, B, mask_c, stride, keep, stream);
 
-    clamp_precision_kernel<<<grid_size(
-        numel(rollouts->rewards.shape)), BLOCK_SIZE, 0, stream>>>(
-        rollouts->rewards.data, -1.0f, 1.0f, numel(rollouts->rewards.shape));
+        clamp_precision_kernel<<<grid_size(
+            numel(rollouts->rewards.shape)), BLOCK_SIZE, 0, stream>>>(
+            rollouts->rewards.data, -1.0f, 1.0f, numel(rollouts->rewards.shape));
 
-    if (hypers->reset_every_horizon || src.initial_states.data == NULL) {
-        cudaMemsetAsync(pufferl->train_state.data, 0,
-            numel(pufferl->train_state.shape) * sizeof(precision_t), stream);
-    } else {
-        Prec slot_st = init_slot(src.initial_states, slot);
-        gather_state_rows(pufferl->train_state.data, slot_st.data,
-            (int)slot_st.shape[0], B, (int)slot_st.shape[2],
-            stride, keep, stream);
+        if (hypers->reset_every_horizon || src.initial_states.data == NULL) {
+            cudaMemsetAsync(pufferl->train_state.data, 0,
+                numel(pufferl->train_state.shape) * sizeof(precision_t), stream);
+        } else {
+            Prec slot_st = init_slot(src.initial_states, slot);
+            gather_state_rows(pufferl->train_state.data, slot_st.data,
+                (int)slot_st.shape[0], B, (int)slot_st.shape[2],
+                stride, keep, stream);
+        }
+        puf_stamp<<<1, 1, 0, stream>>>(st + TE_MID);
     }
-    puf_stamp<<<1, 1, 0, stream>>>(st + TE_MID);
 
     int mb_segs = hypers->minibatch_size / hypers->horizon;
-    int total_minibatches = train_minibatches(pufferl);
     int n_rows = pufferl->train_rows;
     int Nmb = (int)pufferl->train_buf.mb_advantages.shape[0];
     int Tmb = (int)pufferl->train_buf.mb_advantages.shape[1];
     constexpr int ADV_THREADS = 64;
     int adv_grid = (Nmb + ADV_THREADS - 1) / ADV_THREADS;
     Policy* primary = &pufferl->policies[0];
-    for (int mb = 0; mb < total_minibatches; ++mb) {
+    for (int mb = mb_begin; mb < mb_end; ++mb) {
         int dest_off = (mb * mb_segs) % n_rows;
         TrainGraph graph = pufferl->train_buf;
         graph.mb_obs = slice_rows(rollouts->observations, dest_off, Nmb);
@@ -1618,8 +1634,10 @@ static void train_epoch_gpu(PuffeRL* pufferl, RolloutBuf src, int slot,
                 numel(pufferl->grad.shape), NCCL_PRECISION, ncclAvg,
                 pufferl->nccl_comm, stream);
         }
+        // The weight update also writes the bf16 params (fused cast).
         muon_step(&pufferl->muon, primary->master_weights,
-            pufferl->grad, hypers->max_grad_norm, stream);
+            pufferl->grad, hypers->max_grad_norm, stream,
+            USE_BF16 ? primary->param.data : NULL);
         // NaN guard: which inputs of a minibatch with a non-finite grad
         // weren't finite; a no-op otherwise
         Prec nonfinite_inputs[NUM_NONFINITE] = {
@@ -1633,13 +1651,10 @@ static void train_epoch_gpu(PuffeRL* pufferl, RolloutBuf src, int slot,
                 pufferl->nonfinite_flags, 1 << i, pufferl->muon.grad_norm,
                 nonfinite_inputs[i].data, n);
         }
-        if (USE_BF16) {
-            int n = numel(primary->param.shape);
-            cast<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
-                primary->param.data, primary->master_weights.data, n);
-        }
     }
-    puf_stamp<<<1, 1, 0, stream>>>(st + TE_E);
+    if (mb_end == total_minibatches) {
+        puf_stamp<<<1, 1, 0, stream>>>(st + TE_E);
+    }
 }
 
 void train_impl(PuffeRL* pufferl, RolloutBuf* src_arg) {
@@ -1678,29 +1693,51 @@ void train_impl(PuffeRL* pufferl, RolloutBuf* src_arg) {
 
     int slot = hypers->async ? pufferl->async_ready_slot : 0;
     int total_minibatches = train_minibatches(pufferl);
-    bool first = hypers->cudagraphs && pufferl->train_cudagraph[slot] == NULL;
-    profile_begin("train_forward_backward", hypers->profile);
-    if (first) {
-        double t_cap = wall_clock();
-        assert(cudaStreamBeginCapture(
-            train_stream, cudaStreamCaptureModeThreadLocal)
-            == cudaSuccess && "cudaStreamBeginCapture failed");
-        train_epoch_gpu(pufferl, src, slot, train_stream);
-        cudaGraph_t graph;
-        assert(cudaStreamEndCapture(train_stream, &graph)
-            == cudaSuccess && "cudaStreamEndCapture failed");
-        assert(cudaGraphInstantiate(
-            &pufferl->train_cudagraph[slot], graph, 0)
-            == cudaSuccess && "cudaGraphInstantiate failed");
-        cudaGraphDestroy(graph);
-        double dt = wall_clock() - t_cap;
-        pufferl->start_time += dt;
-        pufferl->last_log_time += dt;
+    // The epoch goes out in chunks of train_chunk minibatches with at most
+    // two chunks queued on the GPU at once. Rollout steps run concurrently on
+    // their own streams, and a whole epoch queued at once can keep their
+    // short graphs waiting behind it for hundreds of ms. Same work in the same
+    // order on train_stream, so the same results.
+    int chunk = hypers->train_chunk > 0 ? hypers->train_chunk : total_minibatches;
+    int num_chunks = total_minibatches > 0 && chunk > 0
+        ? (total_minibatches + chunk - 1) / chunk : 1;
+    if (pufferl->train_cudagraph[slot] == NULL) {
+        pufferl->train_num_chunks = num_chunks;
+        pufferl->train_cudagraph[slot] = (cudaGraphExec_t*)calloc(
+            num_chunks, sizeof(cudaGraphExec_t));
     }
-    if (hypers->cudagraphs) {
-        cudaGraphLaunch(pufferl->train_cudagraph[slot], train_stream);
-    } else {
-        train_epoch_gpu(pufferl, src, slot, train_stream);
+    assert(pufferl->train_num_chunks == num_chunks
+        && "train chunk count changed between epochs");
+    profile_begin("train_forward_backward", hypers->profile);
+    for (int c = 0; c < num_chunks; c++) {
+        int mb_begin = c * chunk;
+        int mb_end = min(mb_begin + chunk, total_minibatches);
+        if (c >= 2) {
+            cudaEventSynchronize(pufferl->train_chunk_done[c % 2]);
+        }
+        cudaGraphExec_t* exec = &pufferl->train_cudagraph[slot][c];
+        if (hypers->cudagraphs && *exec == NULL) {
+            double t_cap = wall_clock();
+            assert(cudaStreamBeginCapture(
+                train_stream, cudaStreamCaptureModeThreadLocal)
+                == cudaSuccess && "cudaStreamBeginCapture failed");
+            train_epoch_gpu(pufferl, src, slot, train_stream, mb_begin, mb_end);
+            cudaGraph_t graph;
+            assert(cudaStreamEndCapture(train_stream, &graph)
+                == cudaSuccess && "cudaStreamEndCapture failed");
+            assert(cudaGraphInstantiate(exec, graph, 0)
+                == cudaSuccess && "cudaGraphInstantiate failed");
+            cudaGraphDestroy(graph);
+            double dt = wall_clock() - t_cap;
+            pufferl->start_time += dt;
+            pufferl->last_log_time += dt;
+        }
+        if (hypers->cudagraphs) {
+            cudaGraphLaunch(*exec, train_stream);
+        } else {
+            train_epoch_gpu(pufferl, src, slot, train_stream, mb_begin, mb_end);
+        }
+        cudaEventRecord(pufferl->train_chunk_done[c % 2], train_stream);
     }
     profile_end(hypers->profile);
 
@@ -1881,6 +1918,7 @@ PuffeRL* create_pufferl(Ini* ini, TrainContext* ctx) {
         .async = puf_ini_get(ini, "base", "async") != 0,
         .reset_every_horizon = puf_ini_get(ini, "base", "reset_every_horizon") != 0,
         .cudagraphs = puf_ini_get(ini, "base", "cudagraphs") >= 0,
+        .train_chunk = (int)puf_ini_get(ini, "base", "train_chunk"),
         .profile = puf_ini_get(ini, "base", "profile") != 0,
         .rank = ctx->rank,
         .world_size = ctx->world_size,
@@ -2016,6 +2054,10 @@ PuffeRL* create_pufferl(Ini* ini, TrainContext* ctx) {
     } else {
         assert(cudaStreamCreate(&pufferl->train_stream) == cudaSuccess);
     }
+    for (int i = 0; i < 2; i++) {
+        cudaEventCreateWithFlags(&pufferl->train_chunk_done[i],
+            cudaEventDisableTiming);
+    }
 
     Allocator* acts = &pufferl->activ_alloc;
     Allocator* grads = &pufferl->grads_alloc;
@@ -2108,6 +2150,8 @@ PuffeRL* create_pufferl(Ini* ini, TrainContext* ctx) {
     alloc_create(acts);
 
     pufferl->grad = {.data = (precision_t*)grads->mem, .shape = {grads->total_elems}};
+    assert(grads->total_elems == primary->params_alloc.total_elems
+        && "muon_step writes params from the flat grad layout");
     if (hypers.async) {
         pufferl->actor_param = {
             .data = (precision_t*)pufferl->weight_alloc.mem,
@@ -2159,10 +2203,15 @@ PuffeRL* create_pufferl(Ini* ini, TrainContext* ctx) {
             rollout_graph_slots*horizon*num_buffers*sizeof(cudaGraphExec_t));
     }
     pufferl->streams = (cudaStream_t*)calloc(1, num_buffers * sizeof(cudaStream_t));
+    // Async: rollout steps are short, latency bound and gate the env workers,
+    // while the learner queues a whole epoch of work at once, so the rollout
+    // streams get the highest priority (scheduling only, same results).
+    int prio_least = 0, prio_greatest = 0;
+    cudaDeviceGetStreamPriorityRange(&prio_least, &prio_greatest);
     for (int i = 0; i < num_buffers; i++) {
         if (hypers.async) {
-            assert(cudaStreamCreateWithFlags(
-                &pufferl->streams[i], cudaStreamNonBlocking) == cudaSuccess);
+            assert(cudaStreamCreateWithPriority(&pufferl->streams[i],
+                cudaStreamNonBlocking, prio_greatest) == cudaSuccess);
         } else {
             assert(cudaStreamCreate(&pufferl->streams[i]) == cudaSuccess);
         }

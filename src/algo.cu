@@ -116,11 +116,12 @@ static void cublasGemmExDense(cublasHandle_t handle,
 
 // out(...,N) = alpha * a(...,K) @ b(N,K)^T + beta * out: leading dims folded into M
 void puf_mm(Prec* a, Prec* b, Prec* out, cudaStream_t stream,
-        float alpha = 1.0f, float beta = 0.0f) {
+        float alpha = 1.0f, float beta = 0.0f,
+        cublasHandle_t handle = g_cublas_handle) {
     int M = batch_size(a->shape) * a->shape[ndim(a->shape)-2];
     int K = a->shape[ndim(a->shape)-1];
     int N = b->shape[ndim(b->shape)-2];
-    cublasGemmExDense(g_cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T, M, N, K,
+    cublasGemmExDense(handle, CUBLAS_OP_N, CUBLAS_OP_T, M, N, K,
         a->data, b->data, out->data, stream, alpha, beta);
 }
 
@@ -137,11 +138,12 @@ void puf_mm_tn(Prec* a, Prec* b, Prec* out, cudaStream_t stream,
 
 // out(...,N) = alpha * a(...,K) @ b(K,N) + beta * out: leading dims folded into M
 void puf_mm_nn(Prec* a, Prec* b, Prec* out, cudaStream_t stream,
-        float alpha = 1.0f, float beta = 0.0f) {
+        float alpha = 1.0f, float beta = 0.0f,
+        cublasHandle_t handle = g_cublas_handle) {
     int M = batch_size(a->shape) * a->shape[ndim(a->shape)-2];
     int K = a->shape[ndim(a->shape)-1];
     int N = b->shape[ndim(b->shape)-1];
-    cublasGemmExDense(g_cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, M, N, K,
+    cublasGemmExDense(handle, CUBLAS_OP_N, CUBLAS_OP_N, M, N, K,
         a->data, b->data, out->data, stream, alpha, beta);
 }
 
@@ -304,9 +306,12 @@ __global__ void mingru_scan_forward(PrefixScan scan) {
 }
 
 // Linear reverse scan. Cache is bf16 h only; a,z,h_tilde recomputed from gates in f32.
+// If grad_out_add isn't NULL the incoming grad is grad_out + grad_out_add,
+// rounded to precision_t as a separate add kernel would store it.
 __global__ void mingru_scan_backward(PrefixScan scan,
         const precision_t* __restrict__ grad_out,
-        const precision_t* __restrict__ grad_next_state) {
+        const precision_t* __restrict__ grad_next_state,
+        const precision_t* __restrict__ grad_out_add) {
     int T_seq = scan.T, H = scan.H, B = scan.B;
     precision_t* __restrict__ grad_combined = scan.grad_combined.data;
     precision_t* __restrict__ grad_state = scan.grad_state.data;
@@ -355,6 +360,10 @@ __global__ void mingru_scan_backward(PrefixScan scan,
         float proj_val = to_float(__ldg(&combined_p_base[t_offset]));
         float x_val = to_float(__ldg(&input[input_idx]));
         float grad_out_val = to_float(__ldg(&grad_out[input_idx]));
+        if (grad_out_add != NULL) {
+            grad_out_val = to_float(from_float(
+                grad_out_val + to_float(__ldg(&grad_out_add[input_idx]))));
+        }
 
         float z = sigmoid(gate_val);
         float h_tilde = (hidden_val >= 0.0f) ? hidden_val + 0.5f : sigmoid(hidden_val);
@@ -704,7 +713,6 @@ struct MinGRUActivations {
     // Rollout
     Prec* combined;       // (B rollout, 3*T)[num_layers]
     Prec out;             // (B rollout, T)
-    Prec next_state;      // (B rollout, T)
     // Training
     Prec* saved_inputs;   // (B, TT, T)[num_layers]
     PrefixScan* scan_bufs;           // [num_layers]
@@ -772,7 +780,12 @@ void mingru_reg_train(void* w, void* activations,
         a->saved_inputs[i]  = {.shape = {B, TT, H}};
         a->combined_bufs[i] = {.shape = {B_TT, 3 * H}};
         a->wgrad_scratch[i] = {.shape = {3 * H, H}};
-        alloc_register(acts, &a->saved_inputs[i]);
+        // Layer i > 0's input is layer i - 1's scan.out, which only that
+        // layer's forward scan writes, so it's kept by reference (see
+        // mingru_forward_train). Layer 0's input belongs to the encoder.
+        if (i == 0) {
+            alloc_register(acts, &a->saved_inputs[i]);
+        }
         alloc_register(acts, &a->combined_bufs[i]);
         alloc_register(acts, &a->scan_bufs[i].out);
         alloc_register(acts, &a->scan_bufs[i].next_state);
@@ -795,9 +808,7 @@ void mingru_reg_rollout(void* weights, void* activations,
         alloc_register(alloc, &a->combined[i]);
     }
     a->out = {.shape = {B_inf, H}};
-    a->next_state = {.shape = {B_inf, H}};
     alloc_register(alloc, &a->out);
-    alloc_register(alloc, &a->next_state);
 }
 
 void* mingru_create_weights(void* self) {
@@ -819,10 +830,10 @@ Prec mingru_forward(void* w, Prec x, Prec state,
     for (int i = 0; i < m->num_layers; i++) {
         Prec state_i = mingru_state_layer(state, i, 0, B);
         puf_mm(&x, &m->weights[i], &a->combined[i], stream);
+        // New state in place: each thread reads its state element first.
         mingru_gate<<<grid_size(B*H), BLOCK_SIZE, 0, stream>>>(
-            a->out.data, a->next_state.data,
+            a->out.data, state_i.data,
             a->combined[i].data, state_i.data, x.data, H, B);
-        puf_copy(&state_i, &a->next_state, stream);
         x = a->out;
     }
     return x;
@@ -834,7 +845,11 @@ Prec mingru_forward_train(void* w, Prec x, Prec state, Prec terminals,
     MinGRUActivations* a = (MinGRUActivations*)activations;
     int B = (int)x.shape[0];
     for (int i = 0; i < m->num_layers; i++) {
-        puf_copy(&a->saved_inputs[i], &x, stream);
+        if (i == 0) {
+            puf_copy(&a->saved_inputs[i], &x, stream);
+        } else {
+            a->saved_inputs[i].data = x.data;
+        }
         Prec state_i = mingru_state_layer(state, i, agent_off, B);
         puf_mm(&x, &m->weights[i], &a->combined_bufs[i], stream);
         PrefixScan& scan = a->scan_bufs[i];
@@ -866,26 +881,40 @@ __global__ void add_kernel(precision_t* __restrict__ dst,
 Prec mingru_backward(void* w, Prec grad, void* activations, cudaStream_t stream) {
     MinGRUWeights* m = (MinGRUWeights*)w;
     MinGRUActivations* a = (MinGRUActivations*)activations;
+    // A layer's input grad is dX (GEMM) + the highway grad from its scan. The
+    // seq scan of the layer below adds the two itself, rounded as the add
+    // kernel would store them; only the row scan and the encoder's input get
+    // the sum materialized.
+    const precision_t* grad_add = NULL;
     for (int i = m->num_layers - 1; i >= 0; i--) {
         PrefixScan& scan = a->scan_bufs[i];
         if (scan.T >= 256 && scan.B * scan.H <= 32768
                 || scan.T >= 128 && scan.H <= 32) {
+            if (grad_add != NULL) {
+                int n = numel(grad.shape);
+                add_kernel<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
+                    grad.data, grad_add, n);
+                grad_add = NULL;
+            }
             dim3 block(MINGRU_TILE, MINGRU_TILE);
             dim3 grid(scan.B, (scan.H + MINGRU_TILE - 1) / MINGRU_TILE);
             mingru_scan_backward_row<<<grid, block, 0, stream>>>(
                 scan, grad.data, a->grad_next_state.data);
         } else {
             mingru_scan_backward<<<grid_size(scan.B * scan.H), BLOCK_SIZE, 0,
-                stream>>>(scan, grad.data, a->grad_next_state.data);
+                stream>>>(scan, grad.data, a->grad_next_state.data, grad_add);
         }
         // dW on side stream (per-layer scratch); dX on main continues the bwd chain.
         puf_mm_tn_async_after(&scan.grad_combined, &a->saved_inputs[i],
             &a->wgrad_scratch[i], stream);
         puf_mm_nn(&scan.grad_combined, &m->weights[i], &a->grad_input_buf, stream);
-        int n = numel(scan.grad_input.shape);
-        add_kernel<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
-            a->grad_input_buf.data, scan.grad_input.data, n);
         grad = a->grad_input_buf;
+        grad_add = scan.grad_input.data;
+    }
+    if (grad_add != NULL) {
+        int n = numel(grad.shape);
+        add_kernel<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
+            grad.data, grad_add, n);
     }
     return grad;
 }
@@ -1069,30 +1098,101 @@ __global__ void muon_sum_sq_reduce(float* __restrict__ out,
     block_reduce_sum(sdata, out, tid, blockDim.x, 1);
 }
 
-// Global grad clip by L2, then Nesterov into f32 momentum buffer.
-// A non-finite grad norm zeroes the update and leaves the momentum
-// untouched, so one bad minibatch can't poison the weights; counted in
-// skips[MUON_SKIP_GRAD].
+// Elementwise Muon kernels handle MUON_VEC consecutive elements per thread
+// (vector loads); the per-element math is the same as one element per thread.
+constexpr int MUON_VEC = 4;
+struct alignas(MUON_VEC * sizeof(precision_t)) MuonPrecVec {
+    precision_t v[MUON_VEC];
+};
+struct alignas(MUON_VEC * sizeof(float)) MuonFloatVec {
+    float v[MUON_VEC];
+};
+
+static int muon_vec_grid(long n) {
+    long threads = (n + MUON_VEC - 1) / MUON_VEC;
+    return (int)((threads + BLOCK_SIZE - 1) / BLOCK_SIZE);
+}
+
+// Rounding is pinned with intrinsics (no contraction choice left to the
+// compiler) to the ops the original one-element-per-thread kernels compiled
+// to: m = fma(clip, g, mu * m); update = fma(clip, g, mu * m).
+__device__ __forceinline__ float muon_nesterov_m(float g, float m,
+        float clip_coef, float mu) {
+    return __fmaf_rn(clip_coef, g, __fmul_rn(mu, m));
+}
+__device__ __forceinline__ float muon_nesterov_update(float g, float m,
+        float clip_coef, float mu) {
+    return __fmaf_rn(clip_coef, g, __fmul_rn(mu, m));
+}
+
+// Global grad clip by L2, then Nesterov into f32 momentum buffer. Launched
+// per param region; V is the elements per thread (V > 1 needs the region
+// V-aligned). A non-finite grad norm zeroes the update and leaves the
+// momentum untouched, so one bad minibatch can't poison the weights; counted
+// once per step in skips[MUON_SKIP_GRAD] by the launch with count_skip set.
+template <int V>
 __global__ void muon_clip_nesterov(float* __restrict__ mb,
         precision_t* __restrict__ gc, const float* __restrict__ sum_sq_ptr,
-        float max_norm, float eps, float mu, int n, int* __restrict__ skips) {
+        float max_norm, float eps, float mu, int n, int* __restrict__ skips,
+        bool count_skip) {
+    typedef struct alignas(V * sizeof(precision_t)) { precision_t v[V]; } PV;
+    typedef struct alignas(V * sizeof(float)) { float v[V]; } FV;
     float sum_sq = *sum_sq_ptr;
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    long base = ((long)blockIdx.x * blockDim.x + threadIdx.x) * V;
     if (!isfinite(sum_sq)) {
-        if (idx < n) {
-            gc[idx] = from_float(0.0f);
+        if (base + V <= n) {
+            PV z;
+            for (int j = 0; j < V; j++) {
+                z.v[j] = from_float(0.0f);
+            }
+            *(PV*)(gc + base) = z;
+        } else {
+            for (long i = base; i < n; i++) {
+                gc[i] = from_float(0.0f);
+            }
         }
-        if (idx == 0) {
+        if (count_skip && base == 0) {
             atomicAdd(&skips[MUON_SKIP_GRAD], 1);
         }
         return;
     }
     float clip_coef = fminf(max_norm / (sqrtf(sum_sq) + eps), 1.0f);
-    if (idx < n) {
-        float g = to_float(gc[idx]) * clip_coef;
-        float m = mu * mb[idx] + g;
-        mb[idx] = m;
-        gc[idx] = from_float(g + mu * m);
+    if (base + V <= n) {
+        PV g = *(const PV*)(gc + base);
+        FV m = *(const FV*)(mb + base);
+        for (int j = 0; j < V; j++) {
+            float gj = to_float(g.v[j]);
+            float mj = muon_nesterov_m(gj, m.v[j], clip_coef, mu);
+            m.v[j] = mj;
+            g.v[j] = from_float(muon_nesterov_update(gj, mj, clip_coef, mu));
+        }
+        *(FV*)(mb + base) = m;
+        *(PV*)(gc + base) = g;
+    } else {
+        for (long i = base; i < n; i++) {
+            float g = to_float(gc[i]);
+            float m = muon_nesterov_m(g, mb[i], clip_coef, mu);
+            mb[i] = m;
+            gc[i] = from_float(muon_nesterov_update(g, m, clip_coef, mu));
+        }
+    }
+}
+
+// Clip + Nesterov for elements [off, off + n) of the flat grads/momentum.
+static void muon_clip_nesterov_range(float* mb, precision_t* gc,
+        const float* grad_norm, float max_norm, float mu, long off, long n,
+        int* skips, bool count_skip, cudaStream_t stream) {
+    if (n <= 0) {
+        return;
+    }
+    if (off % MUON_VEC == 0) {
+        muon_clip_nesterov<MUON_VEC><<<muon_vec_grid(n), BLOCK_SIZE, 0, stream>>>(
+            mb + off, gc + off, grad_norm, max_norm, 1e-6f, mu, (int)n,
+            skips, count_skip);
+    } else {
+        muon_clip_nesterov<1><<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
+            mb + off, gc + off, grad_norm, max_norm, 1e-6f, mu, (int)n,
+            skips, count_skip);
     }
 }
 
@@ -1118,21 +1218,53 @@ __global__ void muon_store_update(precision_t* __restrict__ dst,
 // wb = wb * (1 - lr*wd) - lr * update  (update already scaled; one call for all params)
 // Skipped if the update isn't finite (Newton-Schulz blew up on a finite
 // grad); counted in skips[MUON_SKIP_UPDATE].
+// If param isn't NULL, also writes the precision_t copy of the (updated or
+// skipped) master weights into it, so the trainer needs no separate cast.
 __global__ void muon_weight_update(float* __restrict__ wb,
+        precision_t* __restrict__ param,
         const precision_t* __restrict__ update,
         const float* __restrict__ lr_ptr, float wd, int n,
         const float* __restrict__ update_sum_sq, int* __restrict__ skips) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (!isfinite(*update_sum_sq)) {
-        if (idx == 0) {
-            atomicAdd(&skips[MUON_SKIP_UPDATE], 1);
-        }
+    long base = ((long)blockIdx.x * blockDim.x + threadIdx.x) * MUON_VEC;
+    bool skip = !isfinite(*update_sum_sq);
+    if (skip && base == 0) {
+        atomicAdd(&skips[MUON_SKIP_UPDATE], 1);
+    }
+    if (skip && param == NULL) {
         return;
     }
+    // Pinned like the clip: wd_scale = fma(-lr, wd, 1);
+    // w = fma(wd_scale, w, -(lr * u)).
     float lr = *lr_ptr;
-    float wd_scale = 1.0f - lr * wd;
-    if (idx < n) {
-        wb[idx] = wb[idx] * wd_scale - lr * to_float(update[idx]);
+    float wd_scale = __fmaf_rn(-lr, wd, 1.0f);
+    if (base + MUON_VEC <= n) {
+        MuonFloatVec w = *(const MuonFloatVec*)(wb + base);
+        if (!skip) {
+            MuonPrecVec u = *(const MuonPrecVec*)(update + base);
+            for (int j = 0; j < MUON_VEC; j++) {
+                w.v[j] = __fmaf_rn(wd_scale, w.v[j],
+                    -__fmul_rn(lr, to_float(u.v[j])));
+            }
+            *(MuonFloatVec*)(wb + base) = w;
+        }
+        if (param != NULL) {
+            MuonPrecVec p;
+            for (int j = 0; j < MUON_VEC; j++) {
+                p.v[j] = from_float(w.v[j]);
+            }
+            *(MuonPrecVec*)(param + base) = p;
+        }
+    } else {
+        for (long i = base; i < n; i++) {
+            float w = wb[i];
+            if (!skip) {
+                w = __fmaf_rn(wd_scale, w, -__fmul_rn(lr, to_float(update[i])));
+                wb[i] = w;
+            }
+            if (param != NULL) {
+                param[i] = from_float(w);
+            }
+        }
     }
 }
 
@@ -1144,6 +1276,29 @@ constexpr double ns_coeffs[5][3] = {
     {2.8366, -3.0525, 1.2012},
 };
 
+// Newton-Schulz for different 2D params is independent, so it runs on
+// MUON_LANES side streams (forked off and joined back to the caller's stream,
+// also under graph capture). Each lane has its own cuBLAS handle, workspace
+// and scratch, configured like the main handle so every GEMM is the same
+// call as on one stream and gives the same bits.
+#ifndef MUON_LANES
+#define MUON_LANES 4
+#endif
+
+struct MuonLane {
+    cudaStream_t stream;
+    cublasHandle_t handle;
+    void* workspace;
+    cudaEvent_t done;
+    // NS copies dst <- src on copy_stream, off the GEMM chain (see
+    // muon_newton_schulz)
+    cudaStream_t copy_stream;
+    cudaEvent_t src_ready, copy_done;
+    float* ns_norm;
+    float* norm_partials;  // 256
+    Prec gram, gram_buf, x_buf;
+};
+
 // Muon optimizer. Our benchmarks show this is a major
 // upgrade over Adam (weight decay not needed in RL).
 struct Muon {
@@ -1151,12 +1306,13 @@ struct Muon {
     // Scalars / scratch: raw device ptrs. Tensors: allocator.
     float* lr;
     float* grad_norm;
-    float* ns_norm;
     float* norm_partials;  // 256
     float* update_sum_sq;  // NaN guard: sum of squares of the final update
     int* skips;            // NaN guard: MUON_NUM_SKIPS skipped update counters
     Float mb;              // flat momentum buffer (param-sized)
-    Prec gram, gram_buf, x_buf;
+    MuonLane lanes[MUON_LANES];
+    int* param_lane;       // per param reg: lane running its NS (-1 for 1D)
+    cudaEvent_t fork;
     Allocator* param_alloc;
 };
 
@@ -1165,101 +1321,201 @@ void muon_init(Muon* m, Allocator* param_alloc, double momentum, Allocator* allo
     m->param_alloc = param_alloc;
     cudaMalloc((void**)&m->lr, sizeof(float));
     cudaMalloc((void**)&m->grad_norm, sizeof(float));
-    cudaMalloc((void**)&m->ns_norm, sizeof(float));
     cudaMalloc((void**)&m->norm_partials, 256 * sizeof(float));
     cudaMalloc((void**)&m->update_sum_sq, sizeof(float));
     cudaMalloc((void**)&m->skips, MUON_NUM_SKIPS * sizeof(int));
     cudaMemset(m->skips, 0, MUON_NUM_SKIPS * sizeof(int));
     m->mb = {.shape = {param_alloc->total_elems}};
     alloc_register(alloc, &m->mb);
-    long max_M = 0, max_N = 0;
-    for (int _i = 0; _i < param_alloc->num_regs; _i++) {
-        AllocEntry& e = param_alloc->regs[_i];
-        if (ndim(e.shape) >= 2) {
-            long R = e.shape[0], C = numel(e.shape) / R;
-            max_M = max(max_M, min(R, C));
-            max_N = max(max_N, max(R, C));
-        }
+
+    // Assign each 2D param to the least loaded lane, biggest NS first
+    // (load ~ GEMM flops), so the big matrices spread across lanes.
+    int nregs = param_alloc->num_regs;
+    m->param_lane = (int*)malloc(nregs * sizeof(int));
+    double load[MUON_LANES] = {0};
+    long max_M[MUON_LANES] = {0}, max_N[MUON_LANES] = {0};
+    bool* assigned = (bool*)malloc((nregs > 0 ? nregs : 1) * sizeof(bool));
+    for (int i = 0; i < nregs; i++) {
+        AllocEntry& e = param_alloc->regs[i];
+        m->param_lane[i] = -1;
+        assigned[i] = ndim(e.shape) < 2;
     }
-    m->gram =     {.shape = {max_M, max_M}};
-    m->gram_buf = {.shape = {max_M, max_M}};
-    m->x_buf =    {.shape = {max_M, max_N}};
-    alloc_register(alloc, &m->gram);
-    alloc_register(alloc, &m->gram_buf);
-    alloc_register(alloc, &m->x_buf);
+    for (;;) {
+        int best = -1;
+        double best_cost = -1.0;
+        for (int i = 0; i < nregs; i++) {
+            if (assigned[i]) {
+                continue;
+            }
+            AllocEntry& e = param_alloc->regs[i];
+            double R = e.shape[0], C = numel(e.shape) / R;
+            double M = fmin(R, C), N = fmax(R, C);
+            double cost = M * M * N + M * M * M;
+            if (cost > best_cost) {
+                best_cost = cost;
+                best = i;
+            }
+        }
+        if (best < 0) {
+            break;
+        }
+        int lane = 0;
+        for (int l = 1; l < MUON_LANES; l++) {
+            if (load[l] < load[lane]) {
+                lane = l;
+            }
+        }
+        AllocEntry& e = param_alloc->regs[best];
+        long R = e.shape[0], C = numel(e.shape) / R;
+        load[lane] += best_cost;
+        max_M[lane] = max(max_M[lane], min(R, C));
+        max_N[lane] = max(max_N[lane], max(R, C));
+        m->param_lane[best] = lane;
+        assigned[best] = true;
+    }
+    free(assigned);
+
+    cudaEventCreateWithFlags(&m->fork, cudaEventDisableTiming);
+    for (int l = 0; l < MUON_LANES; l++) {
+        MuonLane* ln = &m->lanes[l];
+        cudaStreamCreateWithFlags(&ln->stream, cudaStreamNonBlocking);
+        cublas_init_one(&ln->handle, &ln->workspace);
+        cudaEventCreateWithFlags(&ln->done, cudaEventDisableTiming);
+        cudaStreamCreateWithFlags(&ln->copy_stream, cudaStreamNonBlocking);
+        cudaEventCreateWithFlags(&ln->src_ready, cudaEventDisableTiming);
+        cudaEventCreateWithFlags(&ln->copy_done, cudaEventDisableTiming);
+        cudaMalloc((void**)&ln->ns_norm, sizeof(float));
+        cudaMalloc((void**)&ln->norm_partials, 256 * sizeof(float));
+        ln->gram =     {.shape = {max_M[l], max_M[l]}};
+        ln->gram_buf = {.shape = {max_M[l], max_M[l]}};
+        ln->x_buf =    {.shape = {max_M[l], max_N[l]}};
+        alloc_register(alloc, &ln->gram);
+        alloc_register(alloc, &ln->gram_buf);
+        alloc_register(alloc, &ln->x_buf);
+    }
 }
 
+// Normalize + 5 Newton-Schulz steps for one 2D param on its lane; writes the
+// scaled update back into the flat grads at gc_ptr.
+static void muon_newton_schulz(MuonLane* ln, precision_t* gc_ptr, long R, long C) {
+    cudaStream_t stream = ln->stream;
+    cublasHandle_t handle = ln->handle;
+    long ne = R * C;
+    long M = min(R, C);
+    bool tall = R > C;
+    Prec x = {.data = gc_ptr, .shape = {R, C}};
+    Prec x_buf = {.data = ln->x_buf.data, .shape = {R, C}};
+    Prec gram = {.data = ln->gram.data, .shape = {M, M}};
+    Prec gram_buf = {.data = ln->gram_buf.data, .shape = {M, M}};
+
+    int nblk = min((int)grid_size(ne), 256);
+    muon_sum_sq_partials<<<nblk, 256, 0, stream>>>(
+        ln->norm_partials, x.data, (int)ne);
+    muon_sum_sq_reduce<<<1, 256, 0, stream>>>(
+        ln->ns_norm, ln->norm_partials, nblk);
+    muon_l2_normalize<<<grid_size(ne), BLOCK_SIZE, 0, stream>>>(
+        x.data, ln->ns_norm, 1e-7f, (int)ne);
+
+    // 5 steps land in x_buf. 4 = you break it.
+    for (int i = 0; i < 5; ++i) {
+        Prec& src = (i % 2 == 0) ? x : x_buf;
+        Prec& dst = (i % 2 == 0) ? x_buf : x;
+        // dst <- src only needs src (written by the previous step's last
+        // GEMM, which was also the last reader of dst), so it runs alongside
+        // the two gram GEMMs instead of between them and the last GEMM.
+        cudaEventRecord(ln->src_ready, stream);
+        cudaStreamWaitEvent(ln->copy_stream, ln->src_ready, 0);
+        puf_copy(&dst, &src, ln->copy_stream);
+        cudaEventRecord(ln->copy_done, ln->copy_stream);
+        if (tall) {
+            puf_mm_tn(&src, &src, &gram, stream, 1.0f, 0.0f, handle);
+        } else {
+            puf_mm(&src, &src, &gram, stream, 1.0f, 0.0f, handle);
+        }
+        puf_copy(&gram_buf, &gram, stream);
+        puf_mm_nn(&gram, &gram, &gram_buf, stream,
+            (float)ns_coeffs[i][2], (float)ns_coeffs[i][1], handle);
+        cudaStreamWaitEvent(stream, ln->copy_done, 0);
+        if (tall) {
+            puf_mm_nn(&src, &gram_buf, &dst,
+                stream, 1.0f, (float)ns_coeffs[i][0], handle);
+        } else {
+            puf_mm_nn(&gram_buf, &src, &dst,
+                stream, 1.0f, (float)ns_coeffs[i][0], handle);
+        }
+    }
+    float scale = sqrtf(fmaxf(1.0f, (float)R / (float)C));
+    muon_store_update<<<grid_size(ne), BLOCK_SIZE, 0, stream>>>(
+        gc_ptr, x_buf.data, scale, (int)ne);
+}
+
+// param: if not NULL, receives the precision_t copy of the new master
+// weights (same as a cast after the step).
 void muon_step(Muon* m, Float weights, Prec grads,
-        float max_grad_norm, cudaStream_t stream = 0) {
+        float max_grad_norm, cudaStream_t stream = 0,
+        precision_t* param = NULL) {
     int n_grad = (int)numel(grads.shape);
     int sum_blocks = min((int)grid_size(n_grad), 256);
+    float mu = (float)m->momentum;
     muon_sum_sq_partials<<<sum_blocks, 256, 0, stream>>>(
         m->norm_partials, grads.data, n_grad);
     muon_sum_sq_reduce<<<1, 256, 0, stream>>>(
         m->grad_norm, m->norm_partials, sum_blocks);
-    muon_clip_nesterov<<<grid_size(n_grad), BLOCK_SIZE, 0, stream>>>(
-        m->mb.data, grads.data, m->grad_norm,
-        max_grad_norm, 1e-6f, (float)m->momentum, n_grad, m->skips);
 
-    // Per-param NS into workspace; write scaled update back into flat grads.
-    // 1D params already hold their update in-place (scale 1).
+    // Clip + Nesterov is elementwise given the global norm, so it runs per
+    // param: 1D params (which keep it as their update, scale 1) here, before
+    // the fork, and each 2D param on its lane right before its NS, which then
+    // writes the scaled update back into the flat grads.
+    bool count_skip = true;
     long offset = 0;
+    long run_start = 0;
+    for (int _i = 0; _i <= m->param_alloc->num_regs; _i++) {
+        bool end = _i == m->param_alloc->num_regs;
+        if (end || m->param_lane[_i] >= 0) {
+            muon_clip_nesterov_range(m->mb.data, grads.data, m->grad_norm,
+                max_grad_norm, mu, run_start, offset - run_start,
+                m->skips, count_skip && offset > run_start, stream);
+            count_skip = count_skip && offset == run_start;
+        }
+        if (end) {
+            break;
+        }
+        offset += numel(m->param_alloc->regs[_i].shape);
+        if (m->param_lane[_i] >= 0) {
+            run_start = offset;
+        }
+    }
+    cudaEventRecord(m->fork, stream);
+    for (int l = 0; l < MUON_LANES; l++) {
+        cudaStreamWaitEvent(m->lanes[l].stream, m->fork, 0);
+    }
+    offset = 0;
     for (int _i = 0; _i < m->param_alloc->num_regs; _i++) {
         AllocEntry& e = m->param_alloc->regs[_i];
-        precision_t* gc_ptr = grads.data + offset;
         long ne = numel(e.shape);
+        long off = offset;
         offset += ne;
-        if (ndim(e.shape) < 2) {
+        if (m->param_lane[_i] < 0) {
             continue;
         }
-
+        MuonLane* ln = &m->lanes[m->param_lane[_i]];
+        muon_clip_nesterov_range(m->mb.data, grads.data, m->grad_norm,
+            max_grad_norm, mu, off, ne, m->skips, count_skip, ln->stream);
+        count_skip = false;
         long R = e.shape[0], C = ne / R;
-        long M = min(R, C);
-        bool tall = R > C;
-        Prec x = {.data = gc_ptr, .shape = {R, C}};
-        Prec x_buf = {.data = m->x_buf.data, .shape = {R, C}};
-        Prec gram = {.data = m->gram.data, .shape = {M, M}};
-        Prec gram_buf = {.data = m->gram_buf.data, .shape = {M, M}};
-
-        int nblk = min((int)grid_size(ne), 256);
-        muon_sum_sq_partials<<<nblk, 256, 0, stream>>>(
-            m->norm_partials, x.data, (int)ne);
-        muon_sum_sq_reduce<<<1, 256, 0, stream>>>(
-            m->ns_norm, m->norm_partials, nblk);
-        muon_l2_normalize<<<grid_size(ne), BLOCK_SIZE, 0, stream>>>(
-            x.data, m->ns_norm, 1e-7f, (int)ne);
-
-        // 5 steps land in x_buf. 4 = you break it.
-        for (int i = 0; i < 5; ++i) {
-            Prec& src = (i % 2 == 0) ? x : x_buf;
-            Prec& dst = (i % 2 == 0) ? x_buf : x;
-            if (tall) {
-                puf_mm_tn(&src, &src, &gram, stream);
-            } else {
-                puf_mm(&src, &src, &gram, stream);
-            }
-            puf_copy(&gram_buf, &gram, stream);
-            puf_mm_nn(&gram, &gram, &gram_buf, stream,
-                (float)ns_coeffs[i][2], (float)ns_coeffs[i][1]);
-            puf_copy(&dst, &src, stream);
-            if (tall) {
-                puf_mm_nn(&src, &gram_buf, &dst,
-                    stream, 1.0f, (float)ns_coeffs[i][0]);
-            } else {
-                puf_mm_nn(&gram_buf, &src, &dst,
-                    stream, 1.0f, (float)ns_coeffs[i][0]);
-            }
-        }
-        float scale = sqrtf(fmaxf(1.0f, (float)R / (float)C));
-        muon_store_update<<<grid_size(ne), BLOCK_SIZE, 0, stream>>>(
-            gc_ptr, x_buf.data, scale, (int)ne);
+        muon_newton_schulz(ln, grads.data + off, R, C);
     }
+    for (int l = 0; l < MUON_LANES; l++) {
+        cudaEventRecord(m->lanes[l].done, m->lanes[l].stream);
+        cudaStreamWaitEvent(stream, m->lanes[l].done, 0);
+    }
+
     muon_sum_sq_partials<<<sum_blocks, 256, 0, stream>>>(
         m->norm_partials, grads.data, n_grad);
     muon_sum_sq_reduce<<<1, 256, 0, stream>>>(
         m->update_sum_sq, m->norm_partials, sum_blocks);
-    muon_weight_update<<<grid_size(n_grad), BLOCK_SIZE, 0, stream>>>(
-        weights.data, grads.data, m->lr, 0.0f, n_grad,
+    muon_weight_update<<<muon_vec_grid(n_grad), BLOCK_SIZE, 0, stream>>>(
+        weights.data, param, grads.data, m->lr, 0.0f, n_grad,
         m->update_sum_sq, m->skips);
 }
 
