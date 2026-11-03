@@ -553,38 +553,16 @@ static float castDroneCircle(const iwEnv *e, const droneEntity *drone, const flo
 static void computeVelocityRayObs(const iwEnv *e, const droneEntity *drone, const b2Vec2 velocity, float *obs) {
     obs[0] = (float)IW_RAY_HIT_NONE;
     obs[1] = 1.0f;
-    const float speed = b2Length(velocity);
-    if (speed < 0.1f) {
+    const driftCast cast = castDroneDrift(e, drone, drone->pos, velocity);
+    if (cast.hitEnt == NULL) {
         return;
     }
-
-    float damping = DRONE_LINEAR_DAMPING;
-    if (drone->braking) {
-        damping = DRONE_BRAKE_DAMPING_COEF;
-    }
-    // with linear damping k, distance travelled after t seconds is
-    // speed * (1 - e^(-kt)) / k
-    float pathScale = RAY_TIME_HORIZON;
-    if (damping > 0.0f) {
-        pathScale = (1.0f - expf(-damping * RAY_TIME_HORIZON)) / damping;
-    }
-    const b2Vec2 translation = b2MulSV(pathScale, velocity);
-
-    float radius = DRONE_RADIUS;
-    if (drone->shield != NULL) {
-        radius = DRONE_SHIELD_RADIUS;
-    }
-    const b2QueryFilter filter = {.categoryBits = DRONE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE};
-    float fraction;
-    obs[0] = castDroneCircle(e, drone, radius, translation, filter, &fraction);
-    if (obs[0] == (float)IW_RAY_HIT_NONE) {
-        return;
-    }
+    obs[0] = rayHitType(cast.hitEnt);
 
     // invert the damped distance to get the time of the hit
-    float hitTime = fraction * RAY_TIME_HORIZON;
-    if (damping > 0.0f) {
-        hitTime = -logf(fmaxf(1.0f - (fraction * damping * pathScale), FLT_MIN)) / damping;
+    float hitTime = cast.fraction * RAY_TIME_HORIZON;
+    if (cast.damping > 0.0f) {
+        hitTime = -logf(fmaxf(1.0f - (cast.fraction * cast.damping * cast.pathScale), FLT_MIN)) / cast.damping;
     }
     obs[1] = squashValue(fminf(hitTime, RAY_TIME_HORIZON), OBS_RAY_TIME_KNEE);
 }
@@ -2059,7 +2037,9 @@ void puf_step(iwEnv *e) {
     int8_t lastAliveTeam = -1;
     for (int i = 0; i < e->frameSkip; i++) {
         e->episodeLength++;
+        recordFrameStartStates(e);
         roundOver = stepPhysicsFrame(e, e->cachedActions, &lastAlive, &lastAliveTeam);
+        finishEnemyPushCourses(e);
         e->tick_frames_left--;
 
         if (e->client == NULL && e->episodeLength == e->maxSteps && !roundOver) {

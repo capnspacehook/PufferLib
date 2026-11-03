@@ -310,6 +310,11 @@ typedef struct projectileEntity {
     bool welded;
     bool needsToBeDestroyed;
     bool boosted;
+    // a mine set off by an enemy of its owner, by a shot hitting it or
+    // another explosion or burst; its explosion's pushes are credited to
+    // the enemy that set it off, detonatorIdx, except on that enemy
+    bool detonatedByOther;
+    uint8_t detonatorIdx;
 
     uint8_t numDronesBehindWalls;
     uint8_t dronesBehindWalls[_MAX_DRONES];
@@ -602,6 +607,19 @@ typedef struct droneEntity {
 
     bool shotThisStep;
     bool diedThisStep;
+    // for crediting self kills to enemies (see findCourseSettingEnemy): the
+    // drone's position and velocity at the start of the physics frame, and
+    // the latest enemy push on it, with whether the drone was drifting into
+    // a death wall at the start and end of the push's frame; the end is
+    // filled in once the frame is done, enemyPushedThisFrame until then
+    b2Vec2 frameStartPos;
+    b2Vec2 frameStartVelocity;
+    uint16_t enemyPushFrame;
+    uint8_t enemyPusher;
+    physicsSource enemyPushSource;
+    bool enemyPushCourseBefore;
+    bool enemyPushCourseAfter;
+    bool enemyPushedThisFrame;
 
     uint8_t idx;
     uint8_t team;

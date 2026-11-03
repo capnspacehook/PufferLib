@@ -1420,6 +1420,129 @@ void applyTrackedImpulse(const iwEnv *e, const b2BodyId bodyID, CC_Array *physic
     trackImpulse(e, physicsTracking, impulse, srcIdx, source);
 }
 
+typedef struct driftCastContext {
+    const entity *hitEnt;
+    float fraction;
+} driftCastContext;
+
+static float driftCastCallback(b2ShapeId shapeID, b2Vec2 point, b2Vec2 normal, float fraction, void *context) {
+    MAYBE_UNUSED(point);
+    MAYBE_UNUSED(normal);
+
+    driftCastContext *ctx = context;
+    const entity *ent = b2Shape_GetUserData(shapeID);
+    if (ent == NULL) {
+        return -1.0f;
+    }
+    if (fraction < ctx->fraction) {
+        ctx->fraction = fraction;
+        ctx->hitEnt = ent;
+    }
+    return fraction;
+}
+
+typedef struct driftCast {
+    // the first static or floating wall hit, NULL if none was or the
+    // drone is barely moving
+    const entity *hitEnt;
+    // the fraction of the path travelled before the hit, 1 if none
+    float fraction;
+    // the damping the path was computed with, and the path's length per
+    // unit of speed
+    float damping;
+    float pathScale;
+} driftCast;
+
+// casts the drone's wall colliding shape from pos along the path it would
+// coast in RAY_TIME_HORIZON seconds at velocity with its linear damping;
+// used by the drift ray obs and to check if a drone is drifting into a
+// death wall
+static driftCast castDroneDrift(const iwEnv *e, const droneEntity *drone, const b2Vec2 pos, const b2Vec2 velocity) {
+    driftCast cast = {.hitEnt = NULL, .fraction = 1.0f};
+    if (b2Length(velocity) < 0.1f) {
+        return cast;
+    }
+
+    cast.damping = DRONE_LINEAR_DAMPING;
+    if (drone->braking) {
+        cast.damping = DRONE_BRAKE_DAMPING_COEF;
+    }
+    // with linear damping k, distance travelled after t seconds is
+    // speed * (1 - e^(-kt)) / k
+    cast.pathScale = RAY_TIME_HORIZON;
+    if (cast.damping > 0.0f) {
+        cast.pathScale = (1.0f - expf(-cast.damping * RAY_TIME_HORIZON)) / cast.damping;
+    }
+
+    float radius = DRONE_RADIUS;
+    if (drone->shield != NULL) {
+        radius = DRONE_SHIELD_RADIUS;
+    }
+    const b2ShapeProxy proxy = b2MakeProxy(&pos, 1, radius);
+    const b2QueryFilter filter = {.categoryBits = DRONE_SHAPE, .maskBits = WALL_SHAPE | FLOATING_WALL_SHAPE};
+    driftCastContext ctx = {.hitEnt = NULL, .fraction = 1.0f};
+    b2World_CastShape(e->worldID, &proxy, b2MulSV(cast.pathScale, velocity), filter, driftCastCallback, &ctx);
+    cast.hitEnt = ctx.hitEnt;
+    cast.fraction = ctx.fraction;
+    return cast;
+}
+
+// whether the drone coasting from pos at velocity would hit a death wall
+// first within RAY_TIME_HORIZON
+static bool droneDriftsIntoDeathWall(const iwEnv *e, const droneEntity *drone, const b2Vec2 pos, const b2Vec2 velocity) {
+    const driftCast cast = castDroneDrift(e, drone, pos, velocity);
+    if (cast.hitEnt == NULL) {
+        return false;
+    }
+    const wallEntity *wall = cast.hitEnt->entity;
+    return wall->type == DEATH_WALL_ENTITY;
+}
+
+// records a push on drone by drone srcIdx for findCourseSettingEnemy if
+// srcIdx is an enemy; whether the drone was drifting into a death wall is
+// checked at the start of the frame for its first enemy push of the frame,
+// and at the end of the frame by finishEnemyPushCourses
+void recordEnemyPush(const iwEnv *e, droneEntity *drone, const uint8_t srcIdx, const physicsSource source) {
+    if (srcIdx == drone->idx) {
+        return;
+    }
+    const droneEntity *pusher = safe_array_get_at(e->drones, srcIdx);
+    if (pusher->team == drone->team) {
+        return;
+    }
+    if (!drone->enemyPushedThisFrame) {
+        drone->enemyPushCourseBefore = droneDriftsIntoDeathWall(e, drone, drone->frameStartPos, drone->frameStartVelocity);
+        drone->enemyPushedThisFrame = true;
+    }
+    drone->enemyPushFrame = e->episodeLength;
+    drone->enemyPusher = srcIdx;
+    drone->enemyPushSource = source;
+}
+
+// saves each live drone's position and velocity before a physics frame
+void recordFrameStartStates(iwEnv *e) {
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        drone->frameStartPos = drone->pos;
+        drone->frameStartVelocity = drone->velocity;
+    }
+}
+
+// after a physics frame, checks whether the drones an enemy pushed in it
+// are drifting into a death wall
+void finishEnemyPushCourses(iwEnv *e) {
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (!drone->enemyPushedThisFrame) {
+            continue;
+        }
+        drone->enemyPushedThisFrame = false;
+        if (!drone->dead) {
+            drone->enemyPushCourseAfter = droneDriftsIntoDeathWall(e, drone, drone->pos, drone->velocity);
+        }
+    }
+}
+
 void droneTrackBrake(const iwEnv *e, const droneEntity *drone) {
     physicsStepInfo *physicsStep = fastCalloc(1, sizeof(physicsStepInfo));
     physicsStep->brakeToggled = true;
@@ -1829,6 +1952,33 @@ static inline void recordTeammateAssist(iwEnv *e, const droneEntity *drone, cons
     }
 }
 
+// a drone killed mostly by its own pushes, like its thrust, is credited to
+// an enemy if the enemy's latest push on it in the KILL_CREDIT_WINDOW
+// before it died set it drifting into a death wall: it wasn't at the start
+// of the push's frame and was at the end, or the push came on the frame it
+// died. Drifting is the drift ray obs, coasting with damping into a death
+// wall first within RAY_TIME_HORIZON; the biggest pusher misses kills where
+// a small enemy push turned the drone's momentum into the wall. Returns the
+// enemy, or -1
+static int8_t findCourseSettingEnemy(const iwEnv *e, const droneEntity *drone, physicsSource *source) {
+    if (drone->enemyPushFrame == 0) {
+        return -1;
+    }
+    const uint16_t deathFrame = e->episodeLength;
+    if (deathFrame - drone->enemyPushFrame > KILL_CREDIT_WINDOW * e->frameRate) {
+        return -1;
+    }
+    if (drone->enemyPushCourseBefore) {
+        return -1;
+    }
+    // a push on the frame the drone died has no course after it
+    if (drone->enemyPushFrame != deathFrame && !drone->enemyPushCourseAfter) {
+        return -1;
+    }
+    *source = drone->enemyPushSource;
+    return drone->enemyPusher;
+}
+
 // returns the index of the killer, or -1 if it's unknown
 int8_t findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall) {
     float maxMoveContrib = -FLT_MAX;
@@ -1854,6 +2004,16 @@ int8_t findDroneKiller(iwEnv *e, droneEntity *drone, const wallEntity *killWall)
         DEBUG_LOGF(">>> drone %d killed by UNKNOWN", drone->idx);
         e->stats[drone->idx].unknownKills++;
         return -1;
+    }
+
+    if (killer == drone->idx) {
+        physicsSource courseSource = {0};
+        const int8_t courseKiller = findCourseSettingEnemy(e, drone, &courseSource);
+        if (courseKiller != -1) {
+            DEBUG_LOGF(">>> drone %d set drifting into a death wall by drone %d", drone->idx, courseKiller);
+            killer = courseKiller;
+            source = courseSource;
+        }
     }
 
     DEBUG_LOGF(">>> drone %d killed by drone %d", drone->idx, killer);
@@ -2129,6 +2289,8 @@ bool respawnDrone(iwEnv *e, droneEntity *drone) {
     // a delayed drone idles for actionDelay steps after respawning, its
     // reaction time on spawn
     resetActionQueue(drone);
+    drone->enemyPushFrame = 0;
+    drone->enemyPushedThisFrame = false;
     drone->pos = pos;
     drone->lastPos = pos;
     drone->mapCellIdx = entityPosToCellIdx(e, drone->pos);
@@ -2407,6 +2569,15 @@ void createProjectileExplosion(iwEnv *e, projectileEntity *projectile, const boo
 
 // the drone credited for a projectile's push on a drone; a deflected
 // projectile hitting its new owner is credited to its previous owner
+// records the drone that set off a mine if it's an enemy of the owner, so
+// the mine's explosion is credited to it
+static inline void setMineDetonator(const iwEnv *e, projectileEntity *mine, const uint8_t detonatorIdx) {
+    const droneEntity *owner = safe_array_get_at(e->drones, mine->droneIdx);
+    const droneEntity *detonator = safe_array_get_at(e->drones, detonatorIdx);
+    mine->detonatedByOther = detonator->team != owner->team;
+    mine->detonatorIdx = detonatorIdx;
+}
+
 static inline uint8_t projectileCreditIdx(const projectileEntity *projectile, const uint8_t hitDroneIdx) {
     if (projectile->deflected && hitDroneIdx == projectile->droneIdx) {
         return projectile->prevDroneIdx;
@@ -2926,10 +3097,19 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         source.portaled = ctx->projectile->portaled;
     }
     // a deflected projectile exploding on its new owner is credited to
-    // its previous owner
+    // its previous owner, and a mine an enemy of its owner set off is
+    // credited to that enemy except on the enemy itself
+    const bool enemyDetonated = !ctx->isBurst && ctx->projectile != NULL && ctx->projectile->detonatedByOther;
     droneEntity *creditDrone = ctx->parentDrone;
+    if (enemyDetonated) {
+        creditDrone = safe_array_get_at(ctx->e->drones, ctx->projectile->detonatorIdx);
+    }
     if (drone != NULL && !ctx->isBurst) {
-        creditDrone = safe_array_get_at(ctx->e->drones, projectileCreditIdx(ctx->projectile, drone->idx));
+        if (enemyDetonated && drone->idx != ctx->projectile->detonatorIdx) {
+            creditDrone = safe_array_get_at(ctx->e->drones, ctx->projectile->detonatorIdx);
+        } else {
+            creditDrone = safe_array_get_at(ctx->e->drones, projectileCreditIdx(ctx->projectile, drone->idx));
+        }
         source.deflected = projectileCreditDeflected(ctx->projectile, drone->idx);
     }
 
@@ -2938,7 +3118,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
     case BOUNCY_WALL_ENTITY:
     case DEATH_WALL_ENTITY:
         if (wall->isFloating) {
-            applyTrackedImpulse(ctx->e, wall->bodyID, wall->physicsTracking, impulse, ctx->parentDrone->idx, source);
+            applyTrackedImpulse(ctx->e, wall->bodyID, wall->physicsTracking, impulse, creditDrone->idx, source);
         } else {
             b2Body_ApplyLinearImpulse(bodyID, impulse, output.pointA, true);
         }
@@ -2966,6 +3146,15 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
             case MINE_LAUNCHER_WEAPON:
                 // mine launcher projectiles explode when caught in another
                 // explosion, explode this mine only once
+                if (!projectile->needsToBeDestroyed) {
+                    // a mine set off by another mine an enemy set off
+                    // chains the credit to that enemy
+                    uint8_t detonator = ctx->parentDrone->idx;
+                    if (!ctx->isBurst && ctx->projectile != NULL && ctx->projectile->detonatedByOther) {
+                        detonator = ctx->projectile->detonatorIdx;
+                    }
+                    setMineDetonator(ctx->e, projectile, detonator);
+                }
                 createProjectileExplosion(ctx->e, projectile, false);
                 return true;
             case GRAPPLE_WEAPON: {
@@ -3036,6 +3225,7 @@ bool explodeCallback(b2ShapeId shapeID, void *context) {
         drone->lastVelocityStep = ctx->e->episodeLength;
         drone->lastVelocityTrackIdx = cc_array_size(drone->physicsTracking);
         applyTrackedImpulse(ctx->e, drone->bodyID, drone->physicsTracking, impulse, creditDrone->idx, source);
+        recordEnemyPush(ctx->e, drone, creditDrone->idx, source);
         drone->lastVelocity = drone->velocity;
         drone->velocity = b2Body_GetLinearVelocity(drone->bodyID);
 
@@ -4022,9 +4212,10 @@ bool droneStep(iwEnv *e, droneEntity *drone) {
                 attachedPhysics = wall->physicsTracking;
             }
         } else if (attachedEnt->type == DRONE_ENTITY) {
-            const droneEntity *attachedDrone = attachedEnt->entity;
+            droneEntity *attachedDrone = attachedEnt->entity;
             attachedPhysics = attachedDrone->physicsTracking;
             markAssistSetup(e, drone, attachedDrone, ASSIST_GRAPPLE);
+            recordEnemyPush(e, attachedDrone, drone->idx, source);
         }
 
         // impulses and forces applied to static walls are not tracked
@@ -4168,6 +4359,7 @@ void handleBlackHolePull(const iwEnv *e, projectileEntity *projectile) {
             const uint8_t creditIdx = projectileCreditIdx(projectile, drone->idx);
             source.deflected = projectileCreditDeflected(projectile, drone->idx);
             applyTrackedForce(e, drone->bodyID, drone->physicsTracking, force, creditIdx, source);
+            recordEnemyPush(e, drone, creditIdx, source);
 
             droneEntity *parentDrone = safe_array_get_at(e->drones, creditIdx);
             if (creditIdx != drone->idx && parentDrone->team != drone->team) {
@@ -4615,6 +4807,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
                 if (projectile2->weaponInfo->type == MINE_LAUNCHER_WEAPON) {
                     numDestroyed = 2;
                 }
+                setMineDetonator(e, projectile, projectile2->droneIdx);
             }
             destroyProjectile(e, projectile, true, true);
             return numDestroyed;
@@ -4691,6 +4884,7 @@ uint8_t handleProjectileBeginContact(iwEnv *e, const entity *proj, const entity 
 
             b2Body_ApplyLinearImpulseToCenter(hitDrone->bodyID, hitImpulse, true);
             trackImpulse(e, hitDrone->physicsTracking, b2MulSV(SHOT_HIT_IMPULSE_SCALE, hitImpulse), creditIdx, hitSource);
+            recordEnemyPush(e, hitDrone, creditIdx, hitSource);
         }
 
         if (creditIdx != hitDrone->idx) {
@@ -5201,6 +5395,8 @@ void handleContactEvents(iwEnv *e) {
                 const physicsSource source = {.type = DRONE_PHYSICS};
                 trackImpulse(e, drone2->physicsTracking, hitImpulse, drone1->idx, source);
                 trackImpulse(e, drone1->physicsTracking, b2Neg(hitImpulse), drone2->idx, source);
+                recordEnemyPush(e, drone2, drone1->idx, source);
+                recordEnemyPush(e, drone1, drone2->idx, source);
                 // TODO: continue here?
             }
         }

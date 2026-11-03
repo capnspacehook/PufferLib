@@ -65,6 +65,10 @@ static const float GRID_OVERLAP_MARGIN = 0.05f;
 // velocity casts follow the damped path the drone would travel in this
 // many seconds
 static const float RAY_TIME_HORIZON = 2.0f;
+// a drone whose own pushes were the biggest towards the death wall that
+// killed it is credited to an enemy instead if that enemy's latest push in
+// this many seconds before it died set it drifting into a death wall
+static const float KILL_CREDIT_WINDOW = 2.0f;
 
 static const float MAX_DISTANCE = 200.0f;
 static const float MAX_SPEED = 500.0f;
