@@ -560,6 +560,13 @@ typedef struct droneEntity {
     // pressed when energy couldn't be used, UINT16_MAX until the render
     // code starts it
     uint16_t energyShakeRenderSteps;
+    // frames left of the weapon meter shaking after the trigger was
+    // pressed during the weapon's cooldown, UINT16_MAX until the render
+    // code starts it
+    uint16_t weaponShakeRenderSteps;
+    // 0-1 strength of the glow while braking, fading in and out with the
+    // brake; only updated when rendering
+    float brakeGlow;
 
     projectileEntity *grapple;
     // the drone's live mine, see droneMine

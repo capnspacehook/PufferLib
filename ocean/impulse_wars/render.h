@@ -53,6 +53,17 @@ static const Color barolo = {.r = 165, .g = 37, .b = 8, .a = 255};
 static const Color bambooBrown = {.r = 204, .g = 129, .b = 0, .a = 255};
 
 static const float droneLightRadius = 0.1f;
+// Drones glow more while braking: in the bloom pass a soft halo is added
+// around their light, fading out linearly from DRONE_BRAKE_GLOW_ALPHA at the
+// drone's edge to nothing DRONE_BRAKE_GLOW_SPREAD further out. It's drawn as
+// DRONE_BRAKE_GLOW_LAYERS stacked faint discs; more layers is smoother.
+// The halo fades in over DRONE_BRAKE_GLOW_IN_TIME seconds when braking
+// starts and out over DRONE_BRAKE_GLOW_OUT_TIME seconds when it stops.
+static const float DRONE_BRAKE_GLOW_IN_TIME = 0.075f;
+static const float DRONE_BRAKE_GLOW_OUT_TIME = 0.2f;
+static const float DRONE_BRAKE_GLOW_SPREAD = 1.0f;
+static const float DRONE_BRAKE_GLOW_ALPHA = 0.2f;
+static const uint8_t DRONE_BRAKE_GLOW_LAYERS = 12;
 static const float halfDroneRadius = DRONE_RADIUS / 2.0f;
 static const float droneThrusterLength = 1.5f * DRONE_RADIUS;
 static const float aimGuideLength = 0.3f * DRONE_RADIUS;
@@ -137,6 +148,41 @@ static const float ENERGY_SHAKE_TIME = 0.25f;
 static const float ENERGY_SHAKE_DISTANCE = 0.12f;
 // side to side shakes per second
 static const float ENERGY_SHAKE_RATE = 14.0f;
+// The weapon meter shakes when the trigger is pressed during the weapon's
+// cooldown; holding the trigger through the cooldown doesn't shake it.
+static const float WEAPON_SHAKE_TIME = 0.25f;
+static const float WEAPON_SHAKE_DISTANCE = 0.2f;
+// side to side shakes per second
+static const float WEAPON_SHAKE_RATE = 14.0f;
+// The weapon meter below the drone shows charge for charged weapons, heat
+// for the machinegun, and otherwise cooldown for weapons whose cooldown is
+// longer than WEAPON_METER_MIN_COOLDOWN; a full cooldown meter means the
+// weapon is ready.
+static const float WEAPON_METER_MIN_COOLDOWN = 0.5f;
+// cooldown fills fade in from WEAPON_METER_MIN_ALPHA when empty to
+// WEAPON_METER_MAX_ALPHA when full; charge fills are always opaque so the
+// two look different
+static const float WEAPON_METER_MIN_ALPHA = 0.25f;
+static const float WEAPON_METER_MAX_ALPHA = 0.75f;
+// a weapon's meter flashes once when it becomes fully charged: the meter is
+// drawn into the drone bloom pass so it glows softly all around, fading in
+// to WEAPON_METER_FLASH_ALPHA over WEAPON_METER_FLASH_IN_TIME seconds, then
+// back out over WEAPON_METER_FLASH_OUT_TIME seconds
+static const float WEAPON_METER_FLASH_IN_TIME = 0.1f;
+static const float WEAPON_METER_FLASH_OUT_TIME = 0.25f;
+static const float WEAPON_METER_FLASH_ALPHA = 1.0f;
+// meter shape, an arc below the drone stretched horizontally
+static const float WEAPON_METER_OFFSET = 3.3f;
+static const float WEAPON_METER_INNER_RADIUS = 0.5f;
+static const float WEAPON_METER_OUTER_RADIUS = 1.0f;
+static const float WEAPON_METER_START_ANGLE = 157.5f;
+static const float WEAPON_METER_SWEEP = 135.0f;
+static const float WEAPON_METER_X_SCALE = 1.7f;
+// heat is drawn as separate segments like a gauge so it doesn't read as a
+// charge or cooldown
+static const uint8_t WEAPON_METER_HEAT_SEGMENTS = 5;
+static const float WEAPON_METER_HEAT_SEGMENT_GAP = 3.0f;
+
 // drone colored ring around the mine pip while a welded mine is out, as
 // pressing the utility will detonate it instead of firing another
 static const float UTILITY_ARMED_RING_GAP = 0.2f;
@@ -1578,6 +1624,10 @@ static uint16_t energyShakeMaxSteps(const iwEnv *e) {
     return (uint16_t)fmaxf(1.0f, ceilf(ENERGY_SHAKE_TIME * e->frameRate));
 }
 
+static uint16_t weaponShakeMaxSteps(const iwEnv *e) {
+    return (uint16_t)fmaxf(1.0f, ceilf(WEAPON_SHAKE_TIME * e->frameRate));
+}
+
 // side to side offset of a shake that dies out, renderSteps counts down
 // from maxSteps and is UINT16_MAX when it just started
 static float shakeOffset(const iwEnv *e, const uint16_t renderSteps, const uint16_t maxSteps, const float distance, const float rate) {
@@ -2086,6 +2136,25 @@ void renderDroneLight(const droneEntity *drone) {
     );
 }
 
+// the drone's light for the bloom pass, glowing more while braking
+void renderDroneBloomLight(const droneEntity *drone) {
+    renderDroneLight(drone);
+    if (drone->brakeGlow == 0.0f) {
+        return;
+    }
+
+    // ease in and out so fades don't start or stop abruptly
+    const float glow = 0.5f - (0.5f * cosf(PI * drone->brakeGlow));
+    const Vector3 pos = {.x = drone->pos.x, .y = 0.0f, .z = drone->pos.y};
+    const Color layerColor = Fade(getDroneColor(drone->idx), glow * DRONE_BRAKE_GLOW_ALPHA / DRONE_BRAKE_GLOW_LAYERS);
+    BeginBlendMode(BLEND_ADDITIVE);
+    for (uint8_t i = 1; i <= DRONE_BRAKE_GLOW_LAYERS; i++) {
+        const float radius = DRONE_RADIUS + (DRONE_BRAKE_GLOW_SPREAD * i / DRONE_BRAKE_GLOW_LAYERS);
+        DrawCylinder(pos, radius, radius, 0.0f, 32, layerColor);
+    }
+    EndBlendMode();
+}
+
 void renderDrone(const droneEntity *drone) {
     renderDroneLight(drone);
 
@@ -2135,6 +2204,125 @@ void renderDroneAmmo(const iwEnv *e, const droneEntity *drone) {
     DrawTextEx(GetFontDefault(), ammoStr, textOrigin, fontSize, fontSize / 10.f, RAYWHITE);
 }
 
+// meter below the drone showing charge, heat or cooldown of its weapon
+// 0-1 strength of the flash when a drone's weapon becomes fully charged
+static float weaponMeterFlash(const droneEntity *drone) {
+    const weaponSlot *weapon = &drone->weapon;
+    const float maxCharge = weapon->weaponInfo->maxCharge;
+    if (maxCharge == 0.0f || weapon->cooldown > 0.0f || weapon->charge != maxCharge) {
+        return 0.0f;
+    }
+    // flash once, timed by how long the charge has been held
+    const float flashTime = weapon->fullChargeHoldTime;
+    float t;
+    if (flashTime < WEAPON_METER_FLASH_IN_TIME) {
+        t = flashTime / WEAPON_METER_FLASH_IN_TIME;
+    } else if (flashTime < WEAPON_METER_FLASH_IN_TIME + WEAPON_METER_FLASH_OUT_TIME) {
+        t = 1.0f - ((flashTime - WEAPON_METER_FLASH_IN_TIME) / WEAPON_METER_FLASH_OUT_TIME);
+    } else {
+        return 0.0f;
+    }
+    // ease in and out of the peak
+    return 0.5f - (0.5f * cosf(PI * t));
+}
+
+static void beginWeaponMeter(const droneEntity *drone, const float xOffset) {
+    rlPushMatrix();
+    rlTranslatef(drone->pos.x + xOffset, drone->pos.y + WEAPON_METER_OFFSET, 0.0f);
+    rlScalef(WEAPON_METER_X_SCALE, 1.0f, 1.0f);
+}
+
+// draws the whole weapon meter into the drone bloom pass while it's
+// flashing; must be called in 2D mode
+void renderDroneWeaponMeterFlash(const droneEntity *drone) {
+    const float flash = weaponMeterFlash(drone);
+    if (flash == 0.0f) {
+        return;
+    }
+    beginWeaponMeter(drone, 0.0f);
+    DrawRing(
+        Vector2Zero(),
+        WEAPON_METER_INNER_RADIUS,
+        WEAPON_METER_OUTER_RADIUS,
+        WEAPON_METER_START_ANGLE,
+        WEAPON_METER_START_ANGLE - WEAPON_METER_SWEEP,
+        32,
+        Fade(WHITE, WEAPON_METER_FLASH_ALPHA * flash)
+    );
+    rlPopMatrix();
+}
+
+void renderDroneWeaponMeter(const iwEnv *e, const droneEntity *drone) {
+    enum { CHARGE_METER, HEAT_METER, COOLDOWN_METER } kind;
+
+    const weaponSlot *weapon = &drone->weapon;
+    const weaponInformation *info = weapon->weaponInfo;
+    Color color = GRAY;
+    float fill = 0.0f;
+    float alpha = 1.0f;
+
+    if (info->maxCharge != 0.0f) {
+        kind = CHARGE_METER;
+        color = RAYWHITE;
+        fill = weapon->charge / info->maxCharge;
+        if (weapon->cooldown > 0.0f) {
+            // charging can't start during the cooldown, so the meter
+            // drains from full after a shot until it can
+            color = GRAY;
+            fill = weapon->cooldown / info->cooldown;
+            alpha = Lerp(WEAPON_METER_MIN_ALPHA, WEAPON_METER_MAX_ALPHA, fill);
+        }
+    } else if (info->type == MACHINEGUN_WEAPON) {
+        kind = HEAT_METER;
+        // how much the heat is swaying shots, see weaponAdjustAim
+        fill = tanhf(SQUARED(weapon->heat / MACHINEGUN_SWAY_HEAT));
+    } else if (info->cooldown > WEAPON_METER_MIN_COOLDOWN) {
+        kind = COOLDOWN_METER;
+        fill = 1.0f - (weapon->cooldown / info->cooldown);
+        alpha = Lerp(WEAPON_METER_MIN_ALPHA, WEAPON_METER_MAX_ALPHA, fill);
+    } else {
+        return;
+    }
+    fill = Clamp(fill, 0.0f, 1.0f);
+
+    const float meterInnerRadius = WEAPON_METER_INNER_RADIUS;
+    const float meterOuterRadius = WEAPON_METER_OUTER_RADIUS;
+    const float meterStartAngle = WEAPON_METER_START_ANGLE;
+    const float meterSweep = WEAPON_METER_SWEEP;
+    const Color fillColor = Fade(color, alpha);
+    const Color meterColor = RAYWHITE;
+
+    // shakes only start during a cooldown, which the heat meter doesn't show
+    float shake = 0.0f;
+    if (kind != HEAT_METER) {
+        shake = shakeOffset(e, drone->weaponShakeRenderSteps, weaponShakeMaxSteps(e), WEAPON_SHAKE_DISTANCE, WEAPON_SHAKE_RATE);
+    }
+    beginWeaponMeter(drone, shake);
+
+    if (kind == HEAT_METER) {
+        const float segmentSweep = meterSweep / WEAPON_METER_HEAT_SEGMENTS;
+        const float halfGap = WEAPON_METER_HEAT_SEGMENT_GAP / 2.0f;
+        const float fillAngle = meterSweep * fill;
+        for (uint8_t i = 0; i < WEAPON_METER_HEAT_SEGMENTS; i++) {
+            const float segStart = (i * segmentSweep) + halfGap;
+            const float segEnd = ((i + 1) * segmentSweep) - halfGap;
+            const float start = meterStartAngle - segStart;
+            const float end = meterStartAngle - segEnd;
+            DrawRingLines(Vector2Zero(), meterInnerRadius, meterOuterRadius, start, end, 4, meterColor);
+            if (fillAngle > segStart) {
+                const float filledEnd = meterStartAngle - fminf(fillAngle, segEnd);
+                DrawRing(Vector2Zero(), meterInnerRadius, meterOuterRadius, start, filledEnd, 4, fillColor);
+            }
+        }
+    } else {
+        const float meterEndAngle = meterStartAngle - (meterSweep * fill);
+        DrawRing(Vector2Zero(), meterInnerRadius, meterOuterRadius, meterStartAngle, meterEndAngle, 32, fillColor);
+        DrawRingLines(Vector2Zero(), meterInnerRadius, meterOuterRadius, meterStartAngle, meterStartAngle - meterSweep, 10, meterColor);
+    }
+
+    rlPopMatrix();
+}
+
 void renderDroneUI(const iwEnv *e, const droneEntity *drone) {
     // draw energy meter
     const float energyMeterInnerRadius = 0.6f;
@@ -2162,26 +2350,7 @@ void renderDroneUI(const iwEnv *e, const droneEntity *drone) {
         DrawRing(energyMeterOrigin, burstChargeInnerRadius, burstChargeOuterRadius, 0.0f, 360.0f, 50, burstChargeColor);
     }
 
-    const float maxCharge = drone->weapon.weaponInfo->maxCharge;
-    if (maxCharge == 0) {
-        return;
-    }
-
-    // draw charge meter
-    const Vector2 chargeMeterOrigin = {.x = drone->pos.x, .y = drone->pos.y + 3.3f};
-    const float chargeMeterInnerRadius = 1.0f;
-    const float chargeMeterOuterRadius = 0.5f;
-    const float chargeMeterStartAngle = 157.5f;
-    const float chargeMeterEndAngle = chargeMeterStartAngle - (135.0f * (drone->weapon.charge / maxCharge));
-
-    rlPushMatrix();
-    rlTranslatef(chargeMeterOrigin.x, chargeMeterOrigin.y, 0.0f);
-    rlScalef(1.7f, 1.0f, 1.0f);
-
-    DrawRing(Vector2Zero(), chargeMeterInnerRadius, chargeMeterOuterRadius, chargeMeterStartAngle, chargeMeterEndAngle, 32, RAYWHITE);
-    DrawRingLines(Vector2Zero(), chargeMeterInnerRadius, chargeMeterOuterRadius, chargeMeterStartAngle, chargeMeterStartAngle - 135.0f, 10, RAYWHITE);
-
-    rlPopMatrix();
+    renderDroneWeaponMeter(e, drone);
 }
 
 // draw a pip per utility ammo above the drone, shaking them if a utility
@@ -2663,10 +2832,21 @@ void renderEnv(iwEnv *e) {
             renderDroneAimGuide(e, drone);
         }
 
-        renderDroneLight(drone);
+        renderDroneBloomLight(drone);
     }
 
     EndMode3D();
+
+    // glow around weapon meters flashing from a full charge
+    BeginMode2D(e->client->camera->camera2D);
+    for (uint8_t i = 0; i < cc_array_size(e->drones); i++) {
+        const droneEntity *drone = safe_array_get_at(e->drones, i);
+        if (!drone->dead) {
+            renderDroneWeaponMeterFlash(drone);
+        }
+    }
+    EndMode2D();
+
     EndTextureMode();
 
     applyBloom(e, e->client->droneRawTex, e->client->droneBloomTex, 2.0f);

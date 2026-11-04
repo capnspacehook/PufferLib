@@ -3773,11 +3773,23 @@ static void droneShakeEnergyGauge(const iwEnv *e, droneEntity *drone) {
     }
 }
 
+static void droneShakeWeaponMeter(const iwEnv *e, droneEntity *drone) {
+    if (e->client != NULL) {
+        drone->weaponShakeRenderSteps = UINT16_MAX;
+    }
+}
+
 void droneShoot(iwEnv *e, droneEntity *drone, const b2Vec2 aim, const bool triggerDown) {
     drone->shotThisStep = true;
 
     weaponSlot *weapon = &drone->weapon;
     if (weapon->cooldown > 0.0f || weapon->ammo == 0) {
+        // shake the weapon meter if the trigger was pressed during the
+        // cooldown, but not if it's been held since before it;
+        // triggerHeld is still last step's trigger here
+        if (weapon->cooldown > 0.0f && triggerDown && !drone->triggerHeld) {
+            droneShakeWeaponMeter(e, drone);
+        }
         return;
     }
     const bool weaponNeedsCharge = weapon->weaponInfo->maxCharge != 0.0f;

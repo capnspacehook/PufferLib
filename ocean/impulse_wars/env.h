@@ -1594,6 +1594,24 @@ void updateDroneEnergyShake(iwEnv *e, droneEntity *drone) {
     }
 }
 
+void updateDroneBrakeGlow(const iwEnv *e, droneEntity *drone) {
+    if (drone->dead) {
+        drone->brakeGlow = 0.0f;
+    } else if (drone->braking) {
+        drone->brakeGlow = fminf(drone->brakeGlow + (e->deltaTime / DRONE_BRAKE_GLOW_IN_TIME), 1.0f);
+    } else {
+        drone->brakeGlow = fmaxf(drone->brakeGlow - (e->deltaTime / DRONE_BRAKE_GLOW_OUT_TIME), 0.0f);
+    }
+}
+
+void updateDroneWeaponShake(iwEnv *e, droneEntity *drone) {
+    if (drone->weaponShakeRenderSteps == UINT16_MAX) {
+        drone->weaponShakeRenderSteps = weaponShakeMaxSteps(e);
+    } else if (drone->weaponShakeRenderSteps != 0) {
+        drone->weaponShakeRenderSteps--;
+    }
+}
+
 void updateDroneUtilityShake(iwEnv *e, droneEntity *drone) {
     if (drone->utilityShakeRenderSteps == UINT16_MAX) {
         drone->utilityShakeRenderSteps = utilityShakeMaxSteps(e);
@@ -1645,6 +1663,8 @@ void updateVisuals(iwEnv *e) {
         updateDroneRespawnGuide(e, drone);
         updateDroneUtilityShake(e, drone);
         updateDroneEnergyShake(e, drone);
+        updateDroneWeaponShake(e, drone);
+        updateDroneBrakeGlow(e, drone);
     }
 }
 
