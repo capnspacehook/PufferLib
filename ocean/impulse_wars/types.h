@@ -79,6 +79,10 @@ typedef struct entity {
 
 #define _NUM_WEAPONS 14
 static const uint8_t NUM_WEAPONS = _NUM_WEAPONS;
+// weapons a drone's weapon slot or a weapon pickup can hold, unset
+// included; the weapon types past them are the projectiles of utilities
+#define _NUM_DRONE_WEAPONS 10
+static const uint8_t NUM_DRONE_WEAPONS = _NUM_DRONE_WEAPONS;
 
 enum weaponType {
     UNSET_WEAPON,
@@ -91,11 +95,14 @@ enum weaponType {
     FLAK_CANNON_WEAPON,
     BLACK_HOLE_WEAPON,
     NUKE_WEAPON,
+    // utility projectiles, never in a weapon slot or weapon pickup
     GRAPPLE_WEAPON,
     MINE_LAUNCHER_WEAPON,
     PORTAL_WEAPON,
     MIRROR_WEAPON,
 };
+_Static_assert(_NUM_DRONE_WEAPONS == NUKE_WEAPON + 1, "_NUM_DRONE_WEAPONS doesn't end at the last drone weapon");
+_Static_assert(_NUM_WEAPONS == MIRROR_WEAPON + 1, "_NUM_WEAPONS doesn't match weaponType");
 
 // utilities live in their own slot next to the weapon and survive death;
 // their ammo regenerates over time. Their projectiles are

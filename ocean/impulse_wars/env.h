@@ -57,6 +57,7 @@ static inline float pickupObsType(const weaponPickupEntity *pickup) {
     case UTILITY_PICKUP:
         return UTILITY_PICKUP_OBS_TYPE(pickup->utility);
     default:
+        ASSERT(pickup->weapon < NUM_DRONE_WEAPONS);
         return pickup->weapon;
     }
 }
@@ -374,6 +375,7 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *obs) {
 }
 
 static inline void computeWeaponObs(const weaponSlot *weapon, float *obs, uint16_t offset) {
+    ASSERT(weapon->weaponInfo->type < NUM_DRONE_WEAPONS);
     obs[offset++] = weapon->weaponInfo->type;
     obs[offset++] = scaleAmmo(weapon);
     obs[offset++] = scaleValue(fmaxf(weapon->cooldown, 0.0f), weapon->weaponInfo->cooldown, true);
@@ -844,9 +846,9 @@ static inline bool loadoutWeapon(const enum weaponType type) {
 // picks a weapon and a utility uniformly, ignoring spawn weights so rarely
 // spawned weapons are practiced as much as common ones
 static void randLoadout(iwEnv *e, enum weaponType *weapon, enum utilityType *utility) {
-    enum weaponType candidates[_NUM_WEAPONS];
+    enum weaponType candidates[_NUM_DRONE_WEAPONS];
     uint8_t numCandidates = 0;
-    for (uint8_t i = STANDARD_WEAPON + 1; i < NUM_WEAPONS; i++) {
+    for (uint8_t i = STANDARD_WEAPON + 1; i < NUM_DRONE_WEAPONS; i++) {
         if (loadoutWeapon(i)) {
             candidates[numCandidates++] = i;
         }

@@ -2262,7 +2262,9 @@ void renderDroneWeaponMeterFlash(const droneEntity *drone) {
 }
 
 void renderDroneWeaponMeter(const iwEnv *e, const droneEntity *drone) {
-    enum { CHARGE_METER, HEAT_METER, COOLDOWN_METER } kind;
+    enum { CHARGE_METER,
+           HEAT_METER,
+           COOLDOWN_METER } kind;
 
     const weaponSlot *weapon = &drone->weapon;
     const weaponInformation *info = weapon->weaponInfo;

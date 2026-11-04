@@ -375,7 +375,7 @@ static const char *policyNames[NUM_BOT_POLICIES] = {
 };
 
 static const char *analysisWeaponNames[] = {
-    "unset", "standard", "machinegun", "sniper", "shotgun", "imploder",
+    "unset", "standard", "machinegun", "sniper", "shotgun", "slug", "imploder",
     "flak", "blackhole", "nuke", "grapple", "mine", "portal", "mirror",
 };
 _Static_assert(sizeof(analysisWeaponNames) / sizeof(analysisWeaponNames[0]) == NW, "name every weapon");

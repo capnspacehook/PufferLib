@@ -56,7 +56,7 @@ static const float HIT_DV_REF = 75.0f;
 
 _Static_assert(IW_NUM_PORTALS == _MAX_PORTALS, "portal obs slots don't match _MAX_PORTALS");
 _Static_assert(IW_NUM_MIRRORS == _MAX_MIRRORS, "mirror obs slots don't match _MAX_MIRRORS");
-_Static_assert(IW_WEAPON_VOCAB == _NUM_WEAPONS, "weapon obs vocab doesn't match _NUM_WEAPONS");
+_Static_assert(IW_WEAPON_VOCAB == _NUM_DRONE_WEAPONS, "weapon obs vocab doesn't match _NUM_DRONE_WEAPONS");
 _Static_assert(IW_UTILITY_VOCAB == _NUM_UTILITIES, "utility obs vocab doesn't match _NUM_UTILITIES");
 
 // map grid cells only touching an entity on their border aren't marked
@@ -134,9 +134,9 @@ static const float UTILITY_PICKUP_MAX_DRONE_DISTANCE_SQUARED = SQUARED(30.0f);
 // ammo crates refill the picking drone's weapons; in combo training
 // episodes they're the only pickups
 #define AMMO_CRATE_SPAWN_WEIGHT 5.0f
-// pickup type of an ammo crate in the obs, one past the last weapon, and
-// of a utility pickup, the utility type past the crate
-#define AMMO_CRATE_OBS_TYPE _NUM_WEAPONS
+// pickup type of an ammo crate in the obs, one past the last drone
+// weapon, and of a utility pickup, the utility type past the crate
+#define AMMO_CRATE_OBS_TYPE _NUM_DRONE_WEAPONS
 #define UTILITY_PICKUP_OBS_TYPE(utility) (AMMO_CRATE_OBS_TYPE + (utility))
 _Static_assert(IW_PICKUP_VOCAB == UTILITY_PICKUP_OBS_TYPE(_NUM_UTILITIES - 1) + 1, "pickup obs vocab doesn't match the pickup obs types");
 
@@ -301,7 +301,7 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define SLUG_INV_MASS INV_MASS(SLUG_MASS)
 #define SLUG_BOUNCE 0
 #define SLUG_ENERGY_REFILL_COEF 1.0f
-#define SLUG_SPAWN_WEIGHT 15.0f
+#define SLUG_SPAWN_WEIGHT 5.0f
 
 #define IMPLODER_AMMO 2
 #define IMPLODER_PROJECTILES 1
@@ -931,21 +931,6 @@ static inline enum utilityType weaponUtility(const enum weaponType type) {
 static inline bool weaponIsUtility(const enum weaponType type) {
     return weaponUtility(type) != UNSET_UTILITY;
 }
-
-static const char *weaponNames[] = {
-    "standard",
-    "machine_gun",
-    "sniper",
-    "shotgun",
-    "imploder",
-    "flak_cannon",
-    "black_hole",
-    "tactical_nuke",
-    "grapple_gun",
-    "mine_launcher",
-    "portal_gun",
-    "mirror",
-};
 
 static b2ShapeId weaponSensor(const b2BodyId bodyID, const enum weaponType type) {
     b2ShapeDef sensorShapeDef = b2DefaultShapeDef();

@@ -133,8 +133,8 @@
 
 // empty + standard, bouncy, death walls
 #define IW_WALL_VOCAB 4
-// none + 12 weapons
-#define IW_WEAPON_VOCAB 14
+// none + 9 weapons; utility projectile weapon types are never observed
+#define IW_WEAPON_VOCAB 10
 // none + grapple, mines, portals, mirror
 #define IW_UTILITY_VOCAB 5
 // weapon vocab + ammo crate + grapple, mines, portals, mirror

@@ -882,8 +882,8 @@ void randPickupType(iwEnv *e, weaponPickupEntity *pickup, const bool episodeStar
     pickup->utility = UNSET_UTILITY;
     if (!e->comboEp) {
         float totalWeight = 0.0f;
-        float heldWeights[_NUM_WEAPONS] = {0};
-        float spawnWeights[_NUM_WEAPONS - 1] = {0};
+        float heldWeights[_NUM_DRONE_WEAPONS] = {0};
+        float spawnWeights[_NUM_DRONE_WEAPONS - 1] = {0};
 
         // reduce the weight of weapons currently being held
         for (uint8_t i = 0; i < NUM_DRONES; i++) {
@@ -901,7 +901,7 @@ void randPickupType(iwEnv *e, weaponPickupEntity *pickup, const bool episodeStar
             }
         }
 
-        for (uint8_t i = 1; i < NUM_WEAPONS; i++) {
+        for (uint8_t i = 1; i < NUM_DRONE_WEAPONS; i++) {
             const float discount = (float)e->spawnedWeaponPickups[i] + (heldWeights[i] * PICKUP_HELD_WEAPON_WEIGHT_COEF) + 1.0f;
             spawnWeights[i - 1] = e->map->weaponWeights[i] / discount;
             totalWeight += spawnWeights[i - 1];
@@ -921,7 +921,7 @@ void randPickupType(iwEnv *e, weaponPickupEntity *pickup, const bool episodeStar
         // the crate is what's left over past the weapons and utilities
         const float randPick = randFloat(&e->rng, 0.0f, totalWeight);
         float cumulativeWeight = 0.0f;
-        for (uint8_t i = 1; i < NUM_WEAPONS; i++) {
+        for (uint8_t i = 1; i < NUM_DRONE_WEAPONS; i++) {
             cumulativeWeight += spawnWeights[i - 1];
             if (randPick < cumulativeWeight) {
                 pickup->kind = WEAPON_PICKUP;
