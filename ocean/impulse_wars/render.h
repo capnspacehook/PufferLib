@@ -798,6 +798,9 @@ char *getWeaponAbreviation(const enum weaponType type) {
     case SHOTGUN_WEAPON:
         name = "SHGN";
         break;
+    case SLUG_WEAPON:
+        name = "SLUG";
+        break;
     case IMPLODER_WEAPON:
         name = "IMPL";
         break;
@@ -846,6 +849,9 @@ char *getWeaponName(const enum weaponType type) {
     case SHOTGUN_WEAPON:
         name = "Shotgun";
         break;
+    case SLUG_WEAPON:
+        name = "Slug";
+        break;
     case IMPLODER_WEAPON:
         name = "Imploder";
         break;
@@ -889,6 +895,8 @@ float getWeaponAimGuideWidth(const enum weaponType type) {
     case MACHINEGUN_WEAPON:
     case MINE_LAUNCHER_WEAPON:
         return 10.0f;
+    case SLUG_WEAPON:
+        return 15.0f;
     case SNIPER_WEAPON:
         return 150.0f;
     case SHOTGUN_WEAPON:
@@ -913,6 +921,7 @@ Color getProjectileColor(const enum weaponType type) {
     case MACHINEGUN_WEAPON:
     case SNIPER_WEAPON:
     case SHOTGUN_WEAPON:
+    case SLUG_WEAPON:
         color = ORANGE;
         break;
     case MINE_LAUNCHER_WEAPON:

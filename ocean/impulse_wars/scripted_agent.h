@@ -170,6 +170,7 @@ static const float botWeaponValue[_NUM_WEAPONS] = {
     [MACHINEGUN_WEAPON] = 4.0f,
     [SNIPER_WEAPON] = 4.5f,
     [SHOTGUN_WEAPON] = 2.0f,
+    [SLUG_WEAPON] = 3.0f,
     [IMPLODER_WEAPON] = 2.0f,
     [FLAK_CANNON_WEAPON] = 2.5f,
     [MINE_LAUNCHER_WEAPON] = 1.0f,
@@ -184,12 +185,14 @@ static const float evaderWeaponValue[_NUM_WEAPONS] = {
     [SHOTGUN_WEAPON] = 4.0f,
     [FLAK_CANNON_WEAPON] = 3.5f,
     [SNIPER_WEAPON] = 3.0f,
+    [SLUG_WEAPON] = 3.5f,
 };
 
 static const float camperWeaponValue[_NUM_WEAPONS] = {
     [MACHINEGUN_WEAPON] = 0.5f,
     [SNIPER_WEAPON] = 5.0f,
     [SHOTGUN_WEAPON] = 0.5f,
+    [SLUG_WEAPON] = 4.0f,
     [IMPLODER_WEAPON] = 3.5f,
     [FLAK_CANNON_WEAPON] = 0.5f,
     [MINE_LAUNCHER_WEAPON] = 0.5f,
@@ -201,6 +204,7 @@ static const float rusherWeaponValue[_NUM_WEAPONS] = {
     [MACHINEGUN_WEAPON] = 4.5f,
     [SNIPER_WEAPON] = 0.5f,
     [SHOTGUN_WEAPON] = 5.0f,
+    [SLUG_WEAPON] = 1.5f,
     [IMPLODER_WEAPON] = 1.0f,
     [FLAK_CANNON_WEAPON] = 4.0f,
     [MINE_LAUNCHER_WEAPON] = 0.5f,
@@ -212,6 +216,7 @@ static const float trapperWeaponValue[_NUM_WEAPONS] = {
     [MACHINEGUN_WEAPON] = 1.0f,
     [SNIPER_WEAPON] = 1.0f,
     [SHOTGUN_WEAPON] = 1.0f,
+    [SLUG_WEAPON] = 1.0f,
     [IMPLODER_WEAPON] = 4.0f,
     [FLAK_CANNON_WEAPON] = 1.0f,
     [MINE_LAUNCHER_WEAPON] = 5.0f,
@@ -1192,10 +1197,10 @@ float weaponTypeIdealRangeSquared(const enum weaponType type) {
     case FLAK_CANNON_WEAPON:
         return SQUARED(FLAK_CANNON_SAFE_DISTANCE + 5.0f);
     case SNIPER_WEAPON:
+    case SLUG_WEAPON:
     case BLACK_HOLE_WEAPON:
     case NUKE_WEAPON:
         return FLT_MAX;
-
     default:
         ERRORF("unknown weapon type %d", type);
     }

@@ -287,6 +287,22 @@ static const float DRONE_PIECE_MAX_SPEED = 10.0f;
 #define SHOTGUN_SPREAD (6.0f * PI / 180.0f)
 #define SHOTGUN_SPREAD_JITTER (1.0f * PI / 180.0f)
 
+#define SLUG_AMMO 5
+#define SLUG_PROJECTILES 1
+#define SLUG_RECOIL_MAGNITUDE 120.0f
+#define SLUG_FIRE_MAGNITUDE 250.0f
+#define SLUG_DAMPING 0.0f
+#define SLUG_CHARGE 0.0f
+#define SLUG_COOL_DOWN 1.0f
+#define SLUG_MAX_DISTANCE 200.0f
+#define SLUG_RADIUS 0.5
+#define SLUG_DENSITY 3.2f
+#define SLUG_MASS MASS(SLUG_DENSITY, SLUG_RADIUS)
+#define SLUG_INV_MASS INV_MASS(SLUG_MASS)
+#define SLUG_BOUNCE 0
+#define SLUG_ENERGY_REFILL_COEF 1.0f
+#define SLUG_SPAWN_WEIGHT 15.0f
+
 #define IMPLODER_AMMO 2
 #define IMPLODER_PROJECTILES 1
 #define IMPLODER_RECOIL_MAGNITUDE 65.0f
@@ -592,6 +608,33 @@ static const weaponInformation shotgun = {
     .spawnWeight = SHOTGUN_SPAWN_WEIGHT,
 };
 
+static const weaponInformation slug = {
+    .type = SLUG_WEAPON,
+    .ammo = SLUG_AMMO,
+    .isPhysicsBullet = true,
+    .canSleep = false,
+    .numProjectiles = SLUG_PROJECTILES,
+    .fireMagnitude = SLUG_FIRE_MAGNITUDE,
+    .recoilMagnitude = SLUG_RECOIL_MAGNITUDE,
+    .damping = SLUG_DAMPING,
+    .maxCharge = SLUG_CHARGE,
+    .cooldown = SLUG_COOL_DOWN,
+    .maxDistance = SLUG_MAX_DISTANCE,
+    .radius = SLUG_RADIUS,
+    .density = SLUG_DENSITY,
+    .mass = SLUG_MASS,
+    .invMass = SLUG_INV_MASS,
+    .initialSpeed = SLUG_FIRE_MAGNITUDE * SLUG_INV_MASS,
+    .maxBounces = SLUG_BOUNCE + 1,
+    .explosive = false,
+    .destroyedOnDroneHit = false,
+    .explodesOnDroneHit = false,
+    .hasSensor = false,
+    .energyRefillCoef = PROJECTILE_ENERGY_REFILL_COEF * SLUG_ENERGY_REFILL_COEF,
+    .burstBoostCoef = PROJECTILE_BURST_BOOST_COEF,
+    .spawnWeight = SLUG_SPAWN_WEIGHT,
+};
+
 static const weaponInformation imploder = {
     .type = IMPLODER_WEAPON,
     .ammo = IMPLODER_AMMO,
@@ -802,6 +845,7 @@ static weaponInformation *weaponInfos[] = {
     (weaponInformation *)&machineGun,
     (weaponInformation *)&sniper,
     (weaponInformation *)&shotgun,
+    (weaponInformation *)&slug,
     (weaponInformation *)&imploder,
     (weaponInformation *)&flakCannon,
     (weaponInformation *)&blackHole,
@@ -947,6 +991,8 @@ static float weaponFire(unsigned int *seed, const enum weaponType type) {
         const int fireOffset = randInt(seed, -maxOffset, maxOffset);
         return SHOTGUN_FIRE_MAGNITUDE + fireOffset;
     }
+    case SLUG_WEAPON:
+        return SLUG_FIRE_MAGNITUDE;
     case IMPLODER_WEAPON:
         return IMPLODER_FIRE_MAGNITUDE;
     case FLAK_CANNON_WEAPON:

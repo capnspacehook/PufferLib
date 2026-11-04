@@ -77,7 +77,7 @@ typedef struct entity {
     uint16_t lastBurstHit[_MAX_DRONES];
 } entity;
 
-#define _NUM_WEAPONS 13
+#define _NUM_WEAPONS 14
 static const uint8_t NUM_WEAPONS = _NUM_WEAPONS;
 
 enum weaponType {
@@ -86,6 +86,7 @@ enum weaponType {
     MACHINEGUN_WEAPON,
     SNIPER_WEAPON,
     SHOTGUN_WEAPON,
+    SLUG_WEAPON,
     IMPLODER_WEAPON,
     FLAK_CANNON_WEAPON,
     BLACK_HOLE_WEAPON,
