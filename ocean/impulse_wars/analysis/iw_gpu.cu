@@ -45,9 +45,8 @@ struct iwGpuNet {
     float *obsHost, *termHost, *logitsHost;
     float *obsDev, *termDev, *logitsDev;
     // encoder inputs, with inputs
-    float *concatHost, *fwRecHost;
-    int *fwActiveHost;
-    float *concatDev, *fwRecDev;
+    float *concatHost;
+    float *concatDev;
     cudaGraphExec_t graph;
 };
 
@@ -122,8 +121,6 @@ static void iw_gpu_forward(iwGpuNet *n, cudaStream_t stream) {
     if (n->inputs) {
         IwEncoderActivations *ea = (IwEncoderActivations *)n->a.encoder;
         iw_gpu_copy_out(n->concatHost, n->concatDev, ea->concat.data, (long)B * IW_CONCAT, stream);
-        iw_gpu_copy_out(n->fwRecHost, n->fwRecDev, ea->fw_rec.data, (long)B * IW_NUM_FLOATING_WALLS * IW_FW_FEATURES, stream);
-        IW_GPU_CHECK(cudaMemcpyAsync(n->fwActiveHost, ea->fw_active.data, (long)B * IW_NUM_FLOATING_WALLS * sizeof(int), cudaMemcpyDeviceToHost, stream));
     }
 }
 
@@ -221,12 +218,8 @@ iwGpuNet *iw_gpu_net(iwGpuModel *model, int batch, bool inputs) {
         n->obs = {.data = (precision_t *)n->obsDev, .shape = {B, OBS_SIZE}};
     }
     if (inputs) {
-        long fwN = (long)B * IW_NUM_FLOATING_WALLS;
         n->concatHost = iw_gpu_host<float>((long)B * IW_CONCAT);
-        n->fwRecHost = iw_gpu_host<float>(fwN * IW_FW_FEATURES);
-        n->fwActiveHost = iw_gpu_host<int>(fwN);
         n->concatDev = iw_gpu_dev((long)B * IW_CONCAT);
-        n->fwRecDev = iw_gpu_dev(fwN * IW_FW_FEATURES);
     }
 
     // run once outside the graph so cuBLAS picks and loads its kernels
@@ -268,8 +261,6 @@ iwGpuInputs iw_gpu_inputs(iwGpuNet *net) {
     assert(net->inputs && "iw_gpu: net wasn't created with inputs");
     iwGpuInputs in = {};
     in.concat = net->concatHost;
-    in.fwRec = net->fwRecHost;
-    in.fwActive = net->fwActiveHost;
     return in;
 }
 
@@ -278,13 +269,13 @@ void iw_gpu_free_net(iwGpuNet *net) {
     IW_GPU_CHECK(cudaGraphExecDestroy(net->graph));
     IW_GPU_CHECK(cudaFree(net->acts.mem));
     free(net->acts.regs);
-    float *dev[] = {net->obsDev, net->termDev, net->logitsDev, net->concatDev, net->fwRecDev};
+    float *dev[] = {net->obsDev, net->termDev, net->logitsDev, net->concatDev};
     for (size_t i = 0; i < sizeof(dev) / sizeof(dev[0]); i++) {
         if (dev[i] != NULL) {
             IW_GPU_CHECK(cudaFree(dev[i]));
         }
     }
-    void *host[] = {net->obsHost, net->termHost, net->logitsHost, net->concatHost, net->fwRecHost, net->fwActiveHost};
+    void *host[] = {net->obsHost, net->termHost, net->logitsHost, net->concatHost};
     for (size_t i = 0; i < sizeof(host) / sizeof(host[0]); i++) {
         if (host[i] != NULL) {
             IW_GPU_CHECK(cudaFreeHost(host[i]));

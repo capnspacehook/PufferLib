@@ -3,14 +3,15 @@
 Usage: python weights.py weights.tsv [--top N] [--group name]
 
 weights.tsv comes from iw_analyze --weights-out. Every input feature of the
-projection (CNN output, one-hot type columns and scalars) and of the
-projectile (own, enemy) and floating wall record branches has its weight column's L2
-norm (wnorm), and its mean and std over the policy's live steps. effect is
+projection (CNN output, one-hot type columns and scalars) has its weight
+column's L2 norm (wnorm), and its mean and std over the policy's live steps. effect is
 wnorm * std: how much the feature moves the layer's preactivations. A large
 wnorm on a feature with a small std is the net compensating for a badly
 scaled input; an effect near 0 means the feature is constant or ignored.
-Groups sum effect in quadrature. Record branch effects are in their own
-16 wide hidden layer, so only compare them within a branch.
+Groups sum effect in quadrature. Files from builds with projectile or
+floating wall record branches (before Nov 2026) also list those branches'
+features; their effects are in their own 16 wide hidden layer, so only
+compare them within a branch.
 """
 import argparse
 import csv

@@ -5,19 +5,19 @@
 // them.
 //
 // The map grid holds packed cell codes (see IW_GRID_*) that are unpacked
-// into one-hot channels and fed to a 3 layer CNN. Floating wall slots are
-// records for the floating wall branch: a shared MLP over every slot, max
-// pooled over the non-empty ones. Wall type slots hold 0 (empty) or wall
+// into one-hot channels and fed to a 3 layer CNN. Wall type slots (near
+// and floating walls) hold 0 (empty) or wall
 // type + 1, weapon type slots hold a weapon type (0 is UNSET_WEAPON: no
 // entity or no weapon), utility type slots hold a utility type (0 is
-// UNSET_UTILITY), pickup type slots hold a weapon type, one past the last
+// UNSET_UTILITY), projectile type slots hold an IW_PROJ_TYPE_* value,
+// pickup type slots hold a weapon type, one past the last
 // weapon for an ammo crate, or a utility type past that for a utility, ray
 // hit type slots hold an IW_RAY_HIT_* value; these are one-hot encoded with
 // type 0 as all zeros. Every other obs value is a continuous scalar that is passed
 // through to the projection unchanged.
 //
-// The obs is the map grid, the near walls, floating walls and pickups, a
-// block per other drone, the agent's own drone block and the misc values.
+// The obs is the map grid, the near walls, floating walls, pickups and
+// projectiles, a block per other drone, the agent's own drone block and the misc values.
 // OBS_SIZE (impulse_wars.h) sets how many other drone blocks there are.
 #ifndef IMPULSE_WARS_OBS_H
 #define IMPULSE_WARS_OBS_H
@@ -52,13 +52,38 @@
 // type and position of the nearest walls
 #define IW_NUM_NEAR_WALLS 4
 #define IW_NEAR_WALL_SIZE 3
-// type, position, sin and cos of 4x the angle, and relative velocity of
-// the nearest floating walls
-#define IW_NUM_FLOATING_WALLS 8
-#define IW_FLOATING_WALL_SIZE 7
+// type, position, sin and cos of 4x the angle, relative velocity, the
+// vector to the closest point on the wall's surface and its length, of the
+// floating walls most threatening to the agent: ones it will touch at the
+// current relative velocity within IW_FLOATING_WALL_THREAT_TIME, soonest
+// first and death walls first at the same time, then the rest by distance
+// to their surface. The slots go into the concat as they are, unpooled
+#define IW_NUM_FLOATING_WALLS 4
+#define IW_FLOATING_WALL_SIZE 10
+#define IW_FLOATING_WALL_THREAT_TIME 2.0f
 // type and position of the nearest available pickups
 #define IW_NUM_PICKUPS 3
 #define IW_PICKUP_SIZE 3
+// the agent's own projectile slots, then other drones'. Only projectiles
+// that are dangerous and slow enough to react to are observed: slugs,
+// imploders, black holes and nukes (see iwObservedProjectile in env.h).
+// Each side is sorted threats first: ones whose closest approach to the
+// agent at the current relative velocity is within hitting, blast or pull
+// range within IW_PROJECTILE_THREAT_TIME, soonest first, then the rest by
+// distance. The slots go into the concat as they are, unpooled, so the
+// slot order and which position goes with which velocity are kept
+#define IW_NUM_OWN_PROJECTILES 3
+#define IW_NUM_ENEMY_PROJECTILES 3
+#define IW_NUM_PROJECTILES (IW_NUM_OWN_PROJECTILES + IW_NUM_ENEMY_PROJECTILES)
+// type, relative position, relative velocity, distance, and sin and cos of
+// the angle to turn the agent's aim by to point at the projectile
+#define IW_PROJECTILE_SIZE 8
+// projectile type slot values: 0 is an empty slot
+#define IW_PROJ_TYPE_SLUG 1
+#define IW_PROJ_TYPE_IMPLODER 2
+#define IW_PROJ_TYPE_BLACK_HOLE 3
+#define IW_PROJ_TYPE_NUKE 4
+#define IW_PROJECTILE_THREAT_TIME 2.0f
 
 // ray cast observations are a hit type followed by a scaled distance or
 // time; hit types are IW_RAY_HIT_NONE, wall type + IW_RAY_HIT_WALL,
@@ -124,7 +149,9 @@
 #define IW_NEAR_WALL_OFFSET IW_MAP_CELLS
 #define IW_FLOATING_WALL_OFFSET (IW_NEAR_WALL_OFFSET + IW_NUM_NEAR_WALLS * IW_NEAR_WALL_SIZE)
 #define IW_PICKUP_OFFSET (IW_FLOATING_WALL_OFFSET + IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE)
-#define IW_ENEMY_DRONE_OFFSET (IW_PICKUP_OFFSET + IW_NUM_PICKUPS * IW_PICKUP_SIZE)
+#define IW_PROJECTILE_OFFSET (IW_PICKUP_OFFSET + IW_NUM_PICKUPS * IW_PICKUP_SIZE)
+#define IW_ENEMY_PROJECTILE_OFFSET (IW_PROJECTILE_OFFSET + IW_NUM_OWN_PROJECTILES * IW_PROJECTILE_SIZE)
+#define IW_ENEMY_DRONE_OFFSET (IW_PROJECTILE_OFFSET + IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE)
 // obs size with zero other drones; each one adds IW_ENEMY_DRONE_SIZE
 #define IW_BASE_OBS_SIZE (IW_ENEMY_DRONE_OFFSET + IW_DRONE_SIZE + IW_MISC_SIZE)
 #define IW_NUM_ENEMIES ((OBS_SIZE - IW_BASE_OBS_SIZE) / IW_ENEMY_DRONE_SIZE)
@@ -142,6 +169,8 @@
 // none + static standard, bouncy, death walls + floating standard,
 // bouncy, death walls + drone
 #define IW_RAY_VOCAB (IW_RAY_HIT_DRONE + 1)
+// none + slug, imploder, black hole, nuke
+#define IW_PROJ_TYPE_VOCAB (IW_PROJ_TYPE_NUKE + 1)
 
 // map grid CNN: cell codes are unpacked into IW_GRID_CHANNELS one-hot
 // planes padded by 1 cell, then 3 unpadded convs with ReLU:
@@ -202,9 +231,8 @@
 #define IW_C3_W_N (IW_C3_OC * IW_C3_COL_W)
 #define IW_CONV_FLAT (IW_C3_OC * IW_C3_SPATIAL)
 
-// near walls; the map grid goes to the CNN and floating walls to the
-// floating wall branch
-#define IW_NUM_WALL_SLOTS IW_NUM_NEAR_WALLS
+// near walls then floating walls; the map grid goes to the CNN
+#define IW_NUM_WALL_SLOTS (IW_NUM_NEAR_WALLS + IW_NUM_FLOATING_WALLS)
 // pickup type slots
 #define IW_NUM_PICKUP_SLOTS IW_NUM_PICKUPS
 // the weapon and utility of the enemy drones and own drone, one slot of
@@ -213,36 +241,37 @@
 #define IW_NUM_UTILITY_SLOTS (IW_NUM_ENEMIES + 1)
 // enemy drone rays, own drone rays
 #define IW_NUM_RAY_SLOTS (IW_NUM_ENEMIES + IW_NUM_DRONE_RAYS)
-#define IW_NUM_SCALARS (OBS_SIZE - IW_MAP_CELLS - IW_NUM_WALL_SLOTS - IW_NUM_PICKUP_SLOTS - IW_NUM_WEAPON_SLOTS - IW_NUM_UTILITY_SLOTS - IW_NUM_RAY_SLOTS - IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE)
+// projectile type slots, own then enemy
+#define IW_NUM_PROJ_TYPE_SLOTS IW_NUM_PROJECTILES
+#define IW_NUM_SCALARS (OBS_SIZE - IW_MAP_CELLS - IW_NUM_WALL_SLOTS - IW_NUM_PICKUP_SLOTS - IW_NUM_WEAPON_SLOTS - IW_NUM_UTILITY_SLOTS - IW_NUM_RAY_SLOTS - IW_NUM_PROJ_TYPE_SLOTS)
 
 // concat layout: [CNN | wall one-hots | pickup one-hots | weapon one-hots |
-// utility one-hots | ray one-hots | scalars | zero padding]
+// utility one-hots | ray one-hots | projectile type one-hots | scalars |
+// zero padding]
 #define IW_WALL_COLS (IW_NUM_WALL_SLOTS * (IW_WALL_VOCAB - 1))
 #define IW_PICKUP_COLS (IW_NUM_PICKUP_SLOTS * (IW_PICKUP_VOCAB - 1))
 #define IW_WEAPON_COLS (IW_NUM_WEAPON_SLOTS * (IW_WEAPON_VOCAB - 1))
 #define IW_UTILITY_COLS (IW_NUM_UTILITY_SLOTS * (IW_UTILITY_VOCAB - 1))
 #define IW_RAY_COLS (IW_NUM_RAY_SLOTS * (IW_RAY_VOCAB - 1))
-#define IW_ONEHOT_COLS (IW_WALL_COLS + IW_PICKUP_COLS + IW_WEAPON_COLS + IW_UTILITY_COLS + IW_RAY_COLS)
+#define IW_PROJ_TYPE_COLS (IW_NUM_PROJ_TYPE_SLOTS * (IW_PROJ_TYPE_VOCAB - 1))
+#define IW_ONEHOT_COLS (IW_WALL_COLS + IW_PICKUP_COLS + IW_WEAPON_COLS + IW_UTILITY_COLS + IW_RAY_COLS + IW_PROJ_TYPE_COLS)
 #define IW_SCALAR_COLS_END (IW_CONV_FLAT + IW_ONEHOT_COLS + IW_NUM_SCALARS)
 #define IW_CONCAT_USED IW_SCALAR_COLS_END
-// the record widths below are padded the same way: zero columns up to a
-// multiple of 8 keep bf16 rows 16 byte aligned, otherwise cuBLAS falls off
-// its fast kernels
+// zero columns up to a multiple of 8 keep bf16 rows 16 byte aligned,
+// otherwise cuBLAS falls off its fast kernels
 #define IW_CONCAT ((IW_CONCAT_USED + 7) & ~7)
 
-// floating wall branch: every floating wall slot is a record of wall type
-// one-hot, relative position, angle sin and cos and relative velocity, run
-// through the branch's Linear -> GELU -> Linear and max pooled over the
-// non-empty records into the encoder output
-#define IW_FW_SCALARS (IW_FLOATING_WALL_SIZE - 1)
-#define IW_FW_USED_FEATURES ((IW_WALL_VOCAB - 1) + IW_FW_SCALARS)
-#define IW_FW_FEATURES ((IW_FW_USED_FEATURES + 7) & ~7)
-#define IW_FW_HIDDEN 16
-#define IW_FW_L1_N (IW_FW_HIDDEN * IW_FW_FEATURES)
+// obs index of floating wall slot r
+IW_FN int iw_fw_slot_idx(int r) {
+    return IW_FLOATING_WALL_OFFSET + r * IW_FLOATING_WALL_SIZE;
+}
 
-// obs index of wall type slot j
+// obs index of wall type slot j, the near walls then the floating walls
 IW_FN int iw_wall_slot_idx(int j) {
-    return IW_NEAR_WALL_OFFSET + j * IW_NEAR_WALL_SIZE;
+    if (j < IW_NUM_NEAR_WALLS) {
+        return IW_NEAR_WALL_OFFSET + j * IW_NEAR_WALL_SIZE;
+    }
+    return iw_fw_slot_idx(j - IW_NUM_NEAR_WALLS);
 }
 
 // obs index of pickup type slot j
@@ -274,6 +303,11 @@ IW_FN int iw_is_drone_type(int k) {
     return k == IW_DRONE_WEAPON_TYPE || k == IW_DRONE_UTILITY_TYPE;
 }
 
+// obs index of projectile slot r, own then enemy
+IW_FN int iw_proj_slot_idx(int r) {
+    return IW_PROJECTILE_OFFSET + r * IW_PROJECTILE_SIZE;
+}
+
 // obs index of ray hit type slot j
 IW_FN int iw_ray_slot_idx(int j) {
     if (j < IW_NUM_ENEMIES) {
@@ -285,7 +319,7 @@ IW_FN int iw_ray_slot_idx(int j) {
 
 // whether obs index i is a continuous scalar that goes into the concat,
 // rather than a map grid cell, a wall, pickup, weapon, utility or ray hit
-// type slot or part of a floating wall slot
+// type slot
 IW_FN int iw_is_scalar(int i) {
     if (i < IW_MAP_CELLS) {
         return 0;
@@ -294,10 +328,13 @@ IW_FN int iw_is_scalar(int i) {
         return (i - IW_NEAR_WALL_OFFSET) % IW_NEAR_WALL_SIZE != 0;
     }
     if (i < IW_PICKUP_OFFSET) {
-        return 0;
+        return (i - IW_FLOATING_WALL_OFFSET) % IW_FLOATING_WALL_SIZE != 0;
+    }
+    if (i < IW_PROJECTILE_OFFSET) {
+        return (i - IW_PICKUP_OFFSET) % IW_PICKUP_SIZE != 0;
     }
     if (i < IW_ENEMY_DRONE_OFFSET) {
-        return (i - IW_PICKUP_OFFSET) % IW_PICKUP_SIZE != 0;
+        return (i - IW_PROJECTILE_OFFSET) % IW_PROJECTILE_SIZE != 0;
     }
     if (i < IW_DRONE_OFFSET) {
         const int k = (i - IW_ENEMY_DRONE_OFFSET) % IW_ENEMY_DRONE_SIZE;
@@ -341,7 +378,12 @@ IW_FN iwOneHotCol iw_onehot_col(int c) {
         return col;
     }
     c -= IW_UTILITY_COLS;
-    iwOneHotCol col = {iw_ray_slot_idx(c / (IW_RAY_VOCAB - 1)), c % (IW_RAY_VOCAB - 1), IW_RAY_VOCAB};
+    if (c < IW_RAY_COLS) {
+        iwOneHotCol col = {iw_ray_slot_idx(c / (IW_RAY_VOCAB - 1)), c % (IW_RAY_VOCAB - 1), IW_RAY_VOCAB};
+        return col;
+    }
+    c -= IW_RAY_COLS;
+    iwOneHotCol col = {iw_proj_slot_idx(c / (IW_PROJ_TYPE_VOCAB - 1)), c % (IW_PROJ_TYPE_VOCAB - 1), IW_PROJ_TYPE_VOCAB};
     return col;
 }
 
@@ -414,38 +456,6 @@ IW_FN int iw_type_idx(float v, int vocab) {
 // value of one-hot column col given the obs value of its type slot
 IW_FN float iw_onehot_value(float v, iwOneHotCol col) {
     return iw_type_idx(v, col.vocab) == col.cls + 1 ? 1.0f : 0.0f;
-}
-
-// obs index of floating wall slot r
-IW_FN int iw_fw_slot_idx(int r) {
-    return IW_FLOATING_WALL_OFFSET + r * IW_FLOATING_WALL_SIZE;
-}
-
-// slot field read for floating wall record feature f: the wall type, or
-// relative position x, y, angle sin, cos and relative velocity x, y;
-// padding features read the wall type but are always 0
-IW_FN int iw_fw_field(int f) {
-    if (f < IW_WALL_VOCAB - 1 || f >= IW_FW_USED_FEATURES) {
-        return 0;
-    }
-    return 1 + f - (IW_WALL_VOCAB - 1);
-}
-
-// floating wall record feature f given the slot field iw_fw_field(f) reads
-IW_FN float iw_fw_feature(float v, int f) {
-    if (f >= IW_FW_USED_FEATURES) {
-        return 0.0f;
-    }
-    if (f < IW_WALL_VOCAB - 1) {
-        return iw_type_idx(v, IW_WALL_VOCAB) == f + 1 ? 1.0f : 0.0f;
-    }
-    return v;
-}
-
-// whether a floating wall record is a wall rather than an empty slot, given
-// the wall type value of its slot
-IW_FN int iw_fw_active(float wallType) {
-    return iw_type_idx(wallType, IW_WALL_VOCAB) != 0;
 }
 
 // tanh approximation of GELU, as the OSRS entity encoder uses

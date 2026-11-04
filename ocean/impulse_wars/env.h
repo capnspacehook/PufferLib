@@ -272,6 +272,67 @@ void computeMapObs(iwEnv *e, const uint8_t agentIdx) {
     }
 }
 
+typedef struct sortedFloatingWall {
+    const wallEntity *wall;
+    // from the drone to the closest point on the wall's surface
+    b2Vec2 toSurface;
+    float surfaceDistance;
+    float key;
+} sortedFloatingWall;
+
+// a floating wall's closest surface point to the drone and its sort key for
+// the floating wall obs: walls the drone will touch at the current relative
+// velocity within IW_FLOATING_WALL_THREAT_TIME come first, soonest first,
+// then the rest by distance to their surface
+static sortedFloatingWall floatingWallThreat(const droneEntity *drone, const wallEntity *wall) {
+    const b2Vec2 closest = b2Shape_GetClosestPoint(wall->shapeID, drone->pos);
+    const b2Vec2 toSurface = b2Sub(closest, drone->pos);
+    const float surfaceDistance = b2Length(toSurface);
+    sortedFloatingWall sw = {
+        .wall = wall,
+        .toSurface = toSurface,
+        .surfaceDistance = surfaceDistance,
+        .key = IW_FLOATING_WALL_THREAT_TIME + surfaceDistance,
+    };
+
+    const float gap = fmaxf(0.0f, surfaceDistance - DRONE_RADIUS);
+    if (gap == 0.0f) {
+        sw.key = 0.0f;
+        return sw;
+    }
+    // how fast the gap is closing along the line to the closest point
+    const b2Vec2 relVel = b2Sub(wall->velocity, drone->velocity);
+    const float closingSpeed = -b2Dot(relVel, b2MulSV(1.0f / surfaceDistance, toSurface));
+    if (closingSpeed > 1e-3f) {
+        const float t = gap / closingSpeed;
+        if (t <= IW_FLOATING_WALL_THREAT_TIME) {
+            sw.key = t;
+        }
+    }
+    return sw;
+}
+
+// whether floating wall a goes before b in the floating wall obs: lower
+// key first, death walls first at the same key
+static inline bool floatingWallBefore(const sortedFloatingWall *a, const sortedFloatingWall *b) {
+    if (a->key != b->key) {
+        return a->key < b->key;
+    }
+    return a->wall->type == DEATH_WALL_ENTITY && b->wall->type != DEATH_WALL_ENTITY;
+}
+
+static void insertionSortFloatingWalls(sortedFloatingWall *arr, const uint8_t size) {
+    for (int16_t i = 1; i < size; i++) {
+        const sortedFloatingWall key = arr[i];
+        int16_t j = i - 1;
+        while (j >= 0 && floatingWallBefore(&key, &arr[j])) {
+            arr[j + 1] = arr[j];
+            j--;
+        }
+        arr[j + 1] = key;
+    }
+}
+
 // computes observations for N nearest walls, floating walls, and weapon pickups
 void computeNearObs(iwEnv *e, const droneEntity *drone, float *obs) {
     nearWall nearWalls[IW_NUM_NEAR_WALLS];
@@ -293,26 +354,21 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *obs) {
 
     const size_t numFloatingWalls = cc_array_size(e->floatingWalls);
     if (numFloatingWalls != 0) {
-        // find N nearest floating walls
-        nearEntity nearFloatingWalls[MAX_FLOATING_WALLS] = {0};
+        // sort the floating walls by threat, see IW_FLOATING_WALL_SIZE
+        sortedFloatingWall sorted[MAX_FLOATING_WALLS];
         for (uint8_t i = 0; i < numFloatingWalls; i++) {
-            wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
-            const nearEntity nearEnt = {
-                .entity = wall,
-                .distanceSquared = b2DistanceSquared(wall->pos, drone->pos),
-            };
-            nearFloatingWalls[i] = nearEnt;
+            const wallEntity *wall = safe_array_get_at(e->floatingWalls, i);
+            sorted[i] = floatingWallThreat(drone, wall);
         }
-        if (numFloatingWalls > IW_NUM_FLOATING_WALLS) {
-            insertionSortEntities(nearFloatingWalls, numFloatingWalls);
-        }
+        insertionSortFloatingWalls(sorted, numFloatingWalls);
 
-        // compute type, position, angle and velocity of N nearest floating walls
-        for (uint8_t i = 0; i < cc_array_size(e->floatingWalls); i++) {
+        // compute type, position, angle, velocity and closest surface point
+        // of the N most threatening floating walls
+        for (uint8_t i = 0; i < numFloatingWalls; i++) {
             if (i == IW_NUM_FLOATING_WALLS) {
                 break;
             }
-            const wallEntity *wall = nearFloatingWalls[i].entity;
+            const wallEntity *wall = sorted[i].wall;
 
             const b2Transform wallTransform = b2Body_GetTransform(wall->bodyID);
             const b2Vec2 wallRelPos = b2Sub(wallTransform.p, drone->pos);
@@ -331,7 +387,11 @@ void computeNearObs(iwEnv *e, const droneEntity *drone, float *obs) {
             obs[offset++] = sinf(angle);
             obs[offset++] = cosf(angle);
             obs[offset++] = wallRelVel.x;
-            obs[offset] = wallRelVel.y;
+            obs[offset++] = wallRelVel.y;
+            const b2Vec2 surfaceObsPos = squashVec(sorted[i].toSurface, MAX_OBS_WALL_POS);
+            obs[offset++] = surfaceObsPos.x;
+            obs[offset++] = surfaceObsPos.y;
+            obs[offset] = squashValue(sorted[i].surfaceDistance, MAX_OBS_WALL_POS);
         }
     }
 
@@ -620,6 +680,143 @@ static void computeEnemyRayObs(const iwEnv *e, const droneEntity *drone, const d
     obs[1] = squashValue(ctx.fraction * distance, MAX_OBS_RAY_DISTANCE);
 }
 
+// projectile obs type of a projectile, 0 if it isn't observed: only
+// projectiles that are dangerous and slow enough to be reacted to are
+static inline uint8_t projectileObsType(const projectileEntity *projectile) {
+    switch (projectile->weaponInfo->type) {
+    case SLUG_WEAPON:
+        return IW_PROJ_TYPE_SLUG;
+    case IMPLODER_WEAPON:
+        return IW_PROJ_TYPE_IMPLODER;
+    case BLACK_HOLE_WEAPON:
+        return IW_PROJ_TYPE_BLACK_HOLE;
+    case NUKE_WEAPON:
+        return IW_PROJ_TYPE_NUKE;
+    default:
+        return 0;
+    }
+}
+
+// sort key of a projectile for the projectile obs: threats, projectiles
+// whose closest approach to the drone at the current relative velocity is
+// within hitting, blast or pull range within IW_PROJECTILE_THREAT_TIME,
+// come first, soonest first, then the rest by distance
+static float projectileObsKey(const droneEntity *drone, const projectileEntity *projectile, const float distance) {
+    const b2Vec2 relPos = b2Sub(projectile->pos, drone->pos);
+    const b2Vec2 relVel = b2Sub(projectile->velocity, drone->velocity);
+    const float speedSq = b2LengthSquared(relVel);
+    float t = 0.0f;
+
+    if (speedSq > 1e-8f) {
+        t = fmaxf(0.0f, -b2Dot(relPos, relVel) / speedSq);
+    }
+
+    float reach = DRONE_RADIUS + projectile->weaponInfo->radius;
+    if (projectile->weaponInfo->explosive) {
+        b2ExplosionDef explosion = b2DefaultExplosionDef();
+        weaponExplosion(projectile->weaponInfo->type, &explosion);
+        reach += explosion.radius;
+    } else if (projectile->weaponInfo->type == BLACK_HOLE_WEAPON) {
+        reach = DRONE_RADIUS + BLACK_HOLE_PROXIMITY_RADIUS;
+    }
+
+    if (t <= IW_PROJECTILE_THREAT_TIME && b2Length(b2MulAdd(relPos, t, relVel)) <= reach) {
+        return t;
+    }
+
+    return IW_PROJECTILE_THREAT_TIME + distance;
+}
+
+typedef struct sortedProjectile {
+    const projectileEntity *projectile;
+    float distance;
+    float key;
+} sortedProjectile;
+
+static void insertionSortProjectiles(sortedProjectile *arr, const uint16_t size) {
+    for (int16_t i = 1; i < (int16_t)size; i++) {
+        const sortedProjectile key = arr[i];
+        int16_t j = i - 1;
+        while (j >= 0 && arr[j].key > key.key) {
+            arr[j + 1] = arr[j];
+            j--;
+        }
+        arr[j + 1] = key;
+    }
+}
+
+// writes the agent's own observed projectiles and other drones' into their
+// slots, see IW_NUM_OWN_PROJECTILES
+static void computeProjectileObs(iwEnv *e, const uint8_t agentIdx, const droneEntity *agentDrone, float *obs) {
+    const size_t numProjectiles = cc_array_size(e->projectiles);
+    if (numProjectiles == 0) {
+        return;
+    }
+
+    sortedProjectile own[numProjectiles];
+    sortedProjectile enemy[numProjectiles];
+    uint16_t numOwn = 0;
+    uint16_t numEnemy = 0;
+
+    for (size_t i = 0; i < numProjectiles; i++) {
+        const projectileEntity *projectile = safe_array_get_at(e->projectiles, i);
+        if (projectileObsType(projectile) == 0) {
+            continue;
+        }
+        const float distance = b2Distance(projectile->pos, agentDrone->pos);
+        const sortedProjectile sp = {
+            .projectile = projectile,
+            .distance = distance,
+            .key = projectileObsKey(agentDrone, projectile, distance),
+        };
+
+        if (projectile->droneIdx == agentIdx) {
+            own[numOwn++] = sp;
+        } else {
+            enemy[numEnemy++] = sp;
+        }
+    }
+    insertionSortProjectiles(own, numOwn);
+    insertionSortProjectiles(enemy, numEnemy);
+
+    for (uint8_t side = 0; side < 2; side++) {
+        const sortedProjectile *sorted = own;
+        uint16_t count = min(numOwn, IW_NUM_OWN_PROJECTILES);
+        uint16_t start = IW_PROJECTILE_OFFSET;
+        if (side == 1) {
+            sorted = enemy;
+            count = min(numEnemy, IW_NUM_ENEMY_PROJECTILES);
+            start = IW_ENEMY_PROJECTILE_OFFSET;
+        }
+        for (uint16_t i = 0; i < count; i++) {
+            const projectileEntity *projectile = sorted[i].projectile;
+            const b2Vec2 relPos = b2Sub(projectile->pos, agentDrone->pos);
+            const b2Vec2 obsPos = squashVec(relPos, MAX_OBS_RELATIVE_POS);
+            const b2Vec2 relVel = squashVec(b2Sub(projectile->velocity, agentDrone->velocity), MAX_OBS_PROJECTILE_SPEED);
+            // sin and cos of the angle to turn our aim by to point at the
+            // projectile, both 0 when it's on top of us
+            float aimSin = 0.0f;
+            float aimCos = 0.0f;
+            if (sorted[i].distance > 1e-3f) {
+                const b2Vec2 dir = b2MulSV(1.0f / sorted[i].distance, relPos);
+                aimSin = b2Cross(agentDrone->lastAim, dir);
+                aimCos = b2Dot(agentDrone->lastAim, dir);
+            }
+
+            uint16_t offset = start + (i * IW_PROJECTILE_SIZE);
+            ASSERTF(offset + IW_PROJECTILE_SIZE <= IW_ENEMY_DRONE_OFFSET, "offset: %d", offset);
+            obs[offset++] = projectileObsType(projectile);
+            obs[offset++] = obsPos.x;
+            obs[offset++] = obsPos.y;
+            obs[offset++] = relVel.x;
+            obs[offset++] = relVel.y;
+            obs[offset++] = squashValue(sorted[i].distance, MAX_OBS_RELATIVE_POS);
+            obs[offset++] = aimSin;
+            obs[offset] = aimCos;
+        }
+    }
+}
+
 // dead drones' actions are ignored, so their agents may only pick the
 // first action of each head; with one choice the action's log prob is 0,
 // so those steps add no policy gradient or entropy but still train the
@@ -655,6 +852,7 @@ void computeObs(iwEnv *e) {
         memset(obs, 0x0, OBS_SIZE * sizeof(float));
         computeMapObs(e, agentIdx);
         computeNearObs(e, agentDrone, obs);
+        computeProjectileObs(e, agentIdx, agentDrone, obs);
         uint16_t offset;
 
         // other drones fill the obs slots teammates first, then enemies,

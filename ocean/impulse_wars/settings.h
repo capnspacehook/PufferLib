@@ -81,6 +81,9 @@ static const float MAX_OBS_RAY_DISTANCE = 30.0f;
 static const float MAX_OBS_WALL_POS = 15.0f;
 static const float MAX_OBS_WALL_SPEED = 25.0f;
 static const float MAX_OBS_ENTITY_SPEED = 40.0f;
+// observed projectiles are slow, from ~15 (nukes) to ~100 (slugs) units
+// per second when fired
+static const float MAX_OBS_PROJECTILE_SPEED = 50.0f;
 static const float OBS_RAY_TIME_KNEE = 0.5f;
 
 // action constants

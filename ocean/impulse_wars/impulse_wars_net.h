@@ -1,14 +1,11 @@
-// CPU Impulse Wars encoder: map grid CNN, one-hot wall/weapon/ray types and
-// scalars + projection plus the max pooled floating wall branch, then MinGRU
-// + decoder.
+// CPU Impulse Wars encoder: map grid CNN, one-hot type slots and scalars +
+// projection, then MinGRU + decoder.
 // Weight order matches CUDA create_impulse_wars_encoder + algo
 // decoder/mingru:
 //   conv1 (32 x 90), conv2 (64 x 288), conv3 (64 x 576), each (OC, K, K, IC)
 //   as the CUDA encoder keeps conv activations NHWC; init reorders them
 //   to the (OC, IC, K, K) the CPU conv wants,
 //   proj (hidden x IW_CONCAT),
-//   floating wall l1 (IW_FW_HIDDEN x IW_FW_FEATURES),
-//   floating wall l2 (hidden x IW_FW_HIDDEN),
 //   decoder ((atn_sum+1) x hidden), decoder logstd (NUM_ATNS) if continuous,
 //   mingru layers (3*hidden x hidden each).
 // CONTINUOUS_ACTIONS in impulse_wars.h selects gaussian mean or multidiscrete
@@ -27,14 +24,6 @@ typedef struct ImpulseWarsNet {
     int scalar_idx[IW_NUM_SCALARS];
     float *concat;
     Linear *proj;
-    // floating wall records, (num_agents * IW_NUM_FLOATING_WALLS, IW_FW_FEATURES)
-    float *fw_rec;
-    int *fw_rec_active;
-    // the active records packed together, and the sample each is from
-    float *fw_rec_packed;
-    int *fw_rec_sample;
-    Linear *fw_l1;
-    Linear *fw_l2;
     Linear *decoder;
     float *log_std;
     MinGRU *mingru;
@@ -60,8 +49,6 @@ static inline int impulse_wars_weight_count(int hidden, int layers) {
     n = puf_iw_align8(n + IW_C2_W_N);
     n = puf_iw_align8(n + IW_C3_W_N);
     n = puf_iw_align8(n + hidden * IW_CONCAT);
-    n = puf_iw_align8(n + IW_FW_L1_N);
-    n = puf_iw_align8(n + hidden * IW_FW_HIDDEN);
     n = puf_iw_align8(n + (impulse_wars_atn_sum() + 1) * hidden);
 #if CONTINUOUS_ACTIONS
     n = puf_iw_align8(n + NUM_ATNS);
@@ -102,13 +89,6 @@ static inline ImpulseWarsNet *init_impulse_wars_net(Weights *weights, int num_ag
     net->conv3->weights = iw_conv_weights_to_nchw(net->conv3->weights, IW_C3_OC, IW_C3_IC, IW_C3_K);
     net->concat = (float *)calloc((size_t)num_agents * IW_CONCAT, sizeof(float));
     net->proj = make_linear(weights, num_agents, IW_CONCAT, hidden);
-    const int fwRecs = num_agents * IW_NUM_FLOATING_WALLS;
-    net->fw_rec = (float *)calloc((size_t)fwRecs * IW_FW_FEATURES, sizeof(float));
-    net->fw_rec_active = (int *)calloc((size_t)fwRecs, sizeof(int));
-    net->fw_rec_packed = (float *)calloc((size_t)fwRecs * IW_FW_FEATURES, sizeof(float));
-    net->fw_rec_sample = (int *)calloc((size_t)fwRecs, sizeof(int));
-    net->fw_l1 = make_linear(weights, fwRecs, IW_FW_FEATURES, IW_FW_HIDDEN);
-    net->fw_l2 = make_linear(weights, fwRecs, IW_FW_HIDDEN, hidden);
     net->decoder = make_linear(weights, num_agents, hidden, impulse_wars_atn_sum() + 1);
 #if CONTINUOUS_ACTIONS
     net->log_std = get_weights_aligned(weights, NUM_ATNS);
@@ -161,71 +141,6 @@ static inline void impulse_wars_grid_cnn(ImpulseWarsNet *net, const float *obser
     iw_relu_inplace(net->conv3->output, B * IW_CONV_FLAT);
 }
 
-// record branch: shared Linear -> GELU -> Linear over every record, max
-// pooled over the active records and added to out; a sample with no active
-// records adds 0. Only the active records are run, packed together, as
-// most record slots are usually empty
-static inline void impulse_wars_rec_branch(
-    Linear *l1, Linear *l2, const float *rec, const int *active, float *packed, int *sample, float *out, int B, int R
-) {
-    const int features = l1->input_dim;
-    int n = 0;
-    for (int row = 0; row < B * R; row++) {
-        if (!active[row]) {
-            continue;
-        }
-        memcpy(packed + n * features, rec + row * features, features * sizeof(float));
-        sample[n++] = row / R;
-    }
-    if (n == 0) {
-        return;
-    }
-
-    const int maxRows = l1->batch_size;
-    l1->batch_size = n;
-    l2->batch_size = n;
-    linear(l1, packed);
-    for (int i = 0; i < n * l1->output_dim; i++) {
-        l1->output[i] = iw_gelu(l1->output[i]);
-    }
-    linear(l2, l1->output);
-    l1->batch_size = maxRows;
-    l2->batch_size = maxRows;
-
-    // a sample's records are packed next to each other
-    const int hidden = l2->output_dim;
-    for (int r = 0; r < n;) {
-        const int b = sample[r];
-        float *o = out + b * hidden;
-        const float *first = l2->output + r * hidden;
-        int end = r + 1;
-        while (end < n && sample[end] == b) {
-            end++;
-        }
-        for (int h = 0; h < hidden; h++) {
-            float best = first[h];
-            for (int k = r + 1; k < end; k++) {
-                best = fmaxf(best, l2->output[k * hidden + h]);
-            }
-            o[h] += best;
-        }
-        r = end;
-    }
-}
-
-// floating wall branch, added to proj->output
-static inline void impulse_wars_fw_branch(ImpulseWarsNet *net, const float *observations) {
-    const int recs = net->num_agents * IW_NUM_FLOATING_WALLS;
-    for (int row = 0; row < recs; row++) {
-        const float *slot = observations + (row / IW_NUM_FLOATING_WALLS) * OBS_SIZE + iw_fw_slot_idx(row % IW_NUM_FLOATING_WALLS);
-        for (int f = 0; f < IW_FW_FEATURES; f++) {
-            net->fw_rec[row * IW_FW_FEATURES + f] = iw_fw_feature(slot[iw_fw_field(f)], f);
-        }
-        net->fw_rec_active[row] = iw_fw_active(slot[0]);
-    }
-    impulse_wars_rec_branch(net->fw_l1, net->fw_l2, net->fw_rec, net->fw_rec_active, net->fw_rec_packed, net->fw_rec_sample, net->proj->output, net->num_agents, IW_NUM_FLOATING_WALLS);
-}
-
 static inline void impulse_wars_encode(ImpulseWarsNet *net, const float *observations) {
     impulse_wars_grid_cnn(net, observations);
     for (int b = 0; b < net->num_agents; b++) {
@@ -253,7 +168,6 @@ static inline void impulse_wars_encode(ImpulseWarsNet *net, const float *observa
     for (int i = 0; i < net->num_agents * net->proj->output_dim; i++) {
         net->proj->output[i] = iw_gelu(net->proj->output[i]);
     }
-    impulse_wars_fw_branch(net, observations);
 }
 
 static inline void forward_impulse_wars(ImpulseWarsNet *net, const float *observations, float *terminals, float *actions) {

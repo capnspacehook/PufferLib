@@ -42,7 +42,10 @@ typedef float obs_t;
 #define puf_close puf_close_cxx_decl
 #define puf_log puf_log_cxx_decl
 #define CC_ARRAY_NO_IMPL
+// types.h uses C11's _Static_assert, which nvcc's C++ front end rejects
+#define _Static_assert static_assert
 #include "types.h"
+#undef _Static_assert
 #undef puf_init
 #undef puf_reset
 #undef puf_step

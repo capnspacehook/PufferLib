@@ -716,6 +716,8 @@ static void buildObsGroups(void) {
     addGroup("near_walls", IW_NEAR_WALL_OFFSET, IW_NUM_NEAR_WALLS * IW_NEAR_WALL_SIZE, 0, 0);
     addGroup("floating_walls", IW_FLOATING_WALL_OFFSET, IW_NUM_FLOATING_WALLS * IW_FLOATING_WALL_SIZE, 0, 0);
     addGroup("pickups", IW_PICKUP_OFFSET, IW_NUM_PICKUPS * IW_PICKUP_SIZE, 0, 0);
+    addGroup("own_projectiles", IW_PROJECTILE_OFFSET, IW_NUM_OWN_PROJECTILES * IW_PROJECTILE_SIZE, 0, 0);
+    addGroup("enemy_projectiles", IW_ENEMY_PROJECTILE_OFFSET, IW_NUM_ENEMY_PROJECTILES * IW_PROJECTILE_SIZE, 0, 0);
     for (int k = 0; k < IW_NUM_ENEMIES; k++) {
         slotName(k, pre, sizeof(pre));
         const int e = E_OBS + k * IW_ENEMY_DRONE_SIZE;
@@ -775,6 +777,7 @@ static void buildObsGroups(void) {
     numPrimaryGroups = numObsGroups;
 
     // finer groups, not used for the weights output
+    addGroup("projectiles", IW_PROJECTILE_OFFSET, IW_NUM_PROJECTILES * IW_PROJECTILE_SIZE, 0, 0);
     addGroup("own_weapon_type", D_OBS + IW_DRONE_WEAPON_TYPE, 1, 0, 0);
     addGroup("own_weapon_state", D_OBS + 1, IW_WEAPON_SIZE - 1, 0, 0);
     addGroup("own_charge", D_OBS + 3, 2, 0, 0);
@@ -862,9 +865,6 @@ static int scalarIdx[IW_NUM_SCALARS];
 static double concatSum[IW_CONCAT];
 static double concatSq[IW_CONCAT];
 static double concatN;
-static double fwRecSum[IW_FW_FEATURES];
-static double fwRecSq[IW_FW_FEATURES];
-static double fwRecN;
 static pthread_mutex_t statsMu = PTHREAD_MUTEX_INITIALIZER;
 static gameResult *results;
 static uint32_t totalGames;
@@ -904,7 +904,7 @@ static void buildObsNames(void) {
     static const char *queueFields[IW_ACTION_SIZE] = {"move_x", "move_y", "aim_x", "aim_y",
                                                       "trigger", "utility", "brake", "burst"};
     static const char *ownRays[3] = {"aim_ray", "vel_ray", "drift_ray"};
-    static const char *fwFields[IW_FLOATING_WALL_SIZE] = {"type", "x", "y", "sin", "cos", "vel_x", "vel_y"};
+    static const char *fwFields[IW_FLOATING_WALL_SIZE] = {"type", "x", "y", "sin", "cos", "vel_x", "vel_y", "surface_x", "surface_y", "surface_dist"};
     static const char *misc[IW_MISC_SIZE] = {"not_easy_ep", "combo_ep", "steps_left", "sudden_death_steps"};
 
     for (int i = 0; i < OBS_SIZE; i++) {
@@ -928,6 +928,14 @@ static void buildObsNames(void) {
         static const char *f[3] = {"type", "x", "y"};
         for (int k = 0; k < IW_PICKUP_SIZE; k++) {
             snprintf(obsNames[IW_PICKUP_OFFSET + s * IW_PICKUP_SIZE + k], 48, "pickup%d_%s", s, f[k]);
+        }
+    }
+    for (int s = 0; s < IW_NUM_PROJECTILES; s++) {
+        static const char *projFields[IW_PROJECTILE_SIZE] = {"type", "x", "y", "vel_x", "vel_y", "dist", "aim_sin", "aim_cos"};
+        const bool own = s < IW_NUM_OWN_PROJECTILES;
+        for (int k = 0; k < IW_PROJECTILE_SIZE; k++) {
+            snprintf(obsNames[IW_PROJECTILE_OFFSET + s * IW_PROJECTILE_SIZE + k], 48, "%s_proj%d_%s", own ? "own" : "enemy",
+                     own ? s : s - IW_NUM_OWN_PROJECTILES, projFields[k]);
         }
     }
     int i = E_OBS;
@@ -2040,16 +2048,11 @@ typedef struct inputStats {
     double concatSum[IW_CONCAT];
     double concatSq[IW_CONCAT];
     double concatN;
-    double fwSum[IW_FW_FEATURES];
-    double fwSq[IW_FW_FEATURES];
-    double fwN;
 } inputStats;
 
 // the encoder inputs of a batch, from the CPU net or the GPU
 typedef struct encoderInputs {
     const float *concat;
-    const float *fwRec;
-    const int *fwActive;
 } encoderInputs;
 
 static encoderInputs readInputs(const policyBatch *p) {
@@ -2058,16 +2061,12 @@ static encoderInputs readInputs(const policyBatch *p) {
         const iwGpuInputs g = iw_gpu_inputs(p->gpu);
         return (encoderInputs){
             .concat = g.concat,
-            .fwRec = g.fwRec,
-            .fwActive = g.fwActive,
         };
     }
 #endif
     const ImpulseWarsNet *net = p->net;
     return (encoderInputs){
         .concat = net->concat,
-        .fwRec = net->fw_rec,
-        .fwActive = net->fw_rec_active,
     };
 }
 
@@ -2078,18 +2077,6 @@ static void accumulateInputs(inputStats *st, const encoderInputs *in, const int 
         st->concatSq[j] += (double)c[j] * c[j];
     }
     st->concatN++;
-    for (int r = 0; r < IW_NUM_FLOATING_WALLS; r++) {
-        const int row = b * IW_NUM_FLOATING_WALLS + r;
-        if (!in->fwActive[row]) {
-            continue;
-        }
-        for (int f = 0; f < IW_FW_FEATURES; f++) {
-            const float v = in->fwRec[row * IW_FW_FEATURES + f];
-            st->fwSum[f] += v;
-            st->fwSq[f] += (double)v * v;
-        }
-        st->fwN++;
-    }
 }
 
 static void mergeInputs(const inputStats *st) {
@@ -2099,11 +2086,6 @@ static void mergeInputs(const inputStats *st) {
         concatSq[j] += st->concatSq[j];
     }
     concatN += st->concatN;
-    for (int f = 0; f < IW_FW_FEATURES; f++) {
-        fwRecSum[f] += st->fwSum[f];
-        fwRecSq[f] += st->fwSq[f];
-    }
-    fwRecN += st->fwN;
     pthread_mutex_unlock(&statsMu);
 }
 
@@ -2216,6 +2198,11 @@ static void buildScaleFeatures(void) {
     addScaleSlots("pickup", "pickup%d", IW_NUM_PICKUPS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_type");
     addScaleSlots("fw_pos", "fw%d", IW_NUM_FLOATING_WALLS, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_type");
     addScaleSlots("fw_vel", "fw%d", IW_NUM_FLOATING_WALLS, SCALE_TANH, MAX_OBS_WALL_SPEED, "_vel_x", "_vel_y", "_type");
+    addScaleSlots("fw_surface", "fw%d", IW_NUM_FLOATING_WALLS, SCALE_TANH, MAX_OBS_WALL_POS, "_surface_x", "_surface_y", "_type");
+    addScaleSlots("own_proj_pos", "own_proj%d", IW_NUM_OWN_PROJECTILES, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_type");
+    addScaleSlots("enemy_proj_pos", "enemy_proj%d", IW_NUM_ENEMY_PROJECTILES, SCALE_TANH, MAX_OBS_RELATIVE_POS, "_x", "_y", "_type");
+    addScaleSlots("own_proj_vel", "own_proj%d", IW_NUM_OWN_PROJECTILES, SCALE_TANH, MAX_OBS_PROJECTILE_SPEED, "_vel_x", "_vel_y", "_type");
+    addScaleSlots("enemy_proj_vel", "enemy_proj%d", IW_NUM_ENEMY_PROJECTILES, SCALE_TANH, MAX_OBS_PROJECTILE_SPEED, "_vel_x", "_vel_y", "_type");
 }
 
 static inline int scaleBin(float raw) {
@@ -2633,6 +2620,11 @@ static const char *className(const int obsIdx, const int vocab, const int cls) {
     if (otherDrone || obsIdx == D_OBS + IW_DRONE_UTILITY_TYPE) {
         return utilities[cls];
     }
+    static const char *projectiles[] = {"none", "slug", "imploder", "blackhole", "nuke"};
+    _Static_assert(sizeof(projectiles) / sizeof(projectiles[0]) == IW_PROJ_TYPE_VOCAB, "name every projectile type");
+    if (obsIdx >= IW_PROJECTILE_OFFSET && obsIdx < IW_ENEMY_DRONE_OFFSET) {
+        return projectiles[cls];
+    }
     if (vocab == IW_PICKUP_VOCAB || vocab == IW_WEAPON_VOCAB) {
         return pickupObsName(cls);
     }
@@ -2671,8 +2663,6 @@ static bool writeWeights(const char *path) {
     off = puf_iw_align8(off + IW_C2_W_N);
     off = puf_iw_align8(off + IW_C3_W_N);
     const float *proj = policyWeights->data + off;
-    off = puf_iw_align8(off + H * IW_CONCAT);
-    const float *fwL1 = policyWeights->data + off;
 
     fprintf(f, "branch\tgroup\tfeature\tmean\tstd\twnorm\teffect\n");
     char name[96];
@@ -2690,15 +2680,6 @@ static bool writeWeights(const char *path) {
         const int c = IW_CONV_FLAT + IW_ONEHOT_COLS + j;
         const int i = scalarIdx[j];
         writeFeature(f, "concat", obsGroups[obsGroupOf[i]].name, obsNames[i], concatSum[c], concatSq[c], concatN, colNorm(proj, H, IW_CONCAT, c));
-    }
-    static const char *fwScalars[] = {"x", "y", "sin", "cos", "vel_x", "vel_y"};
-    for (int k = 0; k < IW_FW_USED_FEATURES; k++) {
-        if (k < IW_WALL_VOCAB - 1) {
-            snprintf(name, sizeof(name), "type=%s", className(-1, IW_WALL_VOCAB, k + 1));
-        } else {
-            snprintf(name, sizeof(name), "%s", fwScalars[k - (IW_WALL_VOCAB - 1)]);
-        }
-        writeFeature(f, "floating_wall", "floating_walls", name, fwRecSum[k], fwRecSq[k], fwRecN, colNorm(fwL1, IW_FW_HIDDEN, IW_FW_FEATURES, k));
     }
     fclose(f);
     return true;

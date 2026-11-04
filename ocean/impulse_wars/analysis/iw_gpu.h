@@ -21,11 +21,9 @@ typedef struct iwGpuModel iwGpuModel;
 typedef struct iwGpuNet iwGpuNet;
 
 // the encoder inputs of the last forward, for --weights-out, laid out as
-// the CPU net's (ImpulseWarsNet) concat and record buffers
+// the CPU net's (ImpulseWarsNet) concat
 typedef struct iwGpuInputs {
     const float *concat;
-    const float *fwRec;
-    const int *fwActive;
 } iwGpuInputs;
 
 // "fp32" or "bf16", as the library was built
